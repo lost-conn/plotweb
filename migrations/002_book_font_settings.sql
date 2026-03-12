@@ -1,0 +1,1 @@
+ALTER TABLE books ADD COLUMN font_settings TEXT DEFAULT NULL;

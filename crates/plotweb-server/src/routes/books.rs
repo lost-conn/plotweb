@@ -13,8 +13,8 @@ pub async fn list(
     State(pool): State<SqlitePool>,
     AuthSession(user_id): AuthSession,
 ) -> impl IntoResponse {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
-        "SELECT b.id, b.title, b.description, b.created_at, b.updated_at \
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>(
+        "SELECT b.id, b.title, b.description, b.created_at, b.updated_at, b.font_settings \
          FROM books b WHERE b.user_id = ? ORDER BY b.updated_at DESC",
     )
     .bind(&user_id)
@@ -24,7 +24,7 @@ pub async fn list(
 
     // Get chapter counts
     let mut books: Vec<Book> = Vec::new();
-    for (id, title, description, created_at, updated_at) in rows {
+    for (id, title, description, created_at, updated_at, fs_str) in rows {
         let count: (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM chapters WHERE book_id = ?")
                 .bind(&id)
@@ -39,6 +39,7 @@ pub async fn list(
             created_at,
             updated_at,
             chapter_count: Some(count.0),
+            font_settings: fs_str.and_then(|s| serde_json::from_str(&s).ok()),
         });
     }
 
@@ -74,6 +75,7 @@ pub async fn create(
         created_at: String::new(),
         updated_at: String::new(),
         chapter_count: Some(0),
+        font_settings: None,
     };
     (StatusCode::CREATED, Json(serde_json::to_value(book).unwrap()))
 }
@@ -83,8 +85,8 @@ pub async fn get(
     AuthSession(user_id): AuthSession,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let row = sqlx::query_as::<_, (String, String, String, String, String)>(
-        "SELECT id, title, description, created_at, updated_at FROM books WHERE id = ? AND user_id = ?",
+    let row = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>(
+        "SELECT id, title, description, created_at, updated_at, font_settings FROM books WHERE id = ? AND user_id = ?",
     )
     .bind(&id)
     .bind(&user_id)
@@ -92,7 +94,7 @@ pub async fn get(
     .await;
 
     match row {
-        Ok(Some((id, title, description, created_at, updated_at))) => {
+        Ok(Some((id, title, description, created_at, updated_at, fs_str))) => {
             let count: (i64,) =
                 sqlx::query_as("SELECT COUNT(*) FROM chapters WHERE book_id = ?")
                     .bind(&id)
@@ -107,6 +109,7 @@ pub async fn get(
                 created_at,
                 updated_at,
                 chapter_count: Some(count.0),
+                font_settings: fs_str.and_then(|s| serde_json::from_str(&s).ok()),
             };
             (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))
         }
@@ -151,6 +154,15 @@ pub async fn update(
     if let Some(desc) = &req.description {
         sqlx::query("UPDATE books SET description = ?, updated_at = datetime('now') WHERE id = ?")
             .bind(desc)
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+    if let Some(fs) = &req.font_settings {
+        let json = serde_json::to_string(fs).unwrap();
+        sqlx::query("UPDATE books SET font_settings = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(&json)
             .bind(&id)
             .execute(&pool)
             .await

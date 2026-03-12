@@ -24,5 +24,8 @@ pub async fn init_db() -> SqlitePool {
         .await
         .expect("failed to run migrations");
 
+    let migration_002 = include_str!("../../../migrations/002_book_font_settings.sql");
+    sqlx::raw_sql(migration_002).execute(&pool).await.ok(); // .ok() = idempotent
+
     pool
 }

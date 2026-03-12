@@ -23,6 +23,18 @@ pub struct RegisterRequest {
     pub password: String,
 }
 
+// ── Font Settings ──
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct FontSettings {
+    pub h1: Option<String>,
+    pub h2: Option<String>,
+    pub h3: Option<String>,
+    pub body: Option<String>,
+    pub quote: Option<String>,
+    pub code: Option<String>,
+}
+
 // ── Book ──
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -33,6 +45,7 @@ pub struct Book {
     pub created_at: String,
     pub updated_at: String,
     pub chapter_count: Option<i64>,
+    pub font_settings: Option<FontSettings>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +58,7 @@ pub struct CreateBookRequest {
 pub struct UpdateBookRequest {
     pub title: Option<String>,
     pub description: Option<String>,
+    pub font_settings: Option<FontSettings>,
 }
 
 // ── Chapter ──

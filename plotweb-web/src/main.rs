@@ -4,6 +4,7 @@ pub mod store;
 pub mod router;
 pub mod pages;
 pub mod components;
+pub mod fonts;
 
 use std::cell::RefCell;
 use std::rc::Rc;

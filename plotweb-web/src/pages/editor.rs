@@ -2,9 +2,10 @@ use wasm_bindgen::JsCast;
 use rinch::prelude::*;
 use rinch_core::use_store;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use plotweb_common::{Chapter, UpdateChapterRequest};
+use plotweb_common::{Book, Chapter, UpdateChapterRequest};
 
 use crate::api;
+use crate::fonts;
 use crate::store::{AppStore, Route};
 
 use wasm_bindgen::prelude::*;
@@ -264,6 +265,21 @@ pub fn editor_page(book_id: String, chapter_id: String) -> NodeHandle {
     let save_status = Signal::new("saved"); // "saved", "saving", "unsaved"
     let loaded = Signal::new(false);
 
+    // Fetch book metadata (for font settings)
+    let bid_book = book_id.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        if store.current_book.get().as_ref().map(|b| &b.id) != Some(&bid_book) {
+            if let Ok(book) = api::get::<Book>(&format!("/api/books/{}", bid_book)).await {
+                let fs = book.font_settings.clone().unwrap_or_default();
+                fonts::load_book_fonts(&fs);
+                store.current_book.set(Some(book));
+            }
+        } else if let Some(book) = store.current_book.get().as_ref() {
+            let fs = book.font_settings.clone().unwrap_or_default();
+            fonts::load_book_fonts(&fs);
+        }
+    });
+
     // Fetch chapter content
     let bid = book_id.clone();
     let cid = chapter_id.clone();
@@ -308,12 +324,18 @@ pub fn editor_page(book_id: String, chapter_id: String) -> NodeHandle {
         let cid = cid_save.clone();
         save_status.set("saving");
         wasm_bindgen_futures::spawn_local(async move {
-            // Get content from contenteditable div
-            let content = web_sys::window()
+            // Get content from contenteditable div — bail if the editor isn't mounted
+            let content = match web_sys::window()
                 .and_then(|w| w.document())
                 .and_then(|d| d.query_selector(".editor-content[contenteditable]").ok().flatten())
-                .map(|el| el.inner_html())
-                .unwrap_or_default();
+            {
+                Some(el) => el.inner_html(),
+                None => {
+                    // Editor not mounted (navigated away) — don't save empty content
+                    save_status.set("saved");
+                    return;
+                }
+            };
 
             // Convert HTML back to markdown for storage
             let markdown = html_to_markdown(&content);
@@ -352,7 +374,20 @@ pub fn editor_page(book_id: String, chapter_id: String) -> NodeHandle {
         // Auto-save on input with debounce (3 seconds)
         let save_for_input = save;
         let timer_id = Signal::new(0_i32);
-        let input_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
+        let input_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
+            // Only react to input events from inside the editor's contenteditable div.
+            // This listener is attached to the document and never removed, so without
+            // this guard, typing in *any* input (e.g. font search on the book page)
+            // would trigger a save that reads empty content and wipes the chapter.
+            let dominated_by_editor = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .and_then(|el| el.closest(".editor-content[contenteditable]").ok().flatten())
+                .is_some();
+            if !dominated_by_editor {
+                return;
+            }
+
             save_status.set("unsaved");
             // Clear previous timer
             let prev = timer_id.get();
@@ -389,6 +424,30 @@ pub fn editor_page(book_id: String, chapter_id: String) -> NodeHandle {
     rsx! {
         Fragment {
             style { {EDITOR_CSS} }
+            style {
+                {move || {
+                    let fs = store.current_book.get()
+                        .and_then(|b| b.font_settings.clone())
+                        .unwrap_or_default();
+
+                    let h1 = fs.h1.as_deref().unwrap_or("Macondo Swash Caps");
+                    let h2 = fs.h2.as_deref().unwrap_or("Macondo Swash Caps");
+                    let h3 = fs.h3.as_deref().unwrap_or("Macondo Swash Caps");
+                    let body = fs.body.as_deref().unwrap_or("Andada Pro");
+                    let quote = fs.quote.as_deref().unwrap_or("inherit");
+                    let code = fs.code.as_deref().unwrap_or("monospace");
+
+                    format!(
+                        ".editor-content {{ font-family: '{body}', serif; }}
+                         .editor-content h1 {{ font-family: '{h1}', cursive; }}
+                         .editor-content h2 {{ font-family: '{h2}', cursive; }}
+                         .editor-content h3, .editor-content h4,
+                         .editor-content h5, .editor-content h6 {{ font-family: '{h3}', cursive; }}
+                         .editor-content blockquote {{ font-family: '{quote}', serif; }}
+                         .editor-content code, .editor-content pre {{ font-family: '{code}', monospace; }}"
+                    )
+                }}
+            }
             div { class: "editor-layout",
                 // Top bar with chapter title and save status
                 div { class: "editor-topbar",
