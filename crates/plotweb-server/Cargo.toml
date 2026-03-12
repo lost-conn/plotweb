@@ -1,0 +1,18 @@
+[package]
+name = "plotweb-server"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+plotweb-common.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+axum.workspace = true
+tokio.workspace = true
+argon2.workspace = true
+uuid.workspace = true
+tower-http.workspace = true
+tower-sessions.workspace = true
+password-hash = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
