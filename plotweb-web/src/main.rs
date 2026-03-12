@@ -292,23 +292,34 @@ fn app() -> NodeHandle {
     let store = AppStore::new();
     rinch_core::create_store(store);
 
-    // Check session on start
-    wasm_bindgen_futures::spawn_local(async move {
-        match api::get::<plotweb_common::User>("/api/auth/me").await {
-            Ok(user) => {
-                store.current_user.set(Some(user));
-                store.current_route.set(Route::Dashboard);
-            }
-            Err(_) => {
-                store.current_route.set(Route::Login);
-            }
-        }
+    // Check URL hash for #theme to allow unauthenticated theme preview
+    let is_theme_preview = web_sys::window()
+        .and_then(|w| w.location().hash().ok())
+        .is_some_and(|h| h == "#theme");
+
+    if is_theme_preview {
+        store.current_route.set(Route::ThemePreview);
         store.loading.set(false);
-    });
+    } else {
+        // Check session on start
+        wasm_bindgen_futures::spawn_local(async move {
+            match api::get::<plotweb_common::User>("/api/auth/me").await {
+                Ok(user) => {
+                    store.current_user.set(Some(user));
+                    store.current_route.set(Route::Dashboard);
+                }
+                Err(_) => {
+                    store.current_route.set(Route::Login);
+                }
+            }
+            store.loading.set(false);
+        });
+    }
 
     rsx! {
         ThemeProvider {
-            primary_color: "yellow",
+            primary_color_fn: Rc::new(|| "teal"),
+            default_radius: "xs",
             dark_mode_fn: Rc::new(move || store.dark_mode.get()),
 
             {components::app_shell::app_shell(__scope)}
@@ -327,10 +338,10 @@ pub fn start() {
     rinch_core::clear_context();
 
     let theme = ThemeProviderProps {
-        primary_color: Some("yellow".into()),
-        default_radius: Some("md".into()),
+        primary_color: Some("teal".into()),
+        default_radius: Some("xs".into()),
         font_family: Some(
-            "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif".into(),
+            "'Andada Pro', Georgia, 'Times New Roman', serif".into(),
         ),
         dark_mode: true,
         ..Default::default()

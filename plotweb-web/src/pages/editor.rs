@@ -26,7 +26,7 @@ fn exec_cmd_val(command: &str, value: &str) {
     exec_command_js(command, false, value).ok();
 }
 
-/// Editor CSS — adapted from markdown-editor example.
+/// Editor CSS — focused writing environment with semantic colors.
 const EDITOR_CSS: &str = r#"
 .editor-layout {
     display: flex;
@@ -38,9 +38,9 @@ const EDITOR_CSS: &str = r#"
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--rinch-color-gray-3);
-    background: var(--rinch-color-body);
+    padding: 8px 20px;
+    border-bottom: 1px solid var(--rinch-color-border);
+    background: var(--pw-color-deep);
     flex-shrink: 0;
 }
 
@@ -55,16 +55,16 @@ const EDITOR_CSS: &str = r#"
     flex-direction: row;
     align-items: center;
     gap: 2px;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--rinch-color-gray-3);
-    background: var(--rinch-color-body);
+    padding: 6px 20px;
+    border-bottom: 1px solid var(--rinch-color-border);
+    background: var(--pw-color-deep);
     flex-shrink: 0;
 }
 
 .toolbar-separator {
     width: 1px;
     height: 20px;
-    background: var(--rinch-color-gray-3);
+    background: var(--rinch-color-border);
     margin: 0 6px;
 }
 
@@ -72,56 +72,64 @@ const EDITOR_CSS: &str = r#"
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
+    background: var(--rinch-color-body);
 }
 
 .editor-content {
     min-height: 100%;
     max-width: 720px;
     margin: 0 auto;
-    padding: 32px 48px;
+    padding: 48px 48px;
     font-size: 16px;
     line-height: 1.8;
     color: var(--rinch-color-text);
     outline: none;
     cursor: text;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 .editor-content p { margin: 0 0 8px 0; }
-.editor-content h1 { font-size: 2em; font-weight: 700; margin: 24px 0 12px 0; }
-.editor-content h2 { font-size: 1.5em; font-weight: 700; margin: 20px 0 10px 0; }
-.editor-content h3 { font-size: 1.25em; font-weight: 600; margin: 16px 0 8px 0; }
-.editor-content h4 { font-size: 1.1em; font-weight: 600; margin: 12px 0 6px 0; }
-.editor-content h5 { font-size: 1em; font-weight: 600; margin: 10px 0 4px 0; }
-.editor-content h6 { font-size: 0.9em; font-weight: 600; margin: 10px 0 4px 0; color: var(--rinch-color-dimmed); }
+.editor-content h1 { font-size: 2em; font-weight: 700; margin: 32px 0 12px 0; color: var(--rinch-color-text); }
+.editor-content h2 { font-size: 1.5em; font-weight: 700; margin: 28px 0 10px 0; color: var(--rinch-color-text); }
+.editor-content h3 { font-size: 1.25em; font-weight: 600; margin: 24px 0 8px 0; color: var(--rinch-color-text); }
+.editor-content h4 { font-size: 1.1em; font-weight: 600; margin: 16px 0 6px 0; color: var(--rinch-color-text); }
+.editor-content h5 { font-size: 1em; font-weight: 600; margin: 12px 0 4px 0; color: var(--rinch-color-dimmed); }
+.editor-content h6 { font-size: 0.9em; font-weight: 600; margin: 12px 0 4px 0; color: var(--rinch-color-dimmed); }
 
 .editor-content blockquote {
-    border-left: 3px solid var(--rinch-color-gray-4);
+    border-left: 3px solid var(--rinch-color-teal-8);
     padding-left: 16px;
-    margin: 12px 0;
+    margin: 16px 0;
     color: var(--rinch-color-dimmed);
 }
 
 .editor-content pre {
-    background: var(--rinch-color-gray-1);
+    background: var(--pw-color-deep);
+    border: 1px solid var(--rinch-color-border);
     border-radius: var(--rinch-radius-sm);
     padding: 12px 16px;
-    margin: 12px 0;
+    margin: 16px 0;
     font-family: monospace;
     font-size: 14px;
     overflow-x: auto;
 }
 
 .editor-content code {
-    background: var(--rinch-color-gray-1);
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
     padding: 2px 5px;
     border-radius: 3px;
     font-size: 0.9em;
+    color: var(--rinch-color-teal-4);
 }
 
 .editor-content pre code {
     background: none;
+    border: none;
     padding: 0;
     border-radius: 0;
+    color: inherit;
 }
 
 .editor-content ul, .editor-content ol {
@@ -133,38 +141,46 @@ const EDITOR_CSS: &str = r#"
 
 .editor-content hr {
     border: none;
-    border-top: 1px solid var(--rinch-color-gray-3);
-    margin: 20px 0;
+    border-top: 1px solid var(--rinch-color-border);
+    margin: 24px 0;
 }
 
 .editor-content strong { font-weight: 700; }
 .editor-content em { font-style: italic; }
 .editor-content u { text-decoration: underline; }
-.editor-content s { text-decoration: line-through; }
+.editor-content s { text-decoration: line-through; color: var(--rinch-color-dimmed); }
 
 .editor-content a {
-    color: var(--rinch-primary-color);
+    color: var(--rinch-color-teal-4);
     text-decoration: underline;
+    text-decoration-color: var(--rinch-color-teal-8);
 }
 
 .editor-content mark {
-    background: var(--rinch-color-yellow-2);
+    background: var(--rinch-color-teal-9);
+    color: var(--rinch-color-teal-2);
     padding: 1px 2px;
     border-radius: 2px;
 }
 
 .save-indicator {
     font-size: 12px;
-    padding: 2px 8px;
+    padding: 2px 10px;
     border-radius: 4px;
+    letter-spacing: 0.03em;
+    transition: color 0.2s ease;
 }
 
 .save-indicator.saving {
-    color: var(--rinch-color-yellow-6);
+    color: var(--rinch-color-teal-5);
 }
 
 .save-indicator.saved {
-    color: var(--rinch-color-green-6);
+    color: var(--rinch-color-dimmed);
+}
+
+.save-indicator.unsaved {
+    color: var(--rinch-color-teal-4);
 }
 "#;
 

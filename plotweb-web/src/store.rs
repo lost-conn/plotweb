@@ -35,4 +35,5 @@ pub enum Route {
     Dashboard,
     Book(String),
     Editor(String, String),
+    ThemePreview,
 }
