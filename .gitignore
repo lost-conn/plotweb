@@ -4,3 +4,4 @@ plotweb-web/dist/
 *.db
 *.db-shm
 *.db-wal
+data/

@@ -4,50 +4,59 @@ use axum::response::IntoResponse;
 use axum::Json;
 use plotweb_common::*;
 use serde_json::json;
-use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::auth::AuthSession;
+use crate::AppState;
 
 pub async fn list(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
 ) -> impl IntoResponse {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>(
-        "SELECT b.id, b.title, b.description, b.created_at, b.updated_at, b.font_settings \
-         FROM books b WHERE b.user_id = ? ORDER BY b.updated_at DESC",
+    let rows = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, title, created_at FROM books WHERE user_id = ? ORDER BY created_at DESC",
     )
     .bind(&user_id)
-    .fetch_all(&pool)
+    .fetch_all(&state.db)
     .await
     .unwrap_or_default();
 
-    // Get chapter counts
     let mut books: Vec<Book> = Vec::new();
-    for (id, title, description, created_at, updated_at, fs_str) in rows {
-        let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM chapters WHERE book_id = ?")
-                .bind(&id)
-                .fetch_one(&pool)
-                .await
-                .unwrap_or((0,));
-
-        books.push(Book {
-            id,
-            title,
-            description,
-            created_at,
-            updated_at,
-            chapter_count: Some(count.0),
-            font_settings: fs_str.and_then(|s| serde_json::from_str(&s).ok()),
-        });
+    for (id, title, created_at) in rows {
+        // Read extra data from git
+        match state.books.get_book(&id).await {
+            Ok(data) => {
+                let chapter_count = data.chapter_order.len() as i64;
+                books.push(Book {
+                    id,
+                    title: data.title,
+                    description: data.description,
+                    created_at: data.created_at,
+                    updated_at: data.updated_at,
+                    chapter_count: Some(chapter_count),
+                    font_settings: data.font_settings,
+                });
+            }
+            Err(_) => {
+                // Git repo missing — show basic info from SQLite
+                books.push(Book {
+                    id,
+                    title,
+                    description: String::new(),
+                    created_at: created_at.clone(),
+                    updated_at: created_at,
+                    chapter_count: Some(0),
+                    font_settings: None,
+                });
+            }
+        }
     }
 
     Json(serde_json::to_value(books).unwrap())
 }
 
 pub async fn create(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
     Json(req): Json<CreateBookRequest>,
 ) -> impl IntoResponse {
@@ -59,21 +68,33 @@ pub async fn create(
     }
 
     let id = Uuid::new_v4().to_string();
-    sqlx::query("INSERT INTO books (id, user_id, title, description) VALUES (?, ?, ?, ?)")
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    // Insert ownership row in SQLite
+    sqlx::query("INSERT INTO books (id, user_id, title, created_at) VALUES (?, ?, ?, ?)")
         .bind(&id)
         .bind(&user_id)
         .bind(&req.title)
-        .bind(&req.description)
-        .execute(&pool)
+        .bind(&now)
+        .execute(&state.db)
         .await
         .ok();
+
+    // Create git repo
+    if let Err(e) = state
+        .books
+        .create_book(&id, &req.title, &req.description, &now)
+        .await
+    {
+        eprintln!("Failed to create book git repo: {}", e);
+    }
 
     let book = Book {
         id,
         title: req.title,
         description: req.description,
-        created_at: String::new(),
-        updated_at: String::new(),
+        created_at: now.clone(),
+        updated_at: now,
         chapter_count: Some(0),
         font_settings: None,
     };
@@ -81,37 +102,40 @@ pub async fn create(
 }
 
 pub async fn get(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let row = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>(
-        "SELECT id, title, description, created_at, updated_at, font_settings FROM books WHERE id = ? AND user_id = ?",
+    // Verify ownership
+    let row = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT id, title, created_at FROM books WHERE id = ? AND user_id = ?",
     )
     .bind(&id)
     .bind(&user_id)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.db)
     .await;
 
     match row {
-        Ok(Some((id, title, description, created_at, updated_at, fs_str))) => {
-            let count: (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM chapters WHERE book_id = ?")
-                    .bind(&id)
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap_or((0,));
-
-            let book = Book {
-                id,
-                title,
-                description,
-                created_at,
-                updated_at,
-                chapter_count: Some(count.0),
-                font_settings: fs_str.and_then(|s| serde_json::from_str(&s).ok()),
-            };
-            (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))
+        Ok(Some((_id, _title, _created_at))) => {
+            match state.books.get_book(&id).await {
+                Ok(data) => {
+                    let chapter_count = data.chapter_order.len() as i64;
+                    let book = Book {
+                        id,
+                        title: data.title,
+                        description: data.description,
+                        created_at: data.created_at,
+                        updated_at: data.updated_at,
+                        chapter_count: Some(chapter_count),
+                        font_settings: data.font_settings,
+                    };
+                    (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))
+                }
+                Err(_) => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": "book not found" })),
+                ),
+            }
         }
         _ => (
             StatusCode::NOT_FOUND,
@@ -121,7 +145,7 @@ pub async fn get(
 }
 
 pub async fn update(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
     Path(id): Path<String>,
     Json(req): Json<UpdateBookRequest>,
@@ -132,7 +156,7 @@ pub async fn update(
     )
     .bind(&id)
     .bind(&user_id)
-    .fetch_one(&pool)
+    .fetch_one(&state.db)
     .await
     .unwrap_or((0,));
 
@@ -143,46 +167,41 @@ pub async fn update(
         );
     }
 
+    // Update title in SQLite if changed
     if let Some(title) = &req.title {
-        sqlx::query("UPDATE books SET title = ?, updated_at = datetime('now') WHERE id = ?")
+        sqlx::query("UPDATE books SET title = ? WHERE id = ?")
             .bind(title)
             .bind(&id)
-            .execute(&pool)
+            .execute(&state.db)
             .await
             .ok();
     }
-    if let Some(desc) = &req.description {
-        sqlx::query("UPDATE books SET description = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(desc)
-            .bind(&id)
-            .execute(&pool)
-            .await
-            .ok();
-    }
-    if let Some(fs) = &req.font_settings {
-        let json = serde_json::to_string(fs).unwrap();
-        sqlx::query("UPDATE books SET font_settings = ?, updated_at = datetime('now') WHERE id = ?")
-            .bind(&json)
-            .bind(&id)
-            .execute(&pool)
-            .await
-            .ok();
+
+    // Update git repo
+    if let Err(e) = state.books.update_book(&id, &req).await {
+        eprintln!("Failed to update book in git: {}", e);
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
 
 pub async fn delete(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Delete from SQLite
     sqlx::query("DELETE FROM books WHERE id = ? AND user_id = ?")
         .bind(&id)
         .bind(&user_id)
-        .execute(&pool)
+        .execute(&state.db)
         .await
         .ok();
+
+    // Delete git repo
+    if let Err(e) = state.books.delete_book(&id).await {
+        eprintln!("Failed to delete book git repo: {}", e);
+    }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }

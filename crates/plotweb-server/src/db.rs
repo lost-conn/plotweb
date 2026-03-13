@@ -29,3 +29,12 @@ pub async fn init_db() -> SqlitePool {
 
     pool
 }
+
+/// Run migration 003 — must be called AFTER data migration to git.
+pub async fn run_migration_003(pool: &SqlitePool) {
+    let migration_003 = include_str!("../../../migrations/003_git_migration.sql");
+    sqlx::raw_sql(migration_003)
+        .execute(pool)
+        .await
+        .expect("failed to run migration 003");
+}

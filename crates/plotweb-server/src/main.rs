@@ -2,15 +2,44 @@ mod auth;
 mod db;
 mod routes;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use axum::routing::{delete, get, post, put};
 use axum::Router;
+use plotweb_git::BookStore;
+use sqlx::SqlitePool;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_sessions::cookie::SameSite;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
+#[derive(Clone)]
+pub struct AppState {
+    pub db: SqlitePool,
+    pub books: Arc<BookStore>,
+}
+
 #[tokio::main]
 async fn main() {
     let pool = db::init_db().await;
+
+    // Book store (git-backed)
+    let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
+    let base_dir = PathBuf::from(&data_dir);
+    let book_store = Arc::new(BookStore::new(base_dir.clone()));
+
+    // Migrate existing data from SQLite to git repos (idempotent)
+    if let Err(e) = plotweb_git::migrate::migrate_sqlite_to_git(&pool, &base_dir).await {
+        eprintln!("Warning: data migration failed: {}", e);
+    }
+
+    // Now slim down the SQLite schema
+    db::run_migration_003(&pool).await;
+
+    let state = AppState {
+        db: pool,
+        books: book_store,
+    };
 
     // Session store (in-memory — sessions lost on restart, fine for dev)
     let session_store = MemoryStore::default();
@@ -55,7 +84,7 @@ async fn main() {
             "/api/books/{book_id}/chapters/{id}",
             delete(routes::chapters::delete),
         )
-        .with_state(pool);
+        .with_state(state);
 
     // Static files — serve the built frontend, with SPA fallback to index.html
     let dist_path = std::env::var("DIST_DIR").unwrap_or_else(|_| "../plotweb-web/dist".into());

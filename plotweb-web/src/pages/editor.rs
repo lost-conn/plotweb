@@ -264,6 +264,7 @@ pub fn editor_page(book_id: String, chapter_id: String) -> NodeHandle {
     let chapter_title = Signal::new(String::new());
     let save_status = Signal::new("saved"); // "saved", "saving", "unsaved"
     let loaded = Signal::new(false);
+    let editor_el_id = format!("editor-{}", chapter_id);
 
     // Fetch book metadata (for font settings)
     let bid_book = book_id.clone();
@@ -296,10 +297,11 @@ pub fn editor_page(book_id: String, chapter_id: String) -> NodeHandle {
             if !chapter.content.is_empty() {
                 // Use a small delay to ensure the DOM is ready
                 let content = chapter.content.clone();
+                let load_el_id = cid.clone();
                 let window = web_sys::window().unwrap();
                 let closure = wasm_bindgen::closure::Closure::once(move || {
                     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                        if let Ok(Some(el)) = doc.query_selector(".editor-content[contenteditable]") {
+                        if let Ok(Some(el)) = doc.query_selector(&format!("#editor-{}", load_el_id)) {
                             // Convert markdown to simple HTML for display
                             // The CE API will handle the editing
                             let html = markdown_to_html(&content);
@@ -327,7 +329,7 @@ pub fn editor_page(book_id: String, chapter_id: String) -> NodeHandle {
             // Get content from contenteditable div — bail if the editor isn't mounted
             let content = match web_sys::window()
                 .and_then(|w| w.document())
-                .and_then(|d| d.query_selector(".editor-content[contenteditable]").ok().flatten())
+                .and_then(|d| d.query_selector(&format!("#editor-{}", cid)).ok().flatten())
             {
                 Some(el) => el.inner_html(),
                 None => {
@@ -477,6 +479,7 @@ pub fn editor_page(book_id: String, chapter_id: String) -> NodeHandle {
                     div {
                         contenteditable: "true",
                         class: "editor-content",
+                        id: editor_el_id,
                         p { "Start writing..." }
                     }
                 }

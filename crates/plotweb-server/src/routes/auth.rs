@@ -4,14 +4,14 @@ use axum::response::IntoResponse;
 use axum::Json;
 use plotweb_common::*;
 use serde_json::json;
-use sqlx::SqlitePool;
 use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::auth::{self, AuthSession};
+use crate::AppState;
 
 pub async fn register(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     session: Session,
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
@@ -40,7 +40,7 @@ pub async fn register(
     .bind(&req.username)
     .bind(&req.email)
     .bind(&password_hash)
-    .execute(&pool)
+    .execute(&state.db)
     .await;
 
     match result {
@@ -69,7 +69,7 @@ pub async fn register(
 }
 
 pub async fn login(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     session: Session,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
@@ -77,7 +77,7 @@ pub async fn login(
         "SELECT id, username, email, password_hash, created_at FROM users WHERE username = ?",
     )
     .bind(&req.username)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.db)
     .await;
 
     match row {
@@ -110,14 +110,14 @@ pub async fn logout(session: Session) -> impl IntoResponse {
 }
 
 pub async fn me(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
 ) -> impl IntoResponse {
     let row = sqlx::query_as::<_, (String, String, String, String)>(
         "SELECT id, username, email, created_at FROM users WHERE id = ?",
     )
     .bind(&user_id)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.db)
     .await;
 
     match row {

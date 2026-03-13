@@ -1,0 +1,184 @@
+pub mod book;
+pub mod chapter;
+pub mod error;
+pub mod migrate;
+pub mod repo;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use error::Result;
+use plotweb_common::{UpdateBookRequest, UpdateChapterRequest};
+use tokio::sync::Mutex;
+
+pub use book::BookData;
+pub use chapter::ChapterData;
+
+pub struct BookStore {
+    base_dir: PathBuf,
+    locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl BookStore {
+    pub fn new(base_dir: PathBuf) -> Self {
+        std::fs::create_dir_all(&base_dir).ok();
+        Self {
+            base_dir,
+            locks: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Get or create a per-book lock.
+    fn book_lock(&self, book_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.locks.lock().unwrap();
+        locks
+            .entry(book_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    // ── Books ──
+
+    pub async fn create_book(
+        &self,
+        book_id: &str,
+        title: &str,
+        description: &str,
+        created_at: &str,
+    ) -> Result<()> {
+        let lock = self.book_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let title = title.to_string();
+        let desc = description.to_string();
+        let created = created_at.to_string();
+        tokio::task::spawn_blocking(move || {
+            book::create_book(&base, &book_id, &title, &desc, &created)
+        })
+        .await
+        .unwrap()
+    }
+
+    pub async fn get_book(&self, book_id: &str) -> Result<BookData> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        tokio::task::spawn_blocking(move || book::get_book(&base, &book_id))
+            .await
+            .unwrap()
+    }
+
+    pub async fn update_book(&self, book_id: &str, update: &UpdateBookRequest) -> Result<()> {
+        let lock = self.book_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let title = update.title.clone();
+        let description = update.description.clone();
+        let font_settings = update.font_settings.clone();
+        tokio::task::spawn_blocking(move || {
+            book::update_book(
+                &base,
+                &book_id,
+                title.as_deref(),
+                description.as_deref(),
+                font_settings.as_ref(),
+            )
+        })
+        .await
+        .unwrap()
+    }
+
+    pub async fn delete_book(&self, book_id: &str) -> Result<()> {
+        let lock = self.book_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        tokio::task::spawn_blocking(move || book::delete_book(&base, &book_id))
+            .await
+            .unwrap()
+    }
+
+    // ── Chapters ──
+
+    pub async fn list_chapters(&self, book_id: &str) -> Result<Vec<ChapterData>> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        tokio::task::spawn_blocking(move || chapter::list_chapters(&base, &book_id))
+            .await
+            .unwrap()
+    }
+
+    pub async fn get_chapter(&self, book_id: &str, chapter_id: &str) -> Result<ChapterData> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let chapter_id = chapter_id.to_string();
+        tokio::task::spawn_blocking(move || chapter::get_chapter(&base, &book_id, &chapter_id))
+            .await
+            .unwrap()
+    }
+
+    pub async fn create_chapter(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        title: &str,
+        created_at: &str,
+    ) -> Result<ChapterData> {
+        let lock = self.book_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let chapter_id = chapter_id.to_string();
+        let title = title.to_string();
+        let created = created_at.to_string();
+        tokio::task::spawn_blocking(move || {
+            chapter::create_chapter(&base, &book_id, &chapter_id, &title, &created)
+        })
+        .await
+        .unwrap()
+    }
+
+    pub async fn update_chapter(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        update: &UpdateChapterRequest,
+    ) -> Result<()> {
+        let lock = self.book_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let chapter_id = chapter_id.to_string();
+        let title = update.title.clone();
+        let content = update.content.clone();
+        tokio::task::spawn_blocking(move || {
+            chapter::update_chapter(&base, &book_id, &chapter_id, title.as_deref(), content.as_deref())
+        })
+        .await
+        .unwrap()
+    }
+
+    pub async fn delete_chapter(&self, book_id: &str, chapter_id: &str) -> Result<()> {
+        let lock = self.book_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let chapter_id = chapter_id.to_string();
+        tokio::task::spawn_blocking(move || chapter::delete_chapter(&base, &book_id, &chapter_id))
+            .await
+            .unwrap()
+    }
+
+    pub async fn reorder_chapters(&self, book_id: &str, chapter_ids: &[String]) -> Result<()> {
+        let lock = self.book_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let ids = chapter_ids.to_vec();
+        tokio::task::spawn_blocking(move || chapter::reorder_chapters(&base, &book_id, &ids))
+            .await
+            .unwrap()
+    }
+}
