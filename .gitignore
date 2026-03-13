@@ -5,3 +5,4 @@ plotweb-web/dist/
 *.db-shm
 *.db-wal
 data/
+deploy.log

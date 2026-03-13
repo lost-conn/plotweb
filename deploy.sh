@@ -5,13 +5,14 @@
 #   ./deploy.sh [--force] [--branch <name>]
 #
 # Designed to be called from a cron job, e.g.:
-#   */5 * * * * /path/to/plotweb/deploy.sh --branch main >> /var/log/plotweb-deploy.log 2>&1
+#   */5 * * * * /path/to/plotweb/deploy.sh --branch main
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRANCH="main"
 FORCE=false
+LOG_FILE="$SCRIPT_DIR/deploy.log"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -23,15 +24,20 @@ done
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
+# Redirect all output to log file (and still show on stdout if interactive)
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 cd "$SCRIPT_DIR"
+
+# Capture local state BEFORE fetching
+LOCAL_SHA="$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "none")"
 
 # Fetch latest remote state
 git fetch origin "$BRANCH" --quiet
 
-LOCAL_SHA="$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "none")"
-REMOTE_SHA="$(git ls-remote origin "refs/heads/$BRANCH" | awk '{print $1}')"
+REMOTE_SHA="$(git rev-parse "origin/$BRANCH" 2>/dev/null || echo "none")"
 
-if [[ -z "$REMOTE_SHA" ]]; then
+if [[ "$REMOTE_SHA" == "none" ]]; then
     log "ERROR: branch '$BRANCH' not found on remote"
     exit 1
 fi
