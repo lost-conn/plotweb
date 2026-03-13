@@ -1,0 +1,18 @@
+services:
+  plotweb:
+    build: .
+    container_name: plotweb
+    restart: unless-stopped
+    ports:
+      - "7919:3000"          # 7919 is prime
+    volumes:
+      - plotweb-db:/home/plotweb          # SQLite DB
+      - plotweb-books:/home/plotweb/data  # git-backed book repos
+    environment:
+      - DIST_DIR=/home/plotweb/dist
+      - DATA_DIR=/home/plotweb/data/books
+      - DATABASE_URL=sqlite:/home/plotweb/plotweb.db
+
+volumes:
+  plotweb-db:
+  plotweb-books:

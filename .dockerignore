@@ -1,0 +1,8 @@
+target/
+plotweb-web/target/
+plotweb-web/dist/
+*.db
+*.db-wal
+*.db-shm
+data/
+.git/
