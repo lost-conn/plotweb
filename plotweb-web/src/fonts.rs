@@ -35,7 +35,7 @@ pub fn fetch_font_catalog() {
 }
 
 /// Fonts already loaded globally — skip these when building the dynamic link.
-const GLOBAL_FONTS: &[&str] = &["Macondo Swash Caps", "Andada Pro"];
+const GLOBAL_FONTS: &[&str] = &["Macondo Swash Caps", "Playwrite DE Grund"];
 
 /// Build a Google Fonts CSS URL for the given font names.
 pub fn google_fonts_url(fonts: &[&str]) -> String {

@@ -411,7 +411,7 @@ const SLOTS: &[(&str, &str, &str, &str)] = &[
     ("h1", "Heading 1", "Macondo Swash Caps", ""),
     ("h2", "Heading 2", "Macondo Swash Caps", ""),
     ("h3", "Heading 3+", "Macondo Swash Caps", ""),
-    ("body", "Body Text", "Andada Pro", ""),
+    ("body", "Body Text", "Playwrite DE Grund", ""),
     ("quote", "Blockquote", "inherit", ""),
     ("code", "Code", "monospace", "monospace"),
 ];
@@ -456,7 +456,7 @@ fn update_preview(fs: &FontSettings) {
     if let Ok(Some(el)) = document.query_selector("#font-preview") {
         let h1 = fs.h1.as_deref().unwrap_or("Macondo Swash Caps");
         let h2 = fs.h2.as_deref().unwrap_or("Macondo Swash Caps");
-        let body = fs.body.as_deref().unwrap_or("Andada Pro");
+        let body = fs.body.as_deref().unwrap_or("Playwrite DE Grund");
         let quote = fs.quote.as_deref().unwrap_or("inherit");
         let code = fs.code.as_deref().unwrap_or("monospace");
 
@@ -619,6 +619,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let new_chapter_title = Signal::new(String::new());
 
     let active_pane: Signal<BookPane> = Signal::new(BookPane::Chapters);
+    let chapters_collapsed = Signal::new(false);
     let chapter_title = Signal::new(String::new());
     let save_status = Signal::new("saved");
     let editor_loaded = Signal::new(false);
@@ -1106,7 +1107,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     let h1 = fs.h1.as_deref().unwrap_or("Macondo Swash Caps");
                     let h2 = fs.h2.as_deref().unwrap_or("Macondo Swash Caps");
                     let h3 = fs.h3.as_deref().unwrap_or("Macondo Swash Caps");
-                    let body = fs.body.as_deref().unwrap_or("Andada Pro");
+                    let body = fs.body.as_deref().unwrap_or("Playwrite DE Grund");
                     let quote = fs.quote.as_deref().unwrap_or("inherit");
                     let code = fs.code.as_deref().unwrap_or("monospace");
 
@@ -1152,22 +1153,29 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         div {
                             class: {move || if matches!(active_pane.get(), BookPane::Chapters) { "sidebar-section-header active" } else { "sidebar-section-header" }},
                             div {
-                                onclick: open_chapters_pane,
+                                style: "display: flex; align-items: center; gap: 4px; cursor: pointer;",
+                                onclick: move || chapters_collapsed.update(|c| *c = !*c),
+                                {move || if chapters_collapsed.get() { "\u{25b8}" } else { "\u{25be}" }}
                                 "Chapters"
                             }
-                            ActionIcon {
-                                variant: "subtle",
-                                size: "xs",
-                                onclick: move || {
-                                    new_chapter_title.set(String::new());
-                                    show_chapter_modal.set(true);
-                                },
-                                {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
+                            div {
+                                style: "display: flex; align-items: center; gap: 2px;",
+                                ActionIcon {
+                                    variant: "subtle",
+                                    size: "xs",
+                                    onclick: move || {
+                                        new_chapter_title.set(String::new());
+                                        show_chapter_modal.set(true);
+                                    },
+                                    {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
+                                }
                             }
                         }
 
-                        // Chapter list — always visible
-                        div { class: "sidebar-chapter-list",
+                        // Chapter list — collapsible
+                        div {
+                            class: "sidebar-chapter-list",
+                            style: {move || if chapters_collapsed.get() { "display: none;" } else { "" }},
                             for chapter in store.chapters.get() {
                                 {sidebar_chapter_item(
                                     __scope,

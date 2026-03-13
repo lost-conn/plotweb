@@ -203,7 +203,7 @@ pub fn theme_preview_page() -> NodeHandle {
                     Title { order: 5, "Heading 5 — Macondo Swash Caps" }
                     Title { order: 6, "Heading 6 — Macondo Swash Caps" }
                     Space { h: "sm" }
-                    Text { "This is body text in Andada Pro. It should feel warm and readable, suitable for long-form fiction writing. The quick brown fox jumps over the lazy dog." }
+                    Text { "This is body text in Playwrite DE Grund. It should feel warm and readable, suitable for long-form fiction writing. The quick brown fox jumps over the lazy dog." }
                     Space { h: "xs" }
                     Text { "Here is some " }
                     Text { weight: "700", "bold text" }

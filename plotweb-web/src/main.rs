@@ -342,7 +342,7 @@ pub fn start() {
         primary_color: Some("teal".into()),
         default_radius: Some("xs".into()),
         font_family: Some(
-            "'Andada Pro', Georgia, 'Times New Roman', serif".into(),
+            "'Playwrite DE Grund', Georgia, 'Times New Roman', serif".into(),
         ),
         dark_mode: true,
         ..Default::default()

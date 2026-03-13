@@ -5,7 +5,7 @@ use crate::store::{AppStore, Route};
 
 /// Returns a `:root { ... }` CSS block with warm color overrides for the given mode.
 fn warm_overrides(dark: bool) -> String {
-    let font = "--rinch-font-family: 'Andada Pro', Georgia, 'Times New Roman', serif;";
+    let font = "--rinch-font-family: 'Playwrite DE Grund', Georgia, 'Times New Roman', serif;";
     if dark {
         format!(":root {{
   {font}
