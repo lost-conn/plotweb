@@ -14,6 +14,8 @@ pub struct User {
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
+    #[serde(default)]
+    pub remember_me: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +35,9 @@ pub struct FontSettings {
     pub body: Option<String>,
     pub quote: Option<String>,
     pub code: Option<String>,
+    pub paragraph_spacing: Option<f64>,
+    pub paragraph_indent: Option<f64>,
+    pub heading_indent: Option<f64>,
 }
 
 // ── Book ──

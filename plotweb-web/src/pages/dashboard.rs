@@ -314,6 +314,7 @@ pub fn dashboard_page() -> NodeHandle {
                     placeholder: "Book title",
                     value_fn: move || new_title.get(),
                     oninput: move |v: String| new_title.set(v),
+                    onsubmit: create_book,
                 }
                 Space { h: "md" }
                 Textarea {

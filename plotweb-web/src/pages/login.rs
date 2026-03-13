@@ -10,6 +10,7 @@ pub fn login_page() -> NodeHandle {
     let store = use_store::<AppStore>();
     let username = Signal::new(String::new());
     let password = Signal::new(String::new());
+    let remember_me = Signal::new(false);
     let error = Signal::new(Option::<String>::None);
     let submitting = Signal::new(false);
 
@@ -29,6 +30,7 @@ pub fn login_page() -> NodeHandle {
             let req = LoginRequest {
                 username: u,
                 password: p,
+                remember_me: remember_me.get(),
             };
             match api::post::<_, plotweb_common::User>("/api/auth/login", &req).await {
                 Ok(user) => {
@@ -47,7 +49,9 @@ pub fn login_page() -> NodeHandle {
         store.current_route.set(Route::Register);
     };
 
-    rsx! {
+    let submit_id = __scope.register_handler(on_submit);
+
+    let page = rsx! {
         div {
             class: "auth-page",
             Paper {
@@ -83,6 +87,12 @@ pub fn login_page() -> NodeHandle {
                     value_fn: move || password.get(),
                     oninput: move |v: String| password.set(v),
                 }
+                Space { h: "md" }
+                Checkbox {
+                    label: "Remember me",
+                    checked_fn: move || remember_me.get(),
+                    onchange: move || remember_me.update(|v| *v = !*v),
+                }
                 Space { h: "xl" }
                 Button {
                     full_width: true,
@@ -99,5 +109,7 @@ pub fn login_page() -> NodeHandle {
                 }
             }
         }
-    }
+    };
+    page.set_attribute("data-onsubmit", &submit_id.0.to_string());
+    page
 }

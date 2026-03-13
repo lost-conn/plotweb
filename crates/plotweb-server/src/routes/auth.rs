@@ -4,7 +4,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use plotweb_common::*;
 use serde_json::json;
-use tower_sessions::Session;
+use tower_sessions::{Expiry, Session};
 use uuid::Uuid;
 
 use crate::auth::{self, AuthSession};
@@ -87,6 +87,9 @@ pub async fn login(
                     StatusCode::UNAUTHORIZED,
                     Json(json!({ "error": "invalid credentials" })),
                 );
+            }
+            if !req.remember_me {
+                session.set_expiry(Some(Expiry::OnSessionEnd));
             }
             auth::set_session_user(&session, &id).await;
             let user = User {

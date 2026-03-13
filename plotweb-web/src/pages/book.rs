@@ -122,6 +122,23 @@ const TYPOGRAPHY_CSS: &str = r#"
     text-align: center;
 }
 
+.pw-typo-select {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 10px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--rinch-radius-sm);
+    background: var(--rinch-color-surface);
+    color: var(--rinch-color-text);
+    font-size: 13px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.15s;
+}
+.pw-typo-select:focus {
+    border-color: var(--rinch-color-teal-6);
+}
+
 .font-preview-box {
     margin-top: 16px;
     padding: 20px;
@@ -416,8 +433,24 @@ const SLOTS: &[(&str, &str, &str, &str)] = &[
     ("code", "Code", "monospace", "monospace"),
 ];
 
+const SPACING_OPTIONS: &[(f64, &str)] = &[
+    (0.0, "None"),
+    (4.0, "Tight"),
+    (8.0, "Normal"),
+    (16.0, "Relaxed"),
+    (24.0, "Loose"),
+];
+
+const INDENT_OPTIONS: &[(f64, &str)] = &[
+    (0.0, "None"),
+    (16.0, "Small"),
+    (24.0, "Medium"),
+    (32.0, "Large"),
+    (48.0, "Extra"),
+];
+
 /// Build the HTML for the font picker grid.
-fn build_picker_grid_html(fs: &FontSettings) -> String {
+fn build_font_grid_html(fs: &FontSettings) -> String {
     let mut html = String::new();
     for &(slot, label, default, _) in SLOTS {
         let current = match slot {
@@ -446,6 +479,32 @@ fn build_picker_grid_html(fs: &FontSettings) -> String {
     html
 }
 
+fn build_select_html(id: &str, options: &[(f64, &str)], current: f64) -> String {
+    let mut html = format!("<select id='{id}' class='pw-typo-select'>");
+    for &(val, label) in options {
+        let selected = if (val - current).abs() < 0.01 { " selected" } else { "" };
+        html.push_str(&format!("<option value='{val}'{selected}>{label}</option>"));
+    }
+    html.push_str("</select>");
+    html
+}
+
+/// Build the HTML for the spacing settings grid.
+fn build_spacing_grid_html(fs: &FontSettings) -> String {
+    let mut html = String::new();
+
+    html.push_str("<span class='font-selector-label'>Paragraph</span>");
+    html.push_str(&build_select_html("pw-paragraph-spacing", SPACING_OPTIONS, fs.paragraph_spacing.unwrap_or(8.0)));
+
+    html.push_str("<span class='font-selector-label'>Body Indent</span>");
+    html.push_str(&build_select_html("pw-paragraph-indent", INDENT_OPTIONS, fs.paragraph_indent.unwrap_or(0.0)));
+
+    html.push_str("<span class='font-selector-label'>Heading Indent</span>");
+    html.push_str(&build_select_html("pw-heading-indent", INDENT_OPTIONS, fs.heading_indent.unwrap_or(0.0)));
+
+    html
+}
+
 /// Update the font preview box styles.
 fn update_preview(fs: &FontSettings) {
     let document = match web_sys::window().and_then(|w| w.document()) {
@@ -459,14 +518,18 @@ fn update_preview(fs: &FontSettings) {
         let body = fs.body.as_deref().unwrap_or("Playwrite DE Grund");
         let quote = fs.quote.as_deref().unwrap_or("inherit");
         let code = fs.code.as_deref().unwrap_or("monospace");
+        let p_spacing = fs.paragraph_spacing.unwrap_or(8.0);
+        let p_indent = fs.paragraph_indent.unwrap_or(0.0);
+        let h_indent = fs.heading_indent.unwrap_or(0.0);
 
         el.set_inner_html(&format!(
-            "<h3 style=\"font-family: '{}', cursive\">Chapter Title</h3>\
-             <h4 style=\"font-family: '{}', cursive\">Scene Heading</h4>\
-             <p class='preview-body' style=\"font-family: '{}', serif\">The quick brown fox jumps over the lazy dog. She stared out the window, watching the rain trace paths down the glass.</p>\
+            "<h3 style=\"font-family: '{}', cursive; text-indent: {}px\">Chapter Title</h3>\
+             <h4 style=\"font-family: '{}', cursive; text-indent: {}px\">Scene Heading</h4>\
+             <p class='preview-body' style=\"font-family: '{}', serif; margin-bottom: {}px; text-indent: {}px\">The quick brown fox jumps over the lazy dog. She stared out the window, watching the rain trace paths down the glass.</p>\
+             <p class='preview-body' style=\"font-family: '{}', serif; margin-bottom: {}px; text-indent: {}px\">The next morning, she found the letter on the doorstep, its edges curled and damp from the night air.</p>\
              <blockquote style=\"font-family: '{}', serif\">\u{201c}All that glitters is not gold.\u{201d}</blockquote>\
              <p><code style=\"font-family: '{}', monospace\">const story = new Adventure();</code></p>",
-            h1, h2, body, quote, code
+            h1, h_indent, h2, h_indent, body, p_spacing, p_indent, body, p_spacing, p_indent, quote, code
         ));
     }
 }
@@ -822,7 +885,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
             let fs = font_settings.get();
             if let Ok(Some(grid)) = document.query_selector("#font-selector-grid") {
-                grid.set_inner_html(&build_picker_grid_html(&fs));
+                grid.set_inner_html(&build_font_grid_html(&fs));
+            }
+            if let Ok(Some(grid)) = document.query_selector("#spacing-selector-grid") {
+                grid.set_inner_html(&build_spacing_grid_html(&fs));
             }
 
             update_preview(&fs);
@@ -1054,6 +1120,95 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 blur_handler.forget();
             }
 
+            // ── Paragraph spacing/indent select handlers ──
+            let save_typography = {
+                let bid = bid_for_save.clone();
+                move |fs: FontSettings| {
+                    fonts::load_book_fonts(&fs);
+                    font_settings.set(fs.clone());
+                    store.current_book.update(|book| {
+                        if let Some(b) = book {
+                            b.font_settings = Some(fs.clone());
+                        }
+                    });
+                    let prev = font_save_timer_id.get();
+                    if prev != 0 {
+                        if let Some(w) = web_sys::window() {
+                            w.clear_timeout_with_handle(prev);
+                        }
+                    }
+                    let bid = bid.clone();
+                    let save_closure = wasm_bindgen::closure::Closure::once(move || {
+                        wasm_bindgen_futures::spawn_local(async move {
+                            let req = UpdateBookRequest {
+                                title: None,
+                                description: None,
+                                font_settings: Some(fs),
+                            };
+                            api::put::<_, serde_json::Value>(
+                                &format!("/api/books/{}", bid),
+                                &req,
+                            ).await.ok();
+                        });
+                    });
+                    let id = web_sys::window()
+                        .unwrap()
+                        .set_timeout_with_callback_and_timeout_and_arguments_0(
+                            save_closure.as_ref().unchecked_ref(),
+                            500,
+                        )
+                        .unwrap_or(0);
+                    save_closure.forget();
+                    font_save_timer_id.set(id);
+                    update_preview(&font_settings.get());
+                }
+            };
+
+            if let Ok(Some(el)) = document.query_selector("#pw-paragraph-spacing") {
+                let save = save_typography.clone();
+                let doc = document.clone();
+                let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+                    let el: web_sys::HtmlSelectElement = doc.query_selector("#pw-paragraph-spacing")
+                        .ok().flatten().unwrap().dyn_into().unwrap();
+                    let val: f64 = el.value().parse().unwrap_or(8.0);
+                    let mut fs = font_settings.get();
+                    fs.paragraph_spacing = if (val - 8.0).abs() < 0.01 { None } else { Some(val) };
+                    save(fs);
+                }) as Box<dyn FnMut(_)>);
+                el.add_event_listener_with_callback("change", handler.as_ref().unchecked_ref()).ok();
+                handler.forget();
+            }
+
+            if let Ok(Some(el)) = document.query_selector("#pw-paragraph-indent") {
+                let save = save_typography.clone();
+                let doc = document.clone();
+                let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+                    let el: web_sys::HtmlSelectElement = doc.query_selector("#pw-paragraph-indent")
+                        .ok().flatten().unwrap().dyn_into().unwrap();
+                    let val: f64 = el.value().parse().unwrap_or(0.0);
+                    let mut fs = font_settings.get();
+                    fs.paragraph_indent = if val.abs() < 0.01 { None } else { Some(val) };
+                    save(fs);
+                }) as Box<dyn FnMut(_)>);
+                el.add_event_listener_with_callback("change", handler.as_ref().unchecked_ref()).ok();
+                handler.forget();
+            }
+
+            if let Ok(Some(el)) = document.query_selector("#pw-heading-indent") {
+                let save = save_typography.clone();
+                let doc = document.clone();
+                let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+                    let el: web_sys::HtmlSelectElement = doc.query_selector("#pw-heading-indent")
+                        .ok().flatten().unwrap().dyn_into().unwrap();
+                    let val: f64 = el.value().parse().unwrap_or(0.0);
+                    let mut fs = font_settings.get();
+                    fs.heading_indent = if val.abs() < 0.01 { None } else { Some(val) };
+                    save(fs);
+                }) as Box<dyn FnMut(_)>);
+                el.add_event_listener_with_callback("change", handler.as_ref().unchecked_ref()).ok();
+                handler.forget();
+            }
+
             listeners_attached.set(true);
         });
         web_sys::window()
@@ -1110,6 +1265,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     let body = fs.body.as_deref().unwrap_or("Playwrite DE Grund");
                     let quote = fs.quote.as_deref().unwrap_or("inherit");
                     let code = fs.code.as_deref().unwrap_or("monospace");
+                    let p_spacing = fs.paragraph_spacing.unwrap_or(8.0);
+                    let p_indent = fs.paragraph_indent.unwrap_or(0.0);
+                    let h_indent = fs.heading_indent.unwrap_or(0.0);
 
                     format!(
                         ".book-workspace {{ --rinch-font-family: '{body}', serif; font-family: '{body}', serif; }}
@@ -1123,10 +1281,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
                          .book-workspace .sidebar-chapter-item,
                          .book-workspace .chapter-item {{ font-family: '{body}', serif; }}
                          .editor-content {{ font-family: '{body}', serif; }}
-                         .editor-content h1 {{ font-family: '{h1}', cursive; }}
-                         .editor-content h2 {{ font-family: '{h2}', cursive; }}
+                         .editor-content p {{ margin: 0 0 {p_spacing}px 0; text-indent: {p_indent}px; }}
+                         .editor-content h1 {{ font-family: '{h1}', cursive; text-indent: {h_indent}px; }}
+                         .editor-content h2 {{ font-family: '{h2}', cursive; text-indent: {h_indent}px; }}
                          .editor-content h3, .editor-content h4,
-                         .editor-content h5, .editor-content h6 {{ font-family: '{h3}', cursive; }}
+                         .editor-content h5, .editor-content h6 {{ font-family: '{h3}', cursive; text-indent: {h_indent}px; }}
                          .editor-content blockquote {{ font-family: '{quote}', serif; }}
                          .editor-content code, .editor-content pre {{ font-family: '{code}', monospace; }}"
                     )
@@ -1373,8 +1532,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             Title { order: 3, "Typography" }
                             Space { h: "md" }
                             div { class: "typography-section",
+                                Text { weight: "600", size: "sm", "Fonts" }
+                                Space { h: "xs" }
                                 div { class: "font-selector-grid", id: "font-selector-grid" }
-                                Space { h: "md" }
+                                Space { h: "lg" }
+                                Text { weight: "600", size: "sm", "Spacing" }
+                                Space { h: "xs" }
+                                div { class: "font-selector-grid", id: "spacing-selector-grid" }
+                                Space { h: "lg" }
                                 Text { size: "sm", color: "dimmed", "Preview:" }
                                 div { class: "font-preview-box", id: "font-preview" }
                             }
@@ -1394,6 +1559,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     placeholder: "Enter chapter title",
                     value_fn: move || new_chapter_title.get(),
                     oninput: move |v: String| new_chapter_title.set(v),
+                    onsubmit: add_chapter,
                 }
                 Space { h: "lg" }
                 Group {

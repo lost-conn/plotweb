@@ -58,7 +58,9 @@ pub fn register_page() -> NodeHandle {
         store.current_route.set(Route::Login);
     };
 
-    rsx! {
+    let submit_id = __scope.register_handler(on_submit);
+
+    let page = rsx! {
         div {
             class: "auth-page",
             Paper {
@@ -124,5 +126,7 @@ pub fn register_page() -> NodeHandle {
                 }
             }
         }
-    }
+    };
+    page.set_attribute("data-onsubmit", &submit_id.0.to_string());
+    page
 }
