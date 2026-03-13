@@ -3,6 +3,7 @@ use rinch_core::use_store;
 use plotweb_common::LoginRequest;
 
 use crate::api;
+use crate::router;
 use crate::store::{AppStore, Route};
 
 #[component]
@@ -35,7 +36,7 @@ pub fn login_page() -> NodeHandle {
             match api::post::<_, plotweb_common::User>("/api/auth/login", &req).await {
                 Ok(user) => {
                     store.current_user.set(Some(user));
-                    store.current_route.set(Route::Dashboard);
+                    router::navigate(Route::Dashboard);
                 }
                 Err(e) => {
                     error.set(Some(e.message));
@@ -46,7 +47,7 @@ pub fn login_page() -> NodeHandle {
     };
 
     let go_register = move || {
-        store.current_route.set(Route::Register);
+        router::navigate(Route::Register);
     };
 
     let submit_id = __scope.register_handler(on_submit);

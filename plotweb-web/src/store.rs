@@ -38,3 +38,34 @@ pub enum Route {
     Book(String),
     ThemePreview,
 }
+
+impl Route {
+    pub fn to_path(&self) -> String {
+        match self {
+            Route::Dashboard => "/".into(),
+            Route::Login => "/login".into(),
+            Route::Register => "/register".into(),
+            Route::Book(id) => format!("/book/{}", id),
+            Route::ThemePreview => "/theme".into(),
+        }
+    }
+
+    pub fn from_path(path: &str) -> Self {
+        let path = path.trim_end_matches('/');
+        match path {
+            "" | "/" => Route::Dashboard,
+            "/login" => Route::Login,
+            "/register" => Route::Register,
+            "/theme" => Route::ThemePreview,
+            _ if path.starts_with("/book/") => {
+                let id = &path[6..];
+                if id.is_empty() {
+                    Route::Dashboard
+                } else {
+                    Route::Book(id.to_string())
+                }
+            }
+            _ => Route::Dashboard,
+        }
+    }
+}

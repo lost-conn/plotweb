@@ -7,6 +7,7 @@ use plotweb_common::{Book, Chapter, CreateChapterRequest, FontSettings, ReorderC
 use crate::api;
 use crate::fonts;
 use crate::pages::editor_utils;
+use crate::router;
 use crate::store::{AppStore, Route};
 
 /// What the main pane shows.
@@ -855,14 +856,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let go_dashboard = move || {
-        store.current_route.set(Route::Dashboard);
+        router::navigate(Route::Dashboard);
     };
 
     let logout = move || {
         wasm_bindgen_futures::spawn_local(async move {
             api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({})).await.ok();
             store.current_user.set(None);
-            store.current_route.set(Route::Login);
+            router::navigate(Route::Login);
         });
     };
 

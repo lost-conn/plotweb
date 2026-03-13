@@ -4,6 +4,7 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{Book, CreateBookRequest};
 
 use crate::api;
+use crate::router;
 use crate::store::{AppStore, Route};
 
 const DASHBOARD_CSS: &str = r#"
@@ -165,7 +166,7 @@ pub fn dashboard_page() -> NodeHandle {
         wasm_bindgen_futures::spawn_local(async move {
             api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({})).await.ok();
             store.current_user.set(None);
-            store.current_route.set(Route::Login);
+            router::navigate(Route::Login);
         });
     };
 
@@ -199,7 +200,7 @@ pub fn dashboard_page() -> NodeHandle {
 
     let open_book = move |id: String| {
         move || {
-            store.current_route.set(Route::Book(id.clone()));
+            router::navigate(Route::Book(id.clone()));
         }
     };
 

@@ -25,6 +25,7 @@ web-sys = { version = "0.3", features = [
     "console",
     "Headers", "Request", "RequestInit", "RequestMode", "RequestCredentials",
     "Response",
+    "History", "PopStateEvent",
 ] }
 
 serde = { version = "1", features = ["derive"] }

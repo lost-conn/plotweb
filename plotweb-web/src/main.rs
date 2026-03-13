@@ -293,29 +293,57 @@ fn app() -> NodeHandle {
     let store = AppStore::new();
     rinch_core::create_store(store);
 
-    // Check URL hash for #theme to allow unauthenticated theme preview
-    let is_theme_preview = web_sys::window()
-        .and_then(|w| w.location().hash().ok())
-        .is_some_and(|h| h == "#theme");
+    // Parse the current URL to determine initial route
+    let initial_route = web_sys::window()
+        .and_then(|w| w.location().pathname().ok())
+        .map(|p| Route::from_path(&p))
+        .unwrap_or(Route::Dashboard);
 
-    if is_theme_preview {
+    if initial_route == Route::ThemePreview {
         store.current_route.set(Route::ThemePreview);
+        router::replace_state(&Route::ThemePreview);
         store.loading.set(false);
     } else {
+        let requested = initial_route;
         // Check session on start
         wasm_bindgen_futures::spawn_local(async move {
             match api::get::<plotweb_common::User>("/api/auth/me").await {
                 Ok(user) => {
                     store.current_user.set(Some(user));
-                    store.current_route.set(Route::Dashboard);
+                    let route = match &requested {
+                        Route::Login | Route::Register => Route::Dashboard,
+                        other => other.clone(),
+                    };
+                    router::replace_state(&route);
+                    store.current_route.set(route);
                 }
                 Err(_) => {
-                    store.current_route.set(Route::Login);
+                    let route = match &requested {
+                        Route::Register => Route::Register,
+                        _ => Route::Login,
+                    };
+                    router::replace_state(&route);
+                    store.current_route.set(route);
                 }
             }
             store.loading.set(false);
         });
     }
+
+    // Listen for back/forward navigation
+    let popstate_closure = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+        if let Some(window) = web_sys::window() {
+            if let Ok(pathname) = window.location().pathname() {
+                let route = Route::from_path(&pathname);
+                store.current_route.set(route);
+            }
+        }
+    }) as Box<dyn FnMut(_)>);
+    web_sys::window()
+        .unwrap()
+        .add_event_listener_with_callback("popstate", popstate_closure.as_ref().unchecked_ref())
+        .unwrap();
+    popstate_closure.forget();
 
     rsx! {
         ThemeProvider {
