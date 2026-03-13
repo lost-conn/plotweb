@@ -1,28 +1,24 @@
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use rinch::prelude::*;
 use rinch_core::use_store;
-use plotweb_common::{Book, Chapter, CreateChapterRequest, FontSettings, ReorderChaptersRequest, UpdateBookRequest};
+use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use plotweb_common::{Book, Chapter, CreateChapterRequest, FontSettings, ReorderChaptersRequest, UpdateBookRequest, UpdateChapterRequest};
 
 use crate::api;
 use crate::fonts;
+use crate::pages::editor_utils;
 use crate::store::{AppStore, Route};
+
+/// What the main pane shows.
+#[derive(Clone, PartialEq)]
+enum BookPane {
+    Chapters,
+    Editor(String),
+    Typography,
+}
 
 /// CSS for the typography settings section.
 const TYPOGRAPHY_CSS: &str = r#"
-.typography-toggle {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    cursor: pointer;
-    padding: 8px 0;
-    color: var(--rinch-color-dimmed);
-    font-size: 14px;
-    user-select: none;
-    transition: color 0.15s;
-}
-.typography-toggle:hover { color: var(--rinch-color-text); }
-
 .typography-section {
     padding: 16px 0;
 }
@@ -168,7 +164,249 @@ const TYPOGRAPHY_CSS: &str = r#"
 }
 "#;
 
-/// Slot definitions: (data attribute name, label, default placeholder, category filter)
+/// CSS for the book workspace layout.
+const BOOK_WORKSPACE_CSS: &str = r#"
+.book-workspace {
+    display: flex;
+    height: 100vh;
+}
+
+.book-sidebar {
+    width: 250px;
+    min-width: 250px;
+    padding: var(--rinch-spacing-md) var(--rinch-spacing-md) var(--rinch-spacing-sm);
+    border-right: 1px solid var(--rinch-color-border);
+    background: var(--pw-color-deep);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.book-sidebar-title {
+    padding: 4px var(--rinch-spacing-xs);
+    margin-bottom: var(--rinch-spacing-xs);
+    font-weight: 700;
+    font-size: 16px;
+    color: var(--rinch-color-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: 'Macondo Swash Caps', cursive;
+}
+
+.book-sidebar-nav {
+    flex: 1;
+    padding-top: var(--rinch-spacing-xs);
+}
+
+.sidebar-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px var(--rinch-spacing-xs);
+    margin-top: var(--rinch-spacing-sm);
+    cursor: pointer;
+    color: var(--rinch-color-dimmed);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    transition: color 0.15s;
+}
+
+.sidebar-section-header:hover {
+    color: var(--rinch-color-text);
+}
+
+.sidebar-section-header.active {
+    color: var(--rinch-color-teal-4);
+}
+
+.sidebar-chapter-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 4px 0;
+}
+
+.sidebar-chapter-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px 6px 16px;
+    border-radius: var(--rinch-radius-sm);
+    cursor: pointer;
+    font-size: 14px;
+    color: var(--rinch-color-text);
+    transition: background 0.12s ease;
+}
+
+.sidebar-chapter-item:hover {
+    background: var(--rinch-color-border);
+}
+
+.sidebar-chapter-item.active {
+    background: var(--rinch-color-teal-9);
+    color: var(--rinch-color-teal-3);
+}
+
+.sidebar-chapter-actions {
+    display: flex;
+    gap: 1px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.sidebar-chapter-item:hover .sidebar-chapter-actions {
+    opacity: 1;
+}
+
+.sidebar-chapter-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.book-sidebar-footer {
+    padding: var(--rinch-spacing-sm) var(--rinch-spacing-xs);
+    margin-top: var(--rinch-spacing-sm);
+    border-top: 1px solid var(--rinch-color-border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.book-sidebar-footer-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.book-main-pane {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--rinch-color-body);
+}
+
+.book-main-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 40px 48px;
+}
+
+/* ── Chapters pane ──────────────────────────────────── */
+
+.chapters-pane {
+    max-width: 720px;
+    margin: 0 auto;
+}
+
+.chapters-pane-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--rinch-spacing-md);
+}
+
+.chapter-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.chapter-item {
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+    border: 1px solid transparent;
+    background: var(--rinch-color-surface);
+}
+
+.chapter-item:hover {
+    background: var(--rinch-color-border);
+    border-color: var(--rinch-color-border);
+}
+
+.chapter-item-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.chapter-item-left {
+    display: flex;
+    align-items: center;
+    gap: var(--rinch-spacing-sm);
+    flex: 1;
+    cursor: pointer;
+    padding: 2px 0;
+}
+
+.chapter-item-actions {
+    display: flex;
+    gap: 2px;
+    opacity: 0.4;
+    transition: opacity 0.15s ease;
+}
+
+.chapter-item:hover .chapter-item-actions {
+    opacity: 1;
+}
+
+/* ── Mobile hamburger bar ──────────────────────────── */
+
+.mobile-topbar {
+    display: none;
+    align-items: center;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--rinch-color-border);
+    background: var(--pw-color-deep);
+    flex-shrink: 0;
+}
+
+.sidebar-backdrop {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .book-sidebar {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        z-index: 200;
+        width: 280px;
+        min-width: 280px;
+    }
+    .book-sidebar.open {
+        display: flex;
+    }
+    .sidebar-backdrop {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 199;
+    }
+    .sidebar-backdrop.open {
+        display: block;
+    }
+    .mobile-topbar {
+        display: flex;
+    }
+    .book-main-scroll {
+        padding: 24px 16px;
+    }
+}
+"#;
+
+/// Slot definitions for font pickers
 const SLOTS: &[(&str, &str, &str, &str)] = &[
     ("h1", "Heading 1", "Macondo Swash Caps", ""),
     ("h2", "Heading 2", "Macondo Swash Caps", ""),
@@ -192,11 +430,7 @@ fn build_picker_grid_html(fs: &FontSettings) -> String {
             _ => None,
         };
         let display_value = current.unwrap_or("");
-        let placeholder = if default == "inherit" || default == "monospace" {
-            format!("Search fonts... (default: {})", default)
-        } else {
-            format!("Search fonts... (default: {})", default)
-        };
+        let placeholder = format!("Search fonts... (default: {})", default);
         html.push_str(&format!(
             "<span class='font-selector-label'>{label}</span>\
              <div class='font-picker' data-font-slot='{slot}'>\
@@ -212,16 +446,187 @@ fn build_picker_grid_html(fs: &FontSettings) -> String {
     html
 }
 
+/// Update the font preview box styles.
+fn update_preview(fs: &FontSettings) {
+    let document = match web_sys::window().and_then(|w| w.document()) {
+        Some(d) => d,
+        None => return,
+    };
+
+    if let Ok(Some(el)) = document.query_selector("#font-preview") {
+        let h1 = fs.h1.as_deref().unwrap_or("Macondo Swash Caps");
+        let h2 = fs.h2.as_deref().unwrap_or("Macondo Swash Caps");
+        let body = fs.body.as_deref().unwrap_or("Andada Pro");
+        let quote = fs.quote.as_deref().unwrap_or("inherit");
+        let code = fs.code.as_deref().unwrap_or("monospace");
+
+        el.set_inner_html(&format!(
+            "<h3 style=\"font-family: '{}', cursive\">Chapter Title</h3>\
+             <h4 style=\"font-family: '{}', cursive\">Scene Heading</h4>\
+             <p class='preview-body' style=\"font-family: '{}', serif\">The quick brown fox jumps over the lazy dog. She stared out the window, watching the rain trace paths down the glass.</p>\
+             <blockquote style=\"font-family: '{}', serif\">\u{201c}All that glitters is not gold.\u{201d}</blockquote>\
+             <p><code style=\"font-family: '{}', monospace\">const story = new Adventure();</code></p>",
+            h1, h2, body, quote, code
+        ));
+    }
+}
+
+/// Render a single sidebar chapter item. Extracted to avoid rsx for-loop move issues.
+fn sidebar_chapter_item<O, M, FO, FM>(
+    __scope: &mut RenderScope,
+    id: String,
+    title: String,
+    active_pane: Signal<BookPane>,
+    open_chapter: O,
+    move_chapter: M,
+) -> NodeHandle
+where
+    O: Fn(String) -> FO + 'static + Copy,
+    M: Fn(String, i32) -> FM + 'static + Copy,
+    FO: Fn() + 'static,
+    FM: Fn() + 'static,
+{
+    let cid = id.clone();
+    let cid2 = id.clone();
+    let cid3 = id.clone();
+    rsx! {
+        div {
+            key: id.clone(),
+            class: {
+                let cid = id.clone();
+                move || {
+                    if active_pane.get() == BookPane::Editor(cid.clone()) {
+                        "sidebar-chapter-item active"
+                    } else {
+                        "sidebar-chapter-item"
+                    }
+                }
+            },
+
+            div {
+                class: "sidebar-chapter-name",
+                onclick: open_chapter(cid),
+                {title}
+            }
+            div { class: "sidebar-chapter-actions",
+                ActionIcon {
+                    variant: "subtle",
+                    size: "xs",
+                    onclick: move_chapter(cid2, -1),
+                    {render_tabler_icon(__scope, TablerIcon::ChevronUp, TablerIconStyle::Outline)}
+                }
+                ActionIcon {
+                    variant: "subtle",
+                    size: "xs",
+                    onclick: move_chapter(cid3, 1),
+                    {render_tabler_icon(__scope, TablerIcon::ChevronDown, TablerIconStyle::Outline)}
+                }
+            }
+        }
+    }
+}
+
+/// Switch to editing a chapter. Saves current chapter if editing, clears timers, loads new chapter.
+/// All parameters are Copy or Clone so this can be called from rsx! closures without ownership issues.
+fn do_switch_chapter(
+    active_pane: Signal<BookPane>,
+    auto_save_timer_id: Signal<i32>,
+    save_status: Signal<&'static str>,
+    editor_loaded: Signal<bool>,
+    chapter_title: Signal<String>,
+    store: AppStore,
+    bid: &str,
+    new_chapter_id: &str,
+) {
+    // Clear any pending auto-save timer
+    let prev = auto_save_timer_id.get();
+    if prev != 0 {
+        if let Some(w) = web_sys::window() {
+            w.clear_timeout_with_handle(prev);
+        }
+        auto_save_timer_id.set(0);
+    }
+
+    // Save current chapter if we're editing
+    if let BookPane::Editor(ref current_id) = active_pane.get() {
+        let current_id = current_id.clone();
+        let bid = bid.to_string();
+        save_status.set("saving");
+        wasm_bindgen_futures::spawn_local(async move {
+            let content = match web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.query_selector("#editor-main").ok().flatten())
+            {
+                Some(el) => el.inner_html(),
+                None => {
+                    save_status.set("saved");
+                    return;
+                }
+            };
+            let markdown = editor_utils::html_to_markdown(&content);
+            let req = UpdateChapterRequest { title: None, content: Some(markdown) };
+            if api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/chapters/{}", bid, current_id),
+                &req,
+            ).await.is_ok() {
+                save_status.set("saved");
+            }
+        });
+    }
+
+    // Switch pane
+    let new_cid = new_chapter_id.to_string();
+    active_pane.set(BookPane::Editor(new_cid.clone()));
+    save_status.set("saved");
+    store.sidebar_open.set(false);
+
+    // Load new chapter
+    editor_loaded.set(false);
+    let bid = bid.to_string();
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Ok(chapter) = api::get::<Chapter>(
+            &format!("/api/books/{}/chapters/{}", bid, new_cid),
+        ).await {
+            chapter_title.set(chapter.title.clone());
+            editor_loaded.set(true);
+
+            let content = chapter.content.clone();
+            let window = web_sys::window().unwrap();
+            let closure = wasm_bindgen::closure::Closure::once(move || {
+                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                    if let Ok(Some(el)) = doc.query_selector("#editor-main") {
+                        if content.is_empty() {
+                            el.set_inner_html("<p></p>");
+                        } else {
+                            el.set_inner_html(&editor_utils::markdown_to_html(&content));
+                        }
+                    }
+                }
+            });
+            window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                100,
+            ).ok();
+            closure.forget();
+        }
+    });
+}
+
 #[component]
 pub fn book_page(book_id: String) -> NodeHandle {
     let store = use_store::<AppStore>();
     let show_chapter_modal = Signal::new(false);
     let new_chapter_title = Signal::new(String::new());
-    let book_id_for_fetch = book_id.clone();
 
-    let typography_open = Signal::new(false);
+    let active_pane: Signal<BookPane> = Signal::new(BookPane::Chapters);
+    let chapter_title = Signal::new(String::new());
+    let save_status = Signal::new("saved");
+    let editor_loaded = Signal::new(false);
+    let auto_save_timer_id = Signal::new(0_i32);
+
+    let bid_signal = Signal::new(book_id.clone());
     let font_settings = Signal::new(FontSettings::default());
-    let save_timer_id = Signal::new(0_i32);
+    let font_save_timer_id = Signal::new(0_i32);
     let listeners_attached = Signal::new(false);
 
     // Trigger font catalog fetch
@@ -231,7 +636,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let bid = book_id.clone();
     wasm_bindgen_futures::spawn_local(async move {
         if let Ok(book) = api::get::<Book>(&format!("/api/books/{}", bid)).await {
-            font_settings.set(book.font_settings.clone().unwrap_or_default());
+            let fs = book.font_settings.clone().unwrap_or_default();
+            fonts::load_book_fonts(&fs);
+            font_settings.set(fs);
             store.current_book.set(Some(book));
         }
         if let Ok(chapters) = api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid)).await {
@@ -239,37 +646,114 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }
     });
 
-    let open_editor = move |chapter_id: String| {
-        let bid = book_id.clone();
-        move || {
-            store.current_route.set(Route::Editor(bid.clone(), chapter_id.clone()));
-        }
+    // ── Save helper for the editor ──────────────────────────────
+    let save_content = move |chapter_id_to_save: String| {
+        let bid = bid_signal.get();
+        save_status.set("saving");
+        wasm_bindgen_futures::spawn_local(async move {
+            let content = match web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.query_selector("#editor-main").ok().flatten())
+            {
+                Some(el) => el.inner_html(),
+                None => {
+                    save_status.set("saved");
+                    return;
+                }
+            };
+
+            let markdown = editor_utils::html_to_markdown(&content);
+            let req = UpdateChapterRequest {
+                title: None,
+                content: Some(markdown),
+            };
+            if api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
+                &req,
+            ).await.is_ok() {
+                save_status.set("saved");
+            } else {
+                save_status.set("unsaved");
+            }
+        });
     };
 
-    let add_chapter = {
-        let bid = book_id_for_fetch.clone();
-        move || {
-            let title = new_chapter_title.get();
-            if title.trim().is_empty() {
+    // Chapter switching is handled by do_switch_chapter() free function
+
+    // ── Set up Ctrl+S and auto-save (once, on mount) ────────────
+    {
+        let save = save_content.clone();
+        let window = web_sys::window().unwrap();
+
+        // Ctrl+S
+        let save_for_key = save.clone();
+        let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+            if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
+                event.prevent_default();
+                if let BookPane::Editor(ref cid) = active_pane.get() {
+                    save_for_key(cid.clone());
+                }
+            }
+        }) as Box<dyn FnMut(_)>);
+        window.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
+        keydown.forget();
+
+        // Auto-save on input with 3s debounce
+        let save_for_input = save;
+        let input_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
+            let dominated_by_editor = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .and_then(|el| el.closest(".editor-content[contenteditable]").ok().flatten())
+                .is_some();
+            if !dominated_by_editor {
                 return;
             }
-            show_chapter_modal.set(false);
-            let bid = bid.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = CreateChapterRequest { title };
-                if let Ok(chapter) = api::post::<_, Chapter>(
-                    &format!("/api/books/{}/chapters", bid),
-                    &req,
-                ).await {
-                    store.chapters.update(|ch| ch.push(chapter));
+
+            save_status.set("unsaved");
+            let prev = auto_save_timer_id.get();
+            if prev != 0 {
+                web_sys::window().unwrap().clear_timeout_with_handle(prev);
+            }
+            let save_fn = save_for_input.clone();
+            let closure = wasm_bindgen::closure::Closure::once(move || {
+                if let BookPane::Editor(ref cid) = active_pane.get() {
+                    save_fn(cid.clone());
                 }
             });
+            let id = web_sys::window().unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    closure.as_ref().unchecked_ref(),
+                    3000,
+                ).unwrap_or(0);
+            closure.forget();
+            auto_save_timer_id.set(id);
+        }) as Box<dyn FnMut(_)>);
+        let doc = window.document().unwrap();
+        doc.add_event_listener_with_callback("input", input_closure.as_ref().unchecked_ref()).ok();
+        input_closure.forget();
+    }
+
+    // ── Chapter actions ─────────────────────────────────────────
+    let add_chapter = move || {
+        let title = new_chapter_title.get();
+        if title.trim().is_empty() {
+            return;
         }
+        show_chapter_modal.set(false);
+        let bid = bid_signal.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            let req = CreateChapterRequest { title };
+            if let Ok(chapter) = api::post::<_, Chapter>(
+                &format!("/api/books/{}/chapters", bid),
+                &req,
+            ).await {
+                store.chapters.update(|ch| ch.push(chapter));
+            }
+        });
     };
 
-    let bid_for_move = book_id_for_fetch.clone();
     let move_chapter = move |chapter_id: String, direction: i32| {
-        let bid = bid_for_move.clone();
         move || {
             store.chapters.update(|chapters| {
                 let pos = chapters.iter().position(|c| c.id == chapter_id);
@@ -281,7 +765,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 }
             });
             let ids: Vec<String> = store.chapters.get().iter().map(|c| c.id.clone()).collect();
-            let bid = bid.clone();
+            let bid = bid_signal.get();
             wasm_bindgen_futures::spawn_local(async move {
                 let req = ReorderChaptersRequest { chapter_ids: ids };
                 api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid), &req).await.ok();
@@ -289,16 +773,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }
     };
 
-    let bid_for_save = book_id_for_fetch.clone();
     let delete_chapter = move |chapter_id: String| {
-        let bid = book_id_for_fetch.clone();
         move || {
             let cid = chapter_id.clone();
-            let bid = bid.clone();
+            let bid = bid_signal.get();
             wasm_bindgen_futures::spawn_local(async move {
                 if api::delete_req::<serde_json::Value>(
                     &format!("/api/books/{}/chapters/{}", bid, cid)
                 ).await.is_ok() {
+                    if active_pane.get() == BookPane::Editor(cid.clone()) {
+                        active_pane.set(BookPane::Chapters);
+                    }
                     store.chapters.update(|ch| ch.retain(|c| c.id != cid));
                 }
             });
@@ -309,25 +794,38 @@ pub fn book_page(book_id: String) -> NodeHandle {
         store.current_route.set(Route::Dashboard);
     };
 
-    // Setup font picker inputs after typography section opens
+    let logout = move || {
+        wasm_bindgen_futures::spawn_local(async move {
+            api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({})).await.ok();
+            store.current_user.set(None);
+            store.current_route.set(Route::Login);
+        });
+    };
+
+    let toggle_dark = move || {
+        store.dark_mode.update(|d| *d = !*d);
+    };
+
+    let toggle_sidebar = move || {
+        store.sidebar_open.update(|o| *o = !*o);
+    };
+
+    // ── Typography font picker setup ────────────────────────────
     let setup_font_pickers = move || {
-        let bid_for_save = bid_for_save.clone();
+        let bid_for_save = bid_signal.get();
         let closure = wasm_bindgen::closure::Closure::once(move || {
             if listeners_attached.get() {
                 return;
             }
             let document = web_sys::window().unwrap().document().unwrap();
 
-            // Populate the picker grid
             let fs = font_settings.get();
             if let Ok(Some(grid)) = document.query_selector("#font-selector-grid") {
                 grid.set_inner_html(&build_picker_grid_html(&fs));
             }
 
-            // Populate preview
             update_preview(&fs);
 
-            // Attach event listeners to each font picker
             for &(slot_name, _, _, cat_filter) in SLOTS {
                 let selector = format!(".font-picker[data-font-slot='{}']", slot_name);
                 let picker_el = match document.query_selector(&selector) {
@@ -349,7 +847,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 let input_ref = input_el.clone();
                 let dropdown_ref = dropdown_el.clone();
 
-                // Helper: apply a font selection
                 let apply_font = {
                     let slot = slot.clone();
                     let bid = bid.clone();
@@ -379,8 +876,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             }
                         });
 
-                        // Debounced save
-                        let prev = save_timer_id.get();
+                        let prev = font_save_timer_id.get();
                         if prev != 0 {
                             if let Some(w) = web_sys::window() {
                                 w.clear_timeout_with_handle(prev);
@@ -408,12 +904,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             )
                             .unwrap_or(0);
                         save_closure.forget();
-                        save_timer_id.set(id);
+                        font_save_timer_id.set(id);
                         update_preview(&font_settings.get());
                     }
                 };
 
-                // Input handler: filter and show dropdown
+                // Input handler
                 let apply_for_input = apply_font.clone();
                 let dropdown_for_input = dropdown_ref.clone();
                 let cat_for_input = cat.clone();
@@ -433,9 +929,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             if !cat_for_input.is_empty() && f.category != cat_for_input {
                                 return false;
                             }
-                            if query.is_empty() {
-                                return true;
-                            }
+                            if query.is_empty() { return true; }
                             f.family.to_lowercase().contains(&query)
                         })
                         .take(50)
@@ -444,7 +938,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     let mut html = String::from(
                         "<div class='font-option-default' data-font-value=''>Reset to default</div>"
                     );
-
                     if filtered.is_empty() {
                         html.push_str("<div class='font-empty'>No fonts found</div>");
                     } else {
@@ -459,11 +952,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             ));
                         }
                     }
-
                     dropdown.set_inner_html(&html);
                     dropdown.class_list().add_1("open").ok();
 
-                    // Attach click handlers to options
                     let options = dropdown.query_selector_all("[data-font-value]").unwrap();
                     for i in 0..options.length() {
                         if let Some(opt) = options.item(i) {
@@ -474,10 +965,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 e.prevent_default();
                                 e.stop_propagation();
                                 let v = value.clone();
-                                // Load the font for preview before applying
-                                if !v.is_empty() {
-                                    fonts::load_single_font(&v);
-                                }
+                                if !v.is_empty() { fonts::load_single_font(&v); }
                                 apply(v);
                             }) as Box<dyn FnMut(_)>);
                             el.add_event_listener_with_callback("mousedown", click_handler.as_ref().unchecked_ref()).ok();
@@ -488,13 +976,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 input_el.add_event_listener_with_callback("input", input_handler.as_ref().unchecked_ref()).ok();
                 input_handler.forget();
 
-                // Focus handler: show dropdown
+                // Focus handler
                 let input_for_focus = input_el.clone();
                 let dropdown_for_focus = dropdown_ref.clone();
                 let cat_for_focus = cat.clone();
                 let apply_for_focus = apply_font.clone();
                 let focus_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                    // Trigger the same filtering as input
                     let query = input_for_focus.value().to_lowercase();
                     let catalog = fonts::font_catalog().get();
                     let dropdown = &dropdown_for_focus;
@@ -510,9 +997,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             if !cat_for_focus.is_empty() && f.category != cat_for_focus {
                                 return false;
                             }
-                            if query.is_empty() {
-                                return true;
-                            }
+                            if query.is_empty() { return true; }
                             f.family.to_lowercase().contains(&query)
                         })
                         .take(50)
@@ -548,9 +1033,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 e.prevent_default();
                                 e.stop_propagation();
                                 let v = value.clone();
-                                if !v.is_empty() {
-                                    fonts::load_single_font(&v);
-                                }
+                                if !v.is_empty() { fonts::load_single_font(&v); }
                                 apply(v);
                             }) as Box<dyn FnMut(_)>);
                             el.add_event_listener_with_callback("mousedown", click_handler.as_ref().unchecked_ref()).ok();
@@ -561,7 +1044,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 input_el.add_event_listener_with_callback("focus", focus_handler.as_ref().unchecked_ref()).ok();
                 focus_handler.forget();
 
-                // Blur handler: close dropdown
+                // Blur handler
                 let dropdown_for_blur = dropdown_ref.clone();
                 let blur_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
                     dropdown_for_blur.class_list().remove_1("open").ok();
@@ -582,134 +1065,300 @@ pub fn book_page(book_id: String) -> NodeHandle {
         closure.forget();
     };
 
-    let toggle_typography = move || {
-        let opening = !typography_open.get();
-        typography_open.set(opening);
-        if opening {
+    // Factory closures capture only Copy types (Signals) so they are Copy themselves.
+    // This lets the rsx macro use them in multiple for-loops without move issues.
+    let open_chapter = move |chapter_id: String| {
+        move || do_switch_chapter(active_pane, auto_save_timer_id, save_status, editor_loaded, chapter_title, store, &bid_signal.get(), &chapter_id)
+    };
+
+    // ── Sidebar click handlers ──────────────────────────────────
+    let open_chapters_pane = move || {
+        active_pane.set(BookPane::Chapters);
+        store.sidebar_open.set(false);
+    };
+
+    let open_typography_pane = {
+        let setup = setup_font_pickers.clone();
+        move || {
+            active_pane.set(BookPane::Typography);
             listeners_attached.set(false);
-            setup_font_pickers();
+            setup();
+            store.sidebar_open.set(false);
         }
+    };
+
+    let go_back_to_chapters = move || {
+        active_pane.set(BookPane::Chapters);
     };
 
     rsx! {
         Fragment {
             style { {TYPOGRAPHY_CSS} }
-            div { class: "book-page",
-                div { class: "book-header",
-                    Group {
+            style { {BOOK_WORKSPACE_CSS} }
+            style { {editor_utils::EDITOR_CSS} }
+            // Editor font styles
+            style {
+                {move || {
+                    let fs = store.current_book.get()
+                        .and_then(|b| b.font_settings.clone())
+                        .unwrap_or_default();
+
+                    let h1 = fs.h1.as_deref().unwrap_or("Macondo Swash Caps");
+                    let h2 = fs.h2.as_deref().unwrap_or("Macondo Swash Caps");
+                    let h3 = fs.h3.as_deref().unwrap_or("Macondo Swash Caps");
+                    let body = fs.body.as_deref().unwrap_or("Andada Pro");
+                    let quote = fs.quote.as_deref().unwrap_or("inherit");
+                    let code = fs.code.as_deref().unwrap_or("monospace");
+
+                    format!(
+                        ".editor-content {{ font-family: '{body}', serif; }}
+                         .editor-content h1 {{ font-family: '{h1}', cursive; }}
+                         .editor-content h2 {{ font-family: '{h2}', cursive; }}
+                         .editor-content h3, .editor-content h4,
+                         .editor-content h5, .editor-content h6 {{ font-family: '{h3}', cursive; }}
+                         .editor-content blockquote {{ font-family: '{quote}', serif; }}
+                         .editor-content code, .editor-content pre {{ font-family: '{code}', monospace; }}"
+                    )
+                }}
+            }
+
+            div { class: "book-workspace",
+                // ── Backdrop for mobile sidebar ──
+                div {
+                    class: {move || if store.sidebar_open.get() { "sidebar-backdrop open" } else { "sidebar-backdrop" }},
+                    onclick: move || store.sidebar_open.set(false),
+                }
+
+                // ── Sidebar ──
+                div {
+                    class: {move || if store.sidebar_open.get() { "book-sidebar open" } else { "book-sidebar" }},
+
+                    // Book title
+                    div { class: "book-sidebar-title",
+                        {move || store.current_book.get().map(|b| b.title.clone()).unwrap_or_default()}
+                    }
+                    Space { h: "sm" }
+
+                    div { class: "book-sidebar-nav",
+                        // Chapters section header
+                        div {
+                            class: {move || if matches!(active_pane.get(), BookPane::Chapters) { "sidebar-section-header active" } else { "sidebar-section-header" }},
+                            div {
+                                onclick: open_chapters_pane,
+                                "Chapters"
+                            }
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "xs",
+                                onclick: move || {
+                                    new_chapter_title.set(String::new());
+                                    show_chapter_modal.set(true);
+                                },
+                                {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
+                            }
+                        }
+
+                        // Chapter list — always visible
+                        div { class: "sidebar-chapter-list",
+                            for chapter in store.chapters.get() {
+                                {sidebar_chapter_item(
+                                    __scope,
+                                    chapter.id.clone(),
+                                    chapter.title.clone(),
+                                    active_pane,
+                                    open_chapter,
+                                    move_chapter,
+                                )}
+                            }
+                        }
+
+                        // Typography section header
+                        div {
+                            class: {move || if matches!(active_pane.get(), BookPane::Typography) { "sidebar-section-header active" } else { "sidebar-section-header" }},
+                            onclick: open_typography_pane,
+                            "Typography"
+                        }
+                    }
+
+                    // Footer
+                    div { class: "book-sidebar-footer",
                         Button {
                             variant: "subtle",
+                            size: "xs",
                             onclick: go_dashboard,
-                            "Back to Books"
+                            "\u{2190} Dashboard"
+                        }
+                        div { class: "book-sidebar-footer-row",
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "sm",
+                                onclick: toggle_dark,
+                                {render_tabler_icon(
+                                    __scope,
+                                    if store.dark_mode.get() { TablerIcon::Sun } else { TablerIcon::Moon },
+                                    TablerIconStyle::Outline,
+                                )}
+                            }
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "sm",
+                                onclick: logout,
+                                {render_tabler_icon(__scope, TablerIcon::Logout, TablerIconStyle::Outline)}
+                            }
                         }
                     }
-                    Space { h: "md" }
-                    if store.current_book.get().is_some() {
-                        Title { order: 2, {store.current_book.get().unwrap().title.clone()} }
-                        if !store.current_book.get().unwrap().description.is_empty() {
-                            Text { color: "dimmed", {store.current_book.get().unwrap().description.clone()} }
+                }
+
+                // ── Main Pane ──
+                div { class: "book-main-pane",
+                    // Mobile hamburger bar
+                    div { class: "mobile-topbar",
+                        ActionIcon {
+                            variant: "subtle",
+                            onclick: toggle_sidebar,
+                            {render_tabler_icon(__scope, TablerIcon::Menu2, TablerIconStyle::Outline)}
                         }
                     }
-                }
 
-                Space { h: "md" }
+                    // Chapters pane (CSS toggle, always in DOM)
+                    div {
+                        class: "book-main-scroll",
+                        style: {move || if matches!(active_pane.get(), BookPane::Chapters) { "" } else { "display:none;" }},
 
-                // Typography section
-                div {
-                    class: "typography-toggle",
-                    onclick: toggle_typography,
-                    {move || if typography_open.get() { "\u{25be} Typography" } else { "\u{25b8} Typography" }}
-                }
+                        div { class: "chapters-pane",
+                            div { class: "chapters-pane-header",
+                                Title { order: 3, "Chapters" }
+                                Button {
+                                    size: "sm",
+                                    onclick: move || {
+                                        new_chapter_title.set(String::new());
+                                        show_chapter_modal.set(true);
+                                    },
+                                    "Add Chapter"
+                                }
+                            }
 
-                if typography_open.get() {
-                    div { class: "typography-section",
-                        div { class: "font-selector-grid", id: "font-selector-grid" }
-                        Space { h: "md" }
-                        Text { size: "sm", color: "dimmed", "Preview:" }
-                        div { class: "font-preview-box", id: "font-preview" }
+                            if store.chapters.get().is_empty() {
+                                Center {
+                                    style: "padding: 40px 0;",
+                                    Text { color: "dimmed", "No chapters yet. Add one to start writing!" }
+                                }
+                            }
+
+                            div { class: "chapter-list",
+                                for (i, chapter) in store.chapters.get().into_iter().enumerate() {
+                                    Paper {
+                                        key: chapter.id.clone(),
+                                        shadow: "xs",
+                                        p: "md",
+                                        radius: "sm",
+                                        class: "chapter-item",
+
+                                        div {
+                                            class: "chapter-item-content",
+                                            div {
+                                                class: "chapter-item-left",
+                                                onclick: open_chapter(chapter.id.clone()),
+
+                                                Badge {
+                                                    variant: "light",
+                                                    size: "sm",
+                                                    {format!("{}", i + 1)}
+                                                }
+                                                Text { weight: "500", {chapter.title.clone()} }
+                                            }
+                                            div {
+                                                class: "chapter-item-actions",
+                                                ActionIcon {
+                                                    variant: "subtle",
+                                                    size: "sm",
+                                                    disabled: i == 0,
+                                                    onclick: move_chapter(chapter.id.clone(), -1),
+                                                    {render_tabler_icon(
+                                                        __scope,
+                                                        TablerIcon::ChevronUp,
+                                                        TablerIconStyle::Outline,
+                                                    )}
+                                                }
+                                                ActionIcon {
+                                                    variant: "subtle",
+                                                    size: "sm",
+                                                    disabled: i == store.chapters.get().len() - 1,
+                                                    onclick: move_chapter(chapter.id.clone(), 1),
+                                                    {render_tabler_icon(
+                                                        __scope,
+                                                        TablerIcon::ChevronDown,
+                                                        TablerIconStyle::Outline,
+                                                    )}
+                                                }
+                                                ActionIcon {
+                                                    variant: "subtle",
+                                                    color: "red",
+                                                    size: "sm",
+                                                    onclick: delete_chapter(chapter.id.clone()),
+                                                    {render_tabler_icon(
+                                                        __scope,
+                                                        TablerIcon::Trash,
+                                                        TablerIconStyle::Outline,
+                                                    )}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
-                }
 
-                Space { h: "lg" }
+                    // Editor pane (CSS toggle, always in DOM — preserves undo history)
+                    div {
+                        class: "editor-layout",
+                        style: {move || if matches!(active_pane.get(), BookPane::Editor(_)) { "" } else { "display:none;" }},
 
-                div { class: "chapters-header",
-                    Title { order: 4, "Chapters" }
-                    Button {
-                        size: "sm",
-                        onclick: move || {
-                            new_chapter_title.set(String::new());
-                            show_chapter_modal.set(true);
-                        },
-                        "Add Chapter"
-                    }
-                }
-                Space { h: "md" }
-
-                if store.chapters.get().is_empty() {
-                    Center {
-                        style: "padding: 40px 0;",
-                        Text { color: "dimmed", "No chapters yet. Add one to start writing!" }
-                    }
-                }
-
-                div { class: "chapter-list",
-                    for (i, chapter) in store.chapters.get().into_iter().enumerate() {
-                        Paper {
-                            key: chapter.id.clone(),
-                            shadow: "xs",
-                            p: "md",
-                            radius: "sm",
-                            class: "chapter-item",
-
+                        div { class: "editor-topbar",
+                            div { class: "editor-topbar-left",
+                                ActionIcon {
+                                    variant: "subtle",
+                                    onclick: go_back_to_chapters,
+                                    {render_tabler_icon(__scope, TablerIcon::ArrowLeft, TablerIconStyle::Outline)}
+                                }
+                                Text { weight: "600", {|| chapter_title.get()} }
+                            }
                             div {
-                                class: "chapter-item-content",
-                                div {
-                                    class: "chapter-item-left",
-                                    onclick: open_editor(chapter.id.clone()),
+                                class: {|| format!("save-indicator {}", save_status.get())},
+                                {|| match save_status.get() {
+                                    "saving" => "Saving...".to_string(),
+                                    "saved" => "Saved".to_string(),
+                                    _ => "Unsaved".to_string(),
+                                }}
+                            }
+                        }
 
-                                    Badge {
-                                        variant: "light",
-                                        size: "sm",
-                                        {format!("{}", i + 1)}
-                                    }
-                                    Text { weight: "500", {chapter.title.clone()} }
-                                }
-                                div {
-                                    class: "chapter-item-actions",
-                                    ActionIcon {
-                                        variant: "subtle",
-                                        size: "sm",
-                                        disabled: i == 0,
-                                        onclick: move_chapter(chapter.id.clone(), -1),
-                                        {rinch_tabler_icons::render_tabler_icon(
-                                            __scope,
-                                            rinch_tabler_icons::TablerIcon::ChevronUp,
-                                            rinch_tabler_icons::TablerIconStyle::Outline,
-                                        )}
-                                    }
-                                    ActionIcon {
-                                        variant: "subtle",
-                                        size: "sm",
-                                        disabled: i == store.chapters.get().len() - 1,
-                                        onclick: move_chapter(chapter.id.clone(), 1),
-                                        {rinch_tabler_icons::render_tabler_icon(
-                                            __scope,
-                                            rinch_tabler_icons::TablerIcon::ChevronDown,
-                                            rinch_tabler_icons::TablerIconStyle::Outline,
-                                        )}
-                                    }
-                                    ActionIcon {
-                                        variant: "subtle",
-                                        color: "red",
-                                        size: "sm",
-                                        onclick: delete_chapter(chapter.id.clone()),
-                                        {rinch_tabler_icons::render_tabler_icon(
-                                            __scope,
-                                            rinch_tabler_icons::TablerIcon::Trash,
-                                            rinch_tabler_icons::TablerIconStyle::Outline,
-                                        )}
-                                    }
-                                }
+                        {editor_utils::editor_toolbar(__scope)}
+
+                        div { class: "editor-scroll",
+                            div {
+                                contenteditable: "true",
+                                class: "editor-content",
+                                id: "editor-main",
+                                p { "Start writing..." }
+                            }
+                        }
+                    }
+
+                    // Typography pane (CSS toggle)
+                    div {
+                        class: "book-main-scroll",
+                        style: {move || if matches!(active_pane.get(), BookPane::Typography) { "" } else { "display:none;" }},
+
+                        div { class: "chapters-pane",
+                            Title { order: 3, "Typography" }
+                            Space { h: "md" }
+                            div { class: "typography-section",
+                                div { class: "font-selector-grid", id: "font-selector-grid" }
+                                Space { h: "md" }
+                                Text { size: "sm", color: "dimmed", "Preview:" }
+                                div { class: "font-preview-box", id: "font-preview" }
                             }
                         }
                     }
@@ -743,30 +1392,5 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 }
             }
         }
-    }
-}
-
-/// Update the font preview box styles.
-fn update_preview(fs: &FontSettings) {
-    let document = match web_sys::window().and_then(|w| w.document()) {
-        Some(d) => d,
-        None => return,
-    };
-
-    if let Ok(Some(el)) = document.query_selector("#font-preview") {
-        let h1 = fs.h1.as_deref().unwrap_or("Macondo Swash Caps");
-        let h2 = fs.h2.as_deref().unwrap_or("Macondo Swash Caps");
-        let body = fs.body.as_deref().unwrap_or("Andada Pro");
-        let quote = fs.quote.as_deref().unwrap_or("inherit");
-        let code = fs.code.as_deref().unwrap_or("monospace");
-
-        el.set_inner_html(&format!(
-            "<h3 style=\"font-family: '{}', cursive\">Chapter Title</h3>\
-             <h4 style=\"font-family: '{}', cursive\">Scene Heading</h4>\
-             <p class='preview-body' style=\"font-family: '{}', serif\">The quick brown fox jumps over the lazy dog. She stared out the window, watching the rain trace paths down the glass.</p>\
-             <blockquote style=\"font-family: '{}', serif\">\u{201c}All that glitters is not gold.\u{201d}</blockquote>\
-             <p><code style=\"font-family: '{}', monospace\">const story = new Adventure();</code></p>",
-            h1, h2, body, quote, code
-        ));
     }
 }

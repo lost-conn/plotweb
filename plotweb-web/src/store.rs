@@ -11,6 +11,7 @@ pub struct AppStore {
     pub loading: Signal<bool>,
     pub error: Signal<Option<String>>,
     pub dark_mode: Signal<bool>,
+    pub sidebar_open: Signal<bool>,
 }
 
 impl AppStore {
@@ -24,6 +25,7 @@ impl AppStore {
             loading: Signal::new(true),
             error: Signal::new(None),
             dark_mode: Signal::new(true),
+            sidebar_open: Signal::new(true),
         }
     }
 }
@@ -34,6 +36,5 @@ pub enum Route {
     Register,
     Dashboard,
     Book(String),
-    Editor(String, String),
     ThemePreview,
 }
