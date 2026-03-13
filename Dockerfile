@@ -4,7 +4,7 @@
 # ============================================================
 
 # ------ Stage 1: Build the WASM frontend with Trunk ---------
-FROM rust:1.87-bookworm AS frontend
+FROM rust:1.88-bookworm AS frontend
 
 ARG RINCH_COMMIT=fd3f7d76ebb671d35c14e9a39cfc9297b6824721
 ARG RINCH_REPO=https://github.com/joeleaver/rinch.git
@@ -30,7 +30,7 @@ RUN sed -i 's|path = "../../rinch/|path = "/build/rinch/|g' Cargo.toml
 RUN trunk build --release
 
 # ------ Stage 2: Build the Rust backend --------------------
-FROM rust:1.87-bookworm AS backend
+FROM rust:1.88-bookworm AS backend
 
 COPY . /build/plotweb/
 COPY --from=frontend /build/plotweb/plotweb-web/dist/ /build/plotweb/plotweb-web/dist/
