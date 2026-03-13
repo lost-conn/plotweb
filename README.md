@@ -17,7 +17,7 @@ PlotWeb is a web-based writing environment built entirely in Rust — yes, both 
 The kind of stack that makes people say "wait, really?"
 
 - **Backend:** Rust, Axum, SQLite. Sessions in memory, passwords in Argon2. Serves the frontend as a static SPA because we believe in vertical integration.
-- **Frontend:** Rust compiled to WebAssembly via [Trunk](https://trunkrs.dev/). Uses [rinch](https://github.com/phaestos/rinch), a custom reactive UI framework with fine-grained signals and an `rsx!` macro. No JavaScript was harmed in the making of this application.
+- **Frontend:** Rust compiled to WebAssembly via [Trunk](https://trunkrs.dev/). Uses [rinch](https://github.com/joeleaver/rinch), a custom reactive UI framework with fine-grained signals and an `rsx!` macro. No JavaScript was harmed in the making of this application.
 - **Storage:** Every book is a git repository. Chapters are JSON files. Your writing has commits, diffs, and a full history — even if you'll never look at it. SQLite just tracks who owns what.
 - **Deployment:** Single Docker image, one `docker compose up` away from running on port 7919. A cron-friendly deploy script watches for remote changes and rebuilds automatically.
 
