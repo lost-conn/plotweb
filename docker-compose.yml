@@ -6,13 +6,11 @@ services:
     ports:
       - "7919:3000"          # 7919 is prime
     volumes:
-      - plotweb-db:/home/plotweb          # SQLite DB
-      - plotweb-books:/home/plotweb/data  # git-backed book repos
+      - plotweb-data:/home/plotweb/data   # git-backed book repos + SQLite DB
     environment:
       - DIST_DIR=/home/plotweb/dist
       - DATA_DIR=/home/plotweb/data/books
-      - DATABASE_URL=sqlite:/home/plotweb/plotweb.db
+      - DATABASE_URL=sqlite:/home/plotweb/data/plotweb.db
 
 volumes:
-  plotweb-db:
-  plotweb-books:
+  plotweb-data:

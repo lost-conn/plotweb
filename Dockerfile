@@ -45,12 +45,15 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --shell /bin/bash plotweb
+RUN useradd --create-home --shell /bin/bash plotweb \
+    && mkdir -p /home/plotweb/data/books \
+    && chown -R plotweb:plotweb /home/plotweb
+
 USER plotweb
 WORKDIR /home/plotweb
 
-COPY --from=backend /build/plotweb/target/release/plotweb-server ./plotweb-server
-COPY --from=frontend /build/plotweb/plotweb-web/dist/ ./dist/
+COPY --chown=plotweb:plotweb --from=backend /build/plotweb/target/release/plotweb-server ./plotweb-server
+COPY --chown=plotweb:plotweb --from=frontend /build/plotweb/plotweb-web/dist/ ./dist/
 
 ENV DIST_DIR=/home/plotweb/dist
 ENV DATA_DIR=/home/plotweb/data/books
