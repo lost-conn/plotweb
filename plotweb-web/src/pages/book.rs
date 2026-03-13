@@ -1112,12 +1112,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     let code = fs.code.as_deref().unwrap_or("monospace");
 
                     format!(
-                        ".book-workspace {{ font-family: '{body}', serif; }}
+                        ".book-workspace {{ --rinch-font-family: '{body}', serif; font-family: '{body}', serif; }}
                          .book-workspace h1, .book-workspace h2,
                          .book-workspace h3, .book-workspace h4,
                          .book-workspace h5, .book-workspace h6,
                          .book-workspace .rinch-title,
                          .book-workspace .book-sidebar-title {{ font-family: '{h1}', cursive; }}
+                         .book-workspace .chapter-item .rinch-text,
+                         .book-workspace .editor-topbar .rinch-text {{ font-family: '{h1}', cursive; }}
                          .book-workspace .sidebar-chapter-item,
                          .book-workspace .chapter-item {{ font-family: '{body}', serif; }}
                          .editor-content {{ font-family: '{body}', serif; }}
