@@ -522,6 +522,22 @@ const BOOK_WORKSPACE_CSS: &str = r#"
     border-left: 2px solid var(--rinch-color-teal-7);
     margin-bottom: 6px;
     word-break: break-word;
+    cursor: pointer;
+}
+
+.feedback-quote:hover {
+    background: var(--rinch-color-teal-9);
+    border-radius: 3px;
+}
+
+@keyframes feedback-highlight-flash {
+    0% { background-color: rgba(0, 128, 128, 0.4); }
+    100% { background-color: transparent; }
+}
+
+.feedback-highlight {
+    animation: feedback-highlight-flash 2s ease-out forwards;
+    border-radius: 2px;
 }
 
 .feedback-comment {
@@ -753,11 +769,235 @@ where
     }
 }
 
-/// Render a feedback card in the editor sidebar.
+/// Scroll to and highlight a piece of text within the editor.
+/// Walks all text nodes in `#editor-main`, finds a match for `selected_text`
+/// (disambiguating with `context_block` if there are multiple matches),
+/// creates a Selection over it, scrolls it into view, and applies a flash highlight.
+fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
+    log::info!("scroll_to_text_in_editor called, text='{}'", &selected_text[..selected_text.len().min(40)]);
+    if selected_text.is_empty() {
+        return;
+    }
+
+    let doc = match web_sys::window().and_then(|w| w.document()) {
+        Some(d) => d,
+        None => { log::warn!("scroll_to_text: no document"); return; }
+    };
+    let editor = match doc.query_selector("#editor-main").ok().flatten() {
+        Some(el) => el,
+        None => { log::warn!("scroll_to_text: no #editor-main"); return; }
+    };
+
+    // Collect all text content with node boundaries
+    let mut text_nodes: Vec<web_sys::Node> = Vec::new();
+    let mut full_text = String::new();
+    let mut node_offsets: Vec<(usize, usize)> = Vec::new(); // (start_byte, end_byte) in full_text
+
+    collect_text_nodes(&editor.into(), &mut text_nodes);
+
+    for node in &text_nodes {
+        let start = full_text.len();
+        let content = node.text_content().unwrap_or_default();
+        full_text.push_str(&content);
+        node_offsets.push((start, full_text.len()));
+    }
+
+    // Find all matches of selected_text in the full text
+    let needle = selected_text;
+    let mut matches: Vec<usize> = Vec::new();
+    let mut search_start = 0;
+    while let Some(pos) = full_text[search_start..].find(needle) {
+        matches.push(search_start + pos);
+        search_start += pos + 1;
+    }
+
+    if matches.is_empty() {
+        log::warn!("scroll_to_text: '{}' not found in editor content ({} chars)", &selected_text[..selected_text.len().min(40)], full_text.len());
+        return;
+    }
+    log::info!("scroll_to_text: found {} match(es)", matches.len());
+
+    // Pick the best match using context_block for disambiguation
+    let match_start = if matches.len() == 1 || context_block.is_empty() {
+        matches[0]
+    } else {
+        // Find the match whose surrounding text best matches context_block
+        *matches.iter().min_by_key(|&&pos| {
+            // Extract surrounding text
+            let ctx_start = pos.saturating_sub(context_block.len());
+            let ctx_end = (pos + needle.len() + context_block.len()).min(full_text.len());
+            let surrounding = &full_text[ctx_start..ctx_end];
+            // Simple: count how many chars of context_block appear in the surrounding text
+            let overlap = context_block.chars()
+                .filter(|c| surrounding.contains(*c))
+                .count();
+            context_block.len().saturating_sub(overlap)
+        }).unwrap()
+    };
+
+    let match_end = match_start + needle.len();
+
+    // Map byte offsets back to text node + byte offset within that node,
+    // then convert to UTF-16 code unit offsets for the DOM Range/Text APIs.
+    let (start_node_idx, start_byte_off) = byte_offset_to_node(&node_offsets, match_start);
+    let (end_node_idx, end_byte_off) = byte_offset_to_node(&node_offsets, match_end);
+
+    // Convert UTF-8 byte offsets to UTF-16 code unit offsets
+    let start_text = text_nodes[start_node_idx].text_content().unwrap_or_default();
+    let end_text = text_nodes[end_node_idx].text_content().unwrap_or_default();
+    let start_u16 = utf8_byte_to_utf16(&start_text, start_byte_off);
+    let end_u16 = utf8_byte_to_utf16(&end_text, end_byte_off);
+
+    log::info!("scroll_to_text: node {}[{}] -> node {}[{}] (u16: {} -> {})",
+        start_node_idx, start_byte_off, end_node_idx, end_byte_off, start_u16, end_u16);
+
+    // Create a Range over the matched text
+    let range = match doc.create_range() {
+        Ok(r) => r,
+        Err(e) => { log::warn!("scroll_to_text: create_range failed: {:?}", e); return; }
+    };
+    if let Err(e) = range.set_start(&text_nodes[start_node_idx], start_u16) {
+        log::warn!("scroll_to_text: set_start failed: {:?}", e);
+        return;
+    }
+    if let Err(e) = range.set_end(&text_nodes[end_node_idx], end_u16) {
+        log::warn!("scroll_to_text: set_end failed: {:?}", e);
+        return;
+    }
+
+    // Scroll the start of the match into view within .editor-scroll
+    let start_parent = match text_nodes[start_node_idx].parent_element() {
+        Some(el) => el,
+        None => return,
+    };
+    if let Ok(Some(scroll_container)) = doc.query_selector(".editor-scroll") {
+        let el_rect = start_parent.get_bounding_client_rect();
+        let container_rect = scroll_container.get_bounding_client_rect();
+        let scroll_top = scroll_container.scroll_top() as f64;
+        // Scroll so the target is roughly 1/3 from the top of the container
+        let target = scroll_top + el_rect.top() - container_rect.top()
+            - container_rect.height() / 3.0;
+        scroll_container.set_scroll_top(target.max(0.0) as i32);
+    }
+
+    // Select the range so it's visually highlighted with the browser's native selection
+    if let Some(selection) = doc.get_selection().ok().flatten() {
+        selection.remove_all_ranges().ok();
+        selection.add_range(&range).ok();
+    }
+
+    // Also apply a temporary flash highlight to each text node in the range.
+    // We wrap individual text nodes (not the whole range) to avoid the
+    // cross-element-boundary error that surround_contents throws.
+    let mut marks: Vec<web_sys::Element> = Vec::new();
+    for idx in start_node_idx..=end_node_idx {
+        if idx >= text_nodes.len() { break; }
+        let node = &text_nodes[idx];
+        let text = node.text_content().unwrap_or_default();
+        if text.is_empty() { continue; }
+
+        // Figure out the slice of this text node that's part of the match (in UTF-16 units)
+        let node_u16_len: u32 = text.encode_utf16().count() as u32;
+        let slice_start_u16 = if idx == start_node_idx { start_u16 } else { 0 };
+        let slice_end_u16 = if idx == end_node_idx { end_u16 } else { node_u16_len };
+
+        if slice_start_u16 == 0 && slice_end_u16 == node_u16_len {
+            // Whole text node is in the match — wrap it directly
+            if let Ok(mark) = doc.create_element("mark") {
+                mark.set_class_name("feedback-highlight");
+                if let Some(parent) = node.parent_node() {
+                    parent.insert_before(&mark, Some(node)).ok();
+                    mark.append_child(node).ok();
+                    marks.push(mark);
+                }
+            }
+        } else {
+            // Partial text node — split and wrap the matched portion
+            if let Ok(text_node) = node.clone().dyn_into::<web_sys::Text>() {
+                // Split at slice_end first (so offsets stay valid), then at slice_start
+                let _after = text_node.split_text(slice_end_u16).ok();
+                let matched = text_node.split_text(slice_start_u16).ok();
+                if let Some(matched_node) = matched {
+                    if let Ok(mark) = doc.create_element("mark") {
+                        mark.set_class_name("feedback-highlight");
+                        if let Some(parent) = matched_node.parent_node() {
+                            parent.insert_before(&mark, Some(&matched_node)).ok();
+                            mark.append_child(&matched_node).ok();
+                            marks.push(mark);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove marks after animation (2s)
+    if !marks.is_empty() {
+        let closure = wasm_bindgen::closure::Closure::once(move || {
+            for mark in &marks {
+                if let Some(parent) = mark.parent_node() {
+                    while let Some(child) = mark.first_child() {
+                        parent.insert_before(&child, Some(mark)).ok();
+                    }
+                    parent.remove_child(mark).ok();
+                }
+            }
+            // Normalize to merge split text nodes back together
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                if let Ok(Some(editor)) = doc.query_selector("#editor-main") {
+                    editor.normalize();
+                }
+            }
+        });
+        if let Some(window) = web_sys::window() {
+            window.set_timeout_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                2000,
+            ).ok();
+        }
+        closure.forget();
+    }
+}
+
+/// Convert a UTF-8 byte offset within a string to a UTF-16 code unit offset.
+/// DOM APIs (Range.setStart, Text.splitText) use UTF-16 offsets,
+/// but Rust's str::find returns UTF-8 byte positions.
+fn utf8_byte_to_utf16(text: &str, byte_offset: usize) -> u32 {
+    let clamped = byte_offset.min(text.len());
+    text[..clamped].encode_utf16().count() as u32
+}
+
+/// Recursively collect all text nodes under `node`.
+fn collect_text_nodes(node: &web_sys::Node, out: &mut Vec<web_sys::Node>) {
+    if node.node_type() == web_sys::Node::TEXT_NODE {
+        out.push(node.clone());
+        return;
+    }
+    let children = node.child_nodes();
+    for i in 0..children.length() {
+        if let Some(child) = children.item(i) {
+            collect_text_nodes(&child, out);
+        }
+    }
+}
+
+/// Map a byte offset in the concatenated full text back to a (node_index, offset_within_node).
+fn byte_offset_to_node(node_offsets: &[(usize, usize)], byte_offset: usize) -> (usize, usize) {
+    for (i, &(start, end)) in node_offsets.iter().enumerate() {
+        if byte_offset >= start && byte_offset <= end {
+            return (i, byte_offset - start);
+        }
+    }
+    // Fallback: last node, end
+    let last = node_offsets.len().saturating_sub(1);
+    (last, node_offsets.get(last).map(|o| o.1 - o.0).unwrap_or(0))
+}
+
 /// Render a feedback card in the editor sidebar.
 fn editor_feedback_item<AR, RF, DF, ARO, RFO, DFO>(
     __scope: &mut RenderScope,
     fb: BetaFeedback,
+    scroll_target: Signal<Option<(String, String)>>,
     author_reply: AR,
     resolve_feedback: RF,
     delete_feedback: DF,
@@ -779,6 +1019,8 @@ where
 
     let reader_line = fb.reader_name.clone();
     let quote_style = if fb.selected_text.is_empty() { "display:none" } else { "" };
+    // Store scroll data in a signal so the onclick closure only captures Copy types (signals)
+    let scroll_data: Signal<(String, String)> = Signal::new((fb.selected_text.clone(), fb.context_block.clone()));
     let quote_line = if !fb.selected_text.is_empty() {
         let t = if fb.selected_text.len() > 80 { format!("{}...", &fb.selected_text[..80]) } else { fb.selected_text.clone() };
         format!("\u{201c}{}\u{201d}", t)
@@ -793,7 +1035,24 @@ where
             class: class,
             key: _fb_id,
             div { class: "feedback-reader-name", {reader_line} }
-            div { class: "feedback-quote", style: quote_style, {quote_line} }
+            div { class: "feedback-quote", style: quote_style,
+                onclick: move || {
+                    let data = scroll_data.get();
+                    // Set the signal (for cross-chapter navigation)
+                    scroll_target.set(Some(data.clone()));
+                    // Also immediately scroll (for same-chapter clicks)
+                    let closure = wasm_bindgen::closure::Closure::once(move || {
+                        scroll_to_text_in_editor(&data.0, &data.1);
+                    });
+                    if let Some(w) = web_sys::window() {
+                        w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                            closure.as_ref().unchecked_ref(), 50,
+                        ).ok();
+                    }
+                    closure.forget();
+                },
+                {quote_line}
+            }
             div { class: "feedback-comment", {comment_line} }
             div { class: "feedback-replies",
                 {reply_nodes}
@@ -824,21 +1083,24 @@ where
 }
 
 /// Render a feedback card in the beta readers overview pane.
-fn overview_feedback_item<AR, RF, DF, ARO, RFO, DFO>(
+fn overview_feedback_item<AR, RF, DF, NF, ARO, RFO, DFO, NFO>(
     __scope: &mut RenderScope,
     fb: BetaFeedback,
     ch_title: String,
     author_reply: AR,
     resolve_feedback: RF,
     delete_feedback: DF,
+    navigate_to_feedback: NF,
 ) -> NodeHandle
 where
     AR: Fn(String) -> ARO + 'static + Copy,
     RF: Fn(String) -> RFO + 'static + Copy,
     DF: Fn(String) -> DFO + 'static + Copy,
+    NF: Fn(String, String, String) -> NFO + 'static + Copy,
     ARO: Fn() + 'static,
     RFO: Fn() + 'static,
     DFO: Fn() + 'static,
+    NFO: Fn() + 'static,
 {
     let _fb_id = fb.id.clone();
     let fb_id2 = fb.id.clone();
@@ -849,6 +1111,9 @@ where
     let fb_reader = fb.reader_name.clone();
     let fb_comment = fb.comment.clone();
     let quote_style = if fb.selected_text.is_empty() { "display:none" } else { "" };
+    let nav_chapter_id = fb.chapter_id.clone();
+    let nav_selected_text = fb.selected_text.clone();
+    let nav_context_block = fb.context_block.clone();
     let quote_text = if !fb.selected_text.is_empty() {
         let t = if fb.selected_text.len() > 100 { format!("{}...", &fb.selected_text[..100]) } else { fb.selected_text.clone() };
         format!("\u{201c}{}\u{201d}", t)
@@ -890,7 +1155,10 @@ where
                 }
             }
 
-            div { class: "feedback-quote", style: quote_style, {quote_text} }
+            div { class: "feedback-quote", style: quote_style,
+                onclick: navigate_to_feedback(nav_chapter_id, nav_selected_text, nav_context_block),
+                {quote_text}
+            }
             div { class: "feedback-comment", {fb_comment} }
 
             div { class: "feedback-replies",
@@ -930,28 +1198,31 @@ fn book_reply_item(
     }
 }
 
-fn render_feedback_overview<AR, RF, DF, ARO, RFO, DFO>(
+fn render_feedback_overview<AR, RF, DF, NF, ARO, RFO, DFO, NFO>(
     __scope: &mut RenderScope,
     feedback: &[BetaFeedback],
     chapters: &[Chapter],
     author_reply: AR,
     resolve_feedback: RF,
     delete_feedback: DF,
+    navigate_to_feedback: NF,
 ) -> NodeHandle
 where
     AR: Fn(String) -> ARO + 'static + Copy,
     RF: Fn(String) -> RFO + 'static + Copy,
     DF: Fn(String) -> DFO + 'static + Copy,
+    NF: Fn(String, String, String) -> NFO + 'static + Copy,
     ARO: Fn() + 'static,
     RFO: Fn() + 'static,
     DFO: Fn() + 'static,
+    NFO: Fn() + 'static,
 {
     let nodes: Vec<NodeHandle> = feedback.iter().map(|fb| {
         let ch_title = chapters.iter()
             .find(|c| c.id == fb.chapter_id)
             .map(|c| c.title.clone())
             .unwrap_or_else(|| String::from("Unknown"));
-        overview_feedback_item(__scope, fb.clone(), ch_title, author_reply, resolve_feedback, delete_feedback)
+        overview_feedback_item(__scope, fb.clone(), ch_title, author_reply, resolve_feedback, delete_feedback, navigate_to_feedback)
     }).collect();
     rsx! { {nodes} }
 }
@@ -967,6 +1238,20 @@ fn do_switch_chapter(
     store: AppStore,
     bid: &str,
     new_chapter_id: &str,
+) {
+    do_switch_chapter_inner(active_pane, auto_save_timer_id, save_status, editor_loaded, chapter_title, store, bid, new_chapter_id, None);
+}
+
+fn do_switch_chapter_inner(
+    active_pane: Signal<BookPane>,
+    auto_save_timer_id: Signal<i32>,
+    save_status: Signal<&'static str>,
+    editor_loaded: Signal<bool>,
+    chapter_title: Signal<String>,
+    store: AppStore,
+    bid: &str,
+    new_chapter_id: &str,
+    pending_scroll: Option<Signal<Option<(String, String)>>>,
 ) {
     // Clear any pending auto-save timer
     let prev = auto_save_timer_id.get();
@@ -1030,6 +1315,23 @@ fn do_switch_chapter(
                         } else {
                             el.set_inner_html(&editor_utils::markdown_to_html(&content));
                         }
+                    }
+                }
+                // Execute pending feedback scroll if any
+                if let Some(scroll_signal) = pending_scroll {
+                    if let Some((selected_text, context_block)) = scroll_signal.get() {
+                        scroll_signal.set(None);
+                        // Delay slightly to let the DOM settle after innerHTML
+                        let closure2 = wasm_bindgen::closure::Closure::once(move || {
+                            scroll_to_text_in_editor(&selected_text, &context_block);
+                        });
+                        if let Some(w) = web_sys::window() {
+                            w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                closure2.as_ref().unchecked_ref(),
+                                50,
+                            ).ok();
+                        }
+                        closure2.forget();
                     }
                 }
             });
@@ -1174,6 +1476,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let new_beta_max_chapter: Signal<Option<i64>> = Signal::new(None);
     let show_feedback_sidebar = Signal::new(false);
     let _beta_reply_text: Signal<String> = Signal::new(String::new());
+
+    // Pending feedback scroll target: (selected_text, context_block)
+    let pending_feedback_scroll: Signal<Option<(String, String)>> = Signal::new(None);
 
     // Edit beta link signals
     let editing_beta_link: Signal<Option<BetaReaderLink>> = Signal::new(None);
@@ -1758,6 +2063,29 @@ pub fn book_page(book_id: String) -> NodeHandle {
         move || do_switch_chapter(active_pane, auto_save_timer_id, save_status, editor_loaded, chapter_title, store, &bid_signal.get(), &chapter_id)
     };
 
+    // Navigate to a feedback item: switch to the chapter editor, open the feedback
+    // sidebar, and scroll to the quoted text after content loads.
+    let navigate_to_feedback = move |chapter_id: String, selected_text: String, context_block: String| {
+        move || {
+            // If already viewing this chapter, just scroll directly
+            if let BookPane::Editor(ref cid) = active_pane.get() {
+                if *cid == chapter_id {
+                    scroll_to_text_in_editor(&selected_text, &context_block);
+                    show_feedback_sidebar.set(true);
+                    return;
+                }
+            }
+            // Otherwise switch chapter and scroll after load
+            pending_feedback_scroll.set(Some((selected_text.clone(), context_block.clone())));
+            show_feedback_sidebar.set(true);
+            do_switch_chapter_inner(
+                active_pane, auto_save_timer_id, save_status, editor_loaded,
+                chapter_title, store, &bid_signal.get(), &chapter_id,
+                Some(pending_feedback_scroll),
+            );
+        }
+    };
+
     // ── Beta reader actions ────────────────────────────────────────
     let add_beta_link = move || {
         let name = new_beta_reader_name.get();
@@ -2281,7 +2609,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                             false
                                         }
                                     }) {
-                                        {editor_feedback_item(__scope, fb, author_reply, resolve_feedback, delete_feedback)}
+                                        {editor_feedback_item(__scope, fb, pending_feedback_scroll, author_reply, resolve_feedback, delete_feedback)}
                                     }
 
                                     if beta_feedback.get().iter().filter(|f| {
@@ -2380,7 +2708,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 Space { h: "sm" }
 
                                 div { class: "beta-feedback-overview",
-                                    {render_feedback_overview(__scope, &beta_feedback.get(), &store.chapters.get(), author_reply, resolve_feedback, delete_feedback)}
+                                    {render_feedback_overview(__scope, &beta_feedback.get(), &store.chapters.get(), author_reply, resolve_feedback, delete_feedback, navigate_to_feedback)}
                                 }
                             }
                         }
