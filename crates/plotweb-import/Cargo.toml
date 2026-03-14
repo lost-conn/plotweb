@@ -1,0 +1,9 @@
+[package]
+name = "plotweb-import"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+quick-xml = "0.37"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+thiserror.workspace = true

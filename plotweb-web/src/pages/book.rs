@@ -5,6 +5,7 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{
     BetaFeedback, BetaReaderLink, Book, Chapter, CreateBetaLinkRequest,
     CreateBetaReplyRequest, CreateChapterRequest, FontSettings,
+    ImportChapter, ImportPreviewChapter, ImportPreviewResponse,
     ReorderChaptersRequest, UpdateBetaLinkRequest, UpdateBookRequest, UpdateChapterRequest,
 };
 
@@ -1509,6 +1510,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let new_beta_pin_version: Signal<bool> = Signal::new(false);
     let edit_beta_pinned: Signal<bool> = Signal::new(false);
 
+    // Import signals
+    let show_import_modal: Signal<bool> = Signal::new(false);
+    let import_preview: Signal<Vec<ImportPreviewChapter>> = Signal::new(Vec::new());
+    let import_filename: Signal<String> = Signal::new(String::new());
+    let import_loading: Signal<bool> = Signal::new(false);
+    let import_error: Signal<Option<String>> = Signal::new(None);
+    // Full chapter content stored separately (preview only has truncated text)
+    let import_full_chapters: Signal<Vec<ImportChapter>> = Signal::new(Vec::new());
+
     // Trigger font catalog fetch
     fonts::fetch_font_catalog();
 
@@ -2487,13 +2497,28 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         div { class: "chapters-pane",
                             div { class: "chapters-pane-header",
                                 Title { order: 3, "Chapters" }
-                                Button {
-                                    size: "sm",
-                                    onclick: move || {
-                                        new_chapter_title.set(String::new());
-                                        show_chapter_modal.set(true);
-                                    },
-                                    "Add Chapter"
+                                div {
+                                    style: "display: flex; gap: 8px;",
+                                    Button {
+                                        size: "sm",
+                                        variant: "outline",
+                                        onclick: move || {
+                                            show_import_modal.set(true);
+                                            import_preview.set(Vec::new());
+                                            import_full_chapters.set(Vec::new());
+                                            import_error.set(None);
+                                            import_filename.set(String::new());
+                                        },
+                                        "Import"
+                                    }
+                                    Button {
+                                        size: "sm",
+                                        onclick: move || {
+                                            new_chapter_title.set(String::new());
+                                            show_chapter_modal.set(true);
+                                        },
+                                        "Add Chapter"
+                                    }
                                 }
                             }
 
@@ -2926,6 +2951,187 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             update_beta_link();
                         },
                         "Save"
+                    }
+                }
+            }
+
+            // Import Manuscript Modal
+            Modal {
+                opened_fn: move || show_import_modal.get(),
+                onclose: move || {
+                    show_import_modal.set(false);
+                    import_preview.set(Vec::new());
+                    import_full_chapters.set(Vec::new());
+                    import_error.set(None);
+                    import_filename.set(String::new());
+                },
+                title: "Import Manuscript",
+
+                if import_preview.get().is_empty() && !import_loading.get() {
+                    // File picker step
+                    Text { size: "sm", color: "dimmed",
+                        "Upload a .md, .txt, or .docx file. Chapters will be detected automatically from headings, \"Chapter\" markers, or ALL-CAPS titles."
+                    }
+                    Space { h: "md" }
+                    div {
+                        style: "display: flex; flex-direction: column; align-items: center; padding: 32px; border: 2px dashed var(--rinch-color-border); border-radius: 8px; cursor: pointer;",
+                        onclick: move || {
+                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                if let Ok(Some(el)) = doc.query_selector("#import-file-input") {
+                                    let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
+                                    input.click();
+                                }
+                            }
+                        },
+                        {render_tabler_icon(__scope, TablerIcon::Upload, TablerIconStyle::Outline)}
+                        Space { h: "xs" }
+                        Text { size: "sm", color: "dimmed", "Click to select file" }
+                    }
+                    input {
+                        id: "import-file-input",
+                        r#type: "file",
+                        accept: ".md,.txt,.docx,.markdown",
+                        style: "display: none;",
+                        onchange: move |_event: web_sys::Event| {
+                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                if let Ok(Some(el)) = doc.query_selector("#import-file-input") {
+                                    let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
+                                    if let Some(files) = input.files() {
+                                        if let Some(file) = files.get(0) {
+                                            import_loading.set(true);
+                                            import_error.set(None);
+                                            let bid = bid_signal.get();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                match api::upload_file::<ImportPreviewResponse>(
+                                                    &format!("/api/books/{}/import/preview", bid),
+                                                    &file,
+                                                ).await {
+                                                    Ok(resp) => {
+                                                        import_filename.set(resp.filename);
+                                                        // Store full content for confirm
+                                                        // For preview, we re-upload; but we need to store the file data.
+                                                        // Actually, the preview endpoint already returns everything we need.
+                                                        // But the confirm needs full content, which the preview only has truncated.
+                                                        // We'll need to re-read the file for confirm. Instead, let's
+                                                        // store the data from a second read.
+                                                        // Actually, let's just use the FileReader API to keep the raw bytes,
+                                                        // and parse both preview and confirm from that.
+                                                        // For simplicity: the server preview returns truncated content,
+                                                        // but the confirm endpoint takes { chapters: [{title, content}] }
+                                                        // which the user provides. So we need the full content.
+                                                        // Solution: have the server also return full content in the preview.
+                                                        // Or: upload the file again on confirm.
+                                                        // Simplest: upload once for preview, then on confirm just send
+                                                        // the chapter titles (user may have edited them).
+                                                        // Let's adjust: the confirm endpoint re-parses the file.
+                                                        // Actually simplest: just return full content from preview response
+                                                        // and store it client-side. The content_preview is for display only.
+                                                        import_preview.set(resp.chapters);
+                                                    }
+                                                    Err(e) => {
+                                                        import_error.set(Some(e.message));
+                                                    }
+                                                }
+                                                import_loading.set(false);
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+
+                if import_loading.get() {
+                    Space { h: "lg" }
+                    Center {
+                        Text { color: "dimmed", "Analyzing manuscript..." }
+                    }
+                    Space { h: "lg" }
+                }
+
+                if let Some(err) = import_error.get() {
+                    Space { h: "sm" }
+                    Text { size: "sm", color: "red", {err} }
+                }
+
+                if !import_preview.get().is_empty() {
+                    // Preview step
+                    Text { size: "sm", color: "dimmed",
+                        {move || format!("Found {} chapters in {}", import_preview.get().len(), import_filename.get())}
+                    }
+                    Space { h: "md" }
+                    div {
+                        style: "max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;",
+                        for (i, ch) in import_preview.get().into_iter().enumerate() {
+                            Paper {
+                                key: format!("import-ch-{}", i),
+                                p: "sm",
+                                radius: "sm",
+                                shadow: "xs",
+                                div {
+                                    style: "display: flex; align-items: center; gap: 8px; margin-bottom: 4px;",
+                                    Badge { variant: "light", size: "sm", {format!("{}", i + 1)} }
+                                    Text { weight: "600", size: "sm", {ch.title.clone()} }
+                                    Text { size: "xs", color: "dimmed", {format!("{} words", ch.word_count)} }
+                                }
+                                Text { size: "xs", color: "dimmed",
+                                    {ch.content_preview.clone()}
+                                }
+                            }
+                        }
+                    }
+                    Space { h: "lg" }
+                    Group {
+                        justify: "flex-end",
+                        Button {
+                            variant: "subtle",
+                            onclick: move || {
+                                import_preview.set(Vec::new());
+                                import_full_chapters.set(Vec::new());
+                                import_error.set(None);
+                                import_filename.set(String::new());
+                            },
+                            "Back"
+                        }
+                        Button {
+                            onclick: move || {
+                                let bid = bid_signal.get();
+                                import_loading.set(true);
+                                // Re-upload file to confirm endpoint which re-parses and creates chapters
+                                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                    if let Ok(Some(el)) = doc.query_selector("#import-file-input") {
+                                        let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
+                                        if let Some(files) = input.files() {
+                                            if let Some(file) = files.get(0) {
+                                                wasm_bindgen_futures::spawn_local(async move {
+                                                    match api::upload_file::<Vec<Chapter>>(
+                                                        &format!("/api/books/{}/import/confirm", bid),
+                                                        &file,
+                                                    ).await {
+                                                        Ok(new_chapters) => {
+                                                            store.chapters.update(|ch| ch.extend(new_chapters));
+                                                            show_import_modal.set(false);
+                                                            import_preview.set(Vec::new());
+                                                            import_full_chapters.set(Vec::new());
+                                                            import_error.set(None);
+                                                            import_filename.set(String::new());
+                                                        }
+                                                        Err(e) => {
+                                                            import_error.set(Some(e.message));
+                                                        }
+                                                    }
+                                                    import_loading.set(false);
+                                                });
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                                import_loading.set(false);
+                            },
+                            {move || format!("Import {} Chapters", import_preview.get().len())}
+                        }
                     }
                 }
             }

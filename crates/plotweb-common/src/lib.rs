@@ -192,6 +192,32 @@ pub struct BetaChapterSummary {
     pub sort_order: i64,
 }
 
+// ── Import ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportPreviewChapter {
+    pub title: String,
+    pub content_preview: String,
+    pub word_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportPreviewResponse {
+    pub chapters: Vec<ImportPreviewChapter>,
+    pub filename: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportConfirmRequest {
+    pub chapters: Vec<ImportChapter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportChapter {
+    pub title: String,
+    pub content: String,
+}
+
 // ── Error ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

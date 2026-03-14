@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use error::Result;
-use plotweb_common::{UpdateBookRequest, UpdateChapterRequest};
+use plotweb_common::{ImportChapter, UpdateBookRequest, UpdateChapterRequest};
 use tokio::sync::Mutex;
 
 pub use book::BookData;
@@ -217,6 +217,24 @@ impl BookStore {
         let commit_hex = commit_hex.to_string();
         tokio::task::spawn_blocking(move || {
             chapter::list_chapters_at_commit(&base, &book_id, &commit_hex)
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Import multiple chapters at once (bulk create with content).
+    pub async fn import_chapters(
+        &self,
+        book_id: &str,
+        chapters: &[ImportChapter],
+    ) -> Result<Vec<ChapterData>> {
+        let lock = self.book_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let chapters = chapters.to_vec();
+        tokio::task::spawn_blocking(move || {
+            chapter::import_chapters(&base, &book_id, &chapters)
         })
         .await
         .unwrap()

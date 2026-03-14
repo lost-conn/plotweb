@@ -92,6 +92,15 @@ async fn main() {
             "/api/books/{book_id}/chapters/{id}",
             delete(routes::chapters::delete),
         )
+        // Import endpoints
+        .route(
+            "/api/books/{book_id}/import/preview",
+            post(routes::import::preview),
+        )
+        .route(
+            "/api/books/{book_id}/import/confirm",
+            post(routes::import::confirm),
+        )
         // Beta reader link management (authenticated)
         .route(
             "/api/books/{book_id}/beta-links",

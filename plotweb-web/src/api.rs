@@ -91,3 +91,36 @@ pub async fn delete_req<T: DeserializeOwned>(url: &str) -> Result<T, ApiError> {
     let resp = do_fetch(url, &init).await?;
     parse_response(resp).await
 }
+
+/// Upload a file via multipart form data. Does NOT set Content-Type header
+/// (the browser sets it with the boundary automatically for FormData).
+pub async fn upload_file<T: DeserializeOwned>(
+    url: &str,
+    file: &web_sys::File,
+) -> Result<T, ApiError> {
+    let form_data = web_sys::FormData::new()
+        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
+    form_data
+        .append_with_blob_and_filename("file", file, &file.name())
+        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
+
+    let init = RequestInit::new();
+    init.set_method("POST");
+    init.set_credentials(RequestCredentials::SameOrigin);
+    init.set_body(&form_data);
+
+    let request = Request::new_with_str_and_init(url, &init)
+        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
+    // Do NOT set Content-Type — browser will set multipart/form-data with boundary
+
+    let window = web_sys::window().unwrap();
+    let resp_value = JsFuture::from(window.fetch_with_request(&request))
+        .await
+        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
+
+    let resp: Response = resp_value.dyn_into().map_err(|_| ApiError {
+        message: "response is not a Response".into(),
+    })?;
+
+    parse_response(resp).await
+}
