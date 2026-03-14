@@ -20,6 +20,7 @@ tower-sessions = "0.14"
 reqwest = { version = "0.12", features = ["json"] }
 plotweb-common = { path = "crates/plotweb-common" }
 plotweb-git = { path = "crates/plotweb-git" }
+plotweb-import = { path = "crates/plotweb-import" }
 git2 = "0.20"
 thiserror = "2"
 chrono = "0.4"

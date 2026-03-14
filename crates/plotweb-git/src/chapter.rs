@@ -181,6 +181,57 @@ pub fn delete_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Re
     Ok(())
 }
 
+/// Bulk-import chapters with content in a single commit.
+pub fn import_chapters(
+    base_dir: &PathBuf,
+    book_id: &str,
+    chapters: &[plotweb_common::ImportChapter],
+) -> Result<Vec<ChapterData>> {
+    let book_path = book::book_json_path(base_dir, book_id);
+    if !book_path.exists() {
+        return Err(GitStoreError::BookNotFound(book_id.to_string()));
+    }
+
+    let mut book_json: BookJson = repo::read_json(&book_path)?;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut result = Vec::new();
+
+    for ch in chapters {
+        let id = uuid::Uuid::new_v4().to_string();
+        let sort_order = book_json.chapter_order.len() as i64;
+
+        let chapter_json = ChapterJson {
+            title: ch.title.clone(),
+            content: ch.content.clone(),
+            created_at: now.clone(),
+        };
+        let path = chapter_path(base_dir, book_id, &id);
+        repo::write_json(&path, &chapter_json)?;
+
+        book_json.chapter_order.push(id.clone());
+
+        result.push(ChapterData {
+            id,
+            title: ch.title.clone(),
+            content: ch.content.clone(),
+            sort_order,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        });
+    }
+
+    repo::write_json(&book_path, &book_json)?;
+
+    let dir = book::book_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&dir)?;
+    repo::commit_all(
+        &git_repo,
+        &format!("Import {} chapters", chapters.len()),
+    )?;
+
+    Ok(result)
+}
+
 pub fn reorder_chapters(base_dir: &PathBuf, book_id: &str, chapter_ids: &[String]) -> Result<()> {
     let book_path = book::book_json_path(base_dir, book_id);
     if !book_path.exists() {
