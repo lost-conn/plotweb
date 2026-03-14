@@ -70,6 +70,14 @@ pub fn register_page() -> NodeHandle {
                 radius: "md",
                 w: "400px",
 
+                Center {
+                    img {
+                        src: "/assets/logo.png",
+                        alt: "PlotWeb",
+                        style: "width: 72px; height: 72px;",
+                    }
+                }
+                Space { h: "md" }
                 Title { order: 2, "Create account" }
                 Space { h: "xs" }
                 Text { size: "sm", color: "dimmed", "Start writing with PlotWeb" }

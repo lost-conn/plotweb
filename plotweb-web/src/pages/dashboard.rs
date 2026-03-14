@@ -221,7 +221,15 @@ pub fn dashboard_page() -> NodeHandle {
 
             // Top bar
             div { class: "dash-topbar",
-                Title { order: 3, "PlotWeb" }
+                div {
+                    style: "display: flex; align-items: center; gap: 10px;",
+                    img {
+                        src: "/assets/logo.png",
+                        alt: "PlotWeb",
+                        style: "width: 28px; height: 28px;",
+                    }
+                    Title { order: 3, "PlotWeb" }
+                }
                 div { class: "dash-topbar-right",
                     ActionIcon {
                         variant: "subtle",
