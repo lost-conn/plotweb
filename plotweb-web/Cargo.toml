@@ -26,6 +26,8 @@ web-sys = { version = "0.3", features = [
     "Headers", "Request", "RequestInit", "RequestMode", "RequestCredentials",
     "Response",
     "History", "PopStateEvent",
+    "Navigator", "Clipboard",
+    "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "BinaryType",
 ] }
 
 serde = { version = "1", features = ["derive"] }

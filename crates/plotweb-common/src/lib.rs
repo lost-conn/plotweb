@@ -1,4 +1,15 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Custom deserializer for `Option<Option<T>>` fields in update requests.
+/// Makes JSON `null` deserialize as `Some(None)` (meaning "set to null")
+/// rather than `None` (meaning "don't update").
+fn deserialize_double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
+}
 
 // ── User ──
 
@@ -93,6 +104,92 @@ pub struct UpdateChapterRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReorderChaptersRequest {
     pub chapter_ids: Vec<String>,
+}
+
+// ── Beta Reader ──
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BetaReaderLink {
+    pub id: String,
+    pub book_id: String,
+    pub token: String,
+    pub reader_name: String,
+    pub max_chapter_index: Option<i64>,
+    pub active: bool,
+    pub created_at: String,
+    #[serde(default)]
+    pub pinned_commit: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateBetaLinkRequest {
+    pub reader_name: String,
+    pub max_chapter_index: Option<i64>,
+    #[serde(default)]
+    pub pinned_commit: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateBetaLinkRequest {
+    pub reader_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub max_chapter_index: Option<Option<i64>>,
+    pub active: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub pinned_commit: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BetaFeedback {
+    pub id: String,
+    pub link_id: String,
+    pub chapter_id: String,
+    pub selected_text: String,
+    pub context_block: String,
+    pub comment: String,
+    pub reader_name: String,
+    pub resolved: bool,
+    pub created_at: String,
+    pub replies: Vec<BetaFeedbackReply>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateBetaFeedbackRequest {
+    pub chapter_id: String,
+    pub selected_text: String,
+    pub context_block: String,
+    pub comment: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BetaFeedbackReply {
+    pub id: String,
+    pub feedback_id: String,
+    pub author_type: String,
+    pub author_name: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateBetaReplyRequest {
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BetaReaderView {
+    pub book_title: String,
+    pub book_description: String,
+    pub reader_name: String,
+    pub chapters: Vec<BetaChapterSummary>,
+    pub font_settings: Option<FontSettings>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BetaChapterSummary {
+    pub id: String,
+    pub title: String,
+    pub sort_order: i64,
 }
 
 // ── Error ──

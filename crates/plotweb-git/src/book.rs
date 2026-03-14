@@ -126,6 +126,29 @@ pub fn delete_book(base_dir: &PathBuf, book_id: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn get_book_at_commit(base_dir: &PathBuf, book_id: &str, commit_hex: &str) -> Result<BookData> {
+    let dir = book_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&dir)?;
+    let oid = git2::Oid::from_str(commit_hex)?;
+    let book: BookJson = repo::read_json_at_commit(&git_repo, oid, "book.json")?;
+
+    Ok(BookData {
+        title: book.title,
+        description: book.description,
+        font_settings: book.font_settings,
+        chapter_order: book.chapter_order,
+        created_at: book.created_at,
+        updated_at: String::new(),
+    })
+}
+
+pub fn get_head_oid(base_dir: &PathBuf, book_id: &str) -> Result<String> {
+    let dir = book_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&dir)?;
+    let oid = repo::head_oid(&git_repo)?;
+    Ok(oid.to_string())
+}
+
 fn file_mtime_str(path: &std::path::Path) -> String {
     std::fs::metadata(path)
         .and_then(|m| m.modified())

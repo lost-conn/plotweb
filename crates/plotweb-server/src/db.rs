@@ -27,14 +27,33 @@ pub async fn init_db() -> SqlitePool {
     let migration_002 = include_str!("../../../migrations/002_book_font_settings.sql");
     sqlx::raw_sql(migration_002).execute(&pool).await.ok(); // .ok() = idempotent
 
+    let migration_004 = include_str!("../../../migrations/004_beta_readers.sql");
+    sqlx::raw_sql(migration_004).execute(&pool).await.ok();
+
+    let migration_005 = include_str!("../../../migrations/005_beta_pinned_commit.sql");
+    sqlx::raw_sql(migration_005).execute(&pool).await.ok();
+
     pool
 }
 
 /// Run migration 003 — must be called AFTER data migration to git.
+/// Only runs if the old `books` schema still has columns that were removed
+/// (e.g. `description`). Skips if already migrated to avoid DROP CASCADE
+/// destroying beta_reader_links and related tables.
 pub async fn run_migration_003(pool: &SqlitePool) {
-    let migration_003 = include_str!("../../../migrations/003_git_migration.sql");
-    sqlx::raw_sql(migration_003)
-        .execute(pool)
-        .await
-        .expect("failed to run migration 003");
+    // Check if the old schema still has the `description` column
+    let has_description = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('books') WHERE name = 'description'"
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    if has_description > 0 {
+        let migration_003 = include_str!("../../../migrations/003_git_migration.sql");
+        sqlx::raw_sql(migration_003)
+            .execute(pool)
+            .await
+            .expect("failed to run migration 003");
+    }
 }

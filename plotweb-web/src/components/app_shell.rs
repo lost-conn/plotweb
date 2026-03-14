@@ -139,9 +139,13 @@ pub fn app_shell() -> NodeHandle {
                     style: "height: 100vh; display: flex; flex-direction: column; overflow: hidden;",
                     {crate::pages::dashboard::dashboard_page(__scope)}
                 },
-                Route::Book(id) => div {
+                Route::Book(_id) => div {
                     style: "height: 100vh; overflow: hidden;",
-                    {crate::pages::book::book_page(__scope, id)}
+                    {crate::pages::book::book_page(__scope, _id)}
+                },
+                Route::Reader(_token) => div {
+                    style: "height: 100vh; overflow: hidden;",
+                    {crate::pages::reader::reader_page(__scope, _token)}
                 },
             }
         }

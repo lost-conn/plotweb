@@ -1,4 +1,4 @@
-use git2::{Repository, Signature};
+use git2::{Oid, Repository, Signature};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::path::Path;
@@ -65,4 +65,22 @@ pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let data = serde_json::to_string_pretty(value)?;
     std::fs::write(path, data)?;
     Ok(())
+}
+
+/// Read and deserialize JSON from a file at a specific git commit.
+pub fn read_json_at_commit<T: DeserializeOwned>(repo: &Repository, oid: Oid, path: &str) -> Result<T> {
+    let commit = repo.find_commit(oid)?;
+    let tree = commit.tree()?;
+    let entry = tree.get_path(std::path::Path::new(path))?;
+    let blob = repo.find_blob(entry.id())?;
+    let content = std::str::from_utf8(blob.content())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok(serde_json::from_str(content)?)
+}
+
+/// Return the HEAD commit OID for a repository.
+pub fn head_oid(repo: &Repository) -> Result<Oid> {
+    let head = repo.head()?;
+    let commit = head.peel_to_commit()?;
+    Ok(commit.id())
 }

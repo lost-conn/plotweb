@@ -3,6 +3,7 @@ pub mod register;
 pub mod dashboard;
 pub mod book;
 pub mod editor_utils;
+pub mod reader;
 pub mod theme_preview;
 
 use rinch::prelude::*;
@@ -18,6 +19,7 @@ pub fn route_content(__scope: &mut RenderScope) -> NodeHandle {
         Route::Register => register::register_page(__scope),
         Route::Dashboard => dashboard::dashboard_page(__scope),
         Route::Book(id) => book::book_page(__scope, id),
+        Route::Reader(token) => reader::reader_page(__scope, token),
         Route::ThemePreview => theme_preview::theme_preview_page(__scope),
     }
 }

@@ -5,6 +5,7 @@ pub mod router;
 pub mod pages;
 pub mod components;
 pub mod fonts;
+pub mod ws;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -159,7 +160,15 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                     viewport_height: 0.0,
                 });
 
-                event.prevent_default();
+                // Don't prevent default on native form elements so they can
+                // receive focus and handle clicks normally.
+                let tag = el.tag_name();
+                let is_form_el = tag.eq_ignore_ascii_case("INPUT")
+                    || tag.eq_ignore_ascii_case("TEXTAREA")
+                    || tag.eq_ignore_ascii_case("SELECT");
+                if !is_form_el {
+                    event.prevent_default();
+                }
                 events::dispatch_event(events::EventHandlerId(rid));
             }
         }
@@ -227,19 +236,36 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
         if events::dispatch_keyboard_event(&key_data) {
             event.prevent_default();
             event.stop_propagation();
-        } else if event.key() == "Enter" {
+        } else if event.key() == "Enter" && !event.shift_key() {
             if let Some(target) = event.target()
                 && let Ok(el) = target.dyn_into::<web_sys::Element>()
             {
-                let mut current: Option<web_sys::Element> = Some(el);
-                while let Some(el) = current {
-                    if let Some(handler_str) = el.get_attribute("data-onsubmit")
+                let is_textarea = el.tag_name().eq_ignore_ascii_case("TEXTAREA");
+                let mut found = false;
+                let mut current: Option<web_sys::Element> = Some(el.clone());
+                while let Some(ref cur) = current {
+                    if let Some(handler_str) = cur.get_attribute("data-onsubmit")
                         && let Ok(handler_id) = handler_str.parse::<usize>()
                     {
+                        event.prevent_default();
                         events::dispatch_event(events::EventHandlerId(handler_id));
+                        found = true;
                         break;
                     }
-                    current = el.parent_element();
+                    current = cur.parent_element();
+                }
+                // For textareas inside .feedback-reply-input, find the send button
+                if !found && is_textarea {
+                    if let Ok(Some(container)) = el.closest(".feedback-reply-input") {
+                        if let Ok(Some(btn)) = container.query_selector("[data-rid]") {
+                            if let Some(rid_str) = btn.get_attribute("data-rid")
+                                && let Ok(rid) = rid_str.parse::<usize>()
+                            {
+                                event.prevent_default();
+                                events::dispatch_event(events::EventHandlerId(rid));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -299,7 +325,11 @@ fn app() -> NodeHandle {
         .map(|p| Route::from_path(&p))
         .unwrap_or(Route::Dashboard);
 
-    if initial_route == Route::ThemePreview {
+    if matches!(initial_route, Route::Reader(_)) {
+        store.current_route.set(initial_route.clone());
+        router::replace_state(&initial_route);
+        store.loading.set(false);
+    } else if initial_route == Route::ThemePreview {
         store.current_route.set(Route::ThemePreview);
         router::replace_state(&Route::ThemePreview);
         store.loading.set(false);

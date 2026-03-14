@@ -171,6 +171,57 @@ impl BookStore {
             .unwrap()
     }
 
+    // ── Historical reads (no lock needed) ──
+
+    pub async fn get_book_at_commit(&self, book_id: &str, commit_hex: &str) -> Result<BookData> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let commit_hex = commit_hex.to_string();
+        tokio::task::spawn_blocking(move || book::get_book_at_commit(&base, &book_id, &commit_hex))
+            .await
+            .unwrap()
+    }
+
+    pub async fn get_head_oid(&self, book_id: &str) -> Result<String> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        tokio::task::spawn_blocking(move || book::get_head_oid(&base, &book_id))
+            .await
+            .unwrap()
+    }
+
+    pub async fn get_chapter_at_commit(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        commit_hex: &str,
+    ) -> Result<ChapterData> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let chapter_id = chapter_id.to_string();
+        let commit_hex = commit_hex.to_string();
+        tokio::task::spawn_blocking(move || {
+            chapter::get_chapter_at_commit(&base, &book_id, &chapter_id, &commit_hex)
+        })
+        .await
+        .unwrap()
+    }
+
+    pub async fn list_chapters_at_commit(
+        &self,
+        book_id: &str,
+        commit_hex: &str,
+    ) -> Result<Vec<ChapterData>> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let commit_hex = commit_hex.to_string();
+        tokio::task::spawn_blocking(move || {
+            chapter::list_chapters_at_commit(&base, &book_id, &commit_hex)
+        })
+        .await
+        .unwrap()
+    }
+
     pub async fn reorder_chapters(&self, book_id: &str, chapter_ids: &[String]) -> Result<()> {
         let lock = self.book_lock(book_id);
         let _guard = lock.lock().await;

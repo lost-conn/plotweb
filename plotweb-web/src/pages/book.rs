@@ -2,7 +2,11 @@ use wasm_bindgen::JsCast;
 use rinch::prelude::*;
 use rinch_core::use_store;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use plotweb_common::{Book, Chapter, CreateChapterRequest, FontSettings, ReorderChaptersRequest, UpdateBookRequest, UpdateChapterRequest};
+use plotweb_common::{
+    BetaFeedback, BetaReaderLink, Book, Chapter, CreateBetaLinkRequest,
+    CreateBetaReplyRequest, CreateChapterRequest, FontSettings,
+    ReorderChaptersRequest, UpdateBetaLinkRequest, UpdateBookRequest, UpdateChapterRequest,
+};
 
 use crate::api;
 use crate::fonts;
@@ -10,12 +14,15 @@ use crate::pages::editor_utils;
 use crate::router;
 use crate::store::{AppStore, Route};
 
+use rinch_core::Signal;
+
 /// What the main pane shows.
 #[derive(Clone, PartialEq)]
 enum BookPane {
     Chapters,
     Editor(String),
     Typography,
+    BetaReaders,
 }
 
 /// CSS for the typography settings section.
@@ -422,6 +429,162 @@ const BOOK_WORKSPACE_CSS: &str = r#"
         padding: 24px 16px;
     }
 }
+
+/* ── Beta Reader Cards ────────────────────────────── */
+
+.beta-link-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.beta-link-card {
+    background: var(--rinch-color-surface);
+    transition: opacity 0.2s;
+}
+
+.beta-link-card.inactive {
+    opacity: 0.5;
+}
+
+.beta-link-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+}
+
+.beta-link-meta {
+    padding-top: 4px;
+}
+
+/* ── Editor Feedback Sidebar ──────────────────────── */
+
+.editor-feedback-sidebar {
+    width: 300px;
+    min-width: 300px;
+    background: var(--pw-color-deep);
+    border-left: 1px solid var(--rinch-color-border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.editor-feedback-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--rinch-color-border);
+    font-weight: 600;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.editor-feedback-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.feedback-card {
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-size: 13px;
+}
+
+.feedback-card.resolved {
+    opacity: 0.4;
+}
+
+.feedback-reader-name {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--rinch-color-teal-4);
+    margin-bottom: 4px;
+}
+
+.feedback-reader-name svg {
+    width: 14px;
+    height: 14px;
+}
+
+.feedback-quote {
+    font-style: italic;
+    color: var(--rinch-color-teal-4);
+    font-size: 12px;
+    padding: 4px 8px;
+    border-left: 2px solid var(--rinch-color-teal-7);
+    margin-bottom: 6px;
+    word-break: break-word;
+}
+
+.feedback-comment {
+    color: var(--rinch-color-text);
+    margin-bottom: 4px;
+    word-break: break-word;
+}
+
+.feedback-meta {
+    font-size: 11px;
+    color: var(--rinch-color-dimmed);
+}
+
+.feedback-replies {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--rinch-color-border);
+}
+
+.feedback-reply {
+    padding: 2px 0;
+    font-size: 12px;
+}
+
+.feedback-reply-author {
+    font-weight: 600;
+    color: var(--rinch-color-teal-4);
+}
+
+.feedback-reply-author.owner {
+    color: var(--rinch-color-teal-3);
+}
+
+.feedback-actions {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--rinch-color-border);
+}
+
+.feedback-reply-input {
+    display: flex;
+    gap: 4px;
+}
+
+.feedback-reply-input textarea {
+    flex: 1;
+    padding: 4px 8px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: 4px;
+    background: var(--rinch-color-body);
+    color: var(--rinch-color-text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+    resize: none;
+    min-height: 28px;
+    max-height: 120px;
+    overflow-y: auto;
+}
+
+.feedback-reply-input textarea:focus {
+    border-color: var(--rinch-color-teal-6);
+}
 "#;
 
 /// Slot definitions for font pickers
@@ -590,6 +753,209 @@ where
     }
 }
 
+/// Render a feedback card in the editor sidebar.
+/// Render a feedback card in the editor sidebar.
+fn editor_feedback_item<AR, RF, DF, ARO, RFO, DFO>(
+    __scope: &mut RenderScope,
+    fb: BetaFeedback,
+    author_reply: AR,
+    resolve_feedback: RF,
+    delete_feedback: DF,
+) -> NodeHandle
+where
+    AR: Fn(String) -> ARO + 'static + Copy,
+    RF: Fn(String) -> RFO + 'static + Copy,
+    DF: Fn(String) -> DFO + 'static + Copy,
+    ARO: Fn() + 'static,
+    RFO: Fn() + 'static,
+    DFO: Fn() + 'static,
+{
+    let _fb_id = fb.id.clone();
+    let fb_id3 = fb.id.clone();
+    let fb_id4 = fb.id.clone();
+    let fb_id5 = fb.id.clone();
+    let class = if fb.resolved { "feedback-card resolved" } else { "feedback-card" };
+    let reply_input_id = format!("author-reply-{}", fb.id);
+
+    let reader_line = fb.reader_name.clone();
+    let quote_style = if fb.selected_text.is_empty() { "display:none" } else { "" };
+    let quote_line = if !fb.selected_text.is_empty() {
+        let t = if fb.selected_text.len() > 80 { format!("{}...", &fb.selected_text[..80]) } else { fb.selected_text.clone() };
+        format!("\u{201c}{}\u{201d}", t)
+    } else { String::new() };
+    let comment_line = fb.comment.clone();
+    let reply_nodes: Vec<NodeHandle> = fb.replies.iter().map(|r| {
+        book_reply_item(__scope, r.author_type.clone(), r.author_name.clone(), r.content.clone())
+    }).collect();
+
+    rsx! {
+        div {
+            class: class,
+            key: _fb_id,
+            div { class: "feedback-reader-name", {reader_line} }
+            div { class: "feedback-quote", style: quote_style, {quote_line} }
+            div { class: "feedback-comment", {comment_line} }
+            div { class: "feedback-replies",
+                {reply_nodes}
+            }
+            div { class: "feedback-actions",
+                div { class: "feedback-reply-input",
+                    onsubmit: author_reply(fb_id3.clone()),
+                    textarea {
+                        id: reply_input_id,
+                        placeholder: "Reply...",
+                        rows: "1",
+                    }
+                    ActionIcon { variant: "subtle", size: "xs", onclick: author_reply(fb_id3),
+                        {render_tabler_icon(__scope, TablerIcon::Send, TablerIconStyle::Outline)}
+                    }
+                }
+                div { style: "display: flex; gap: 4px; margin-top: 4px;",
+                    ActionIcon { variant: "subtle", size: "xs", onclick: resolve_feedback(fb_id4),
+                        {render_tabler_icon(__scope, TablerIcon::Check, TablerIconStyle::Outline)}
+                    }
+                    ActionIcon { variant: "subtle", size: "xs", color: "red", onclick: delete_feedback(fb_id5),
+                        {render_tabler_icon(__scope, TablerIcon::Trash, TablerIconStyle::Outline)}
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Render a feedback card in the beta readers overview pane.
+fn overview_feedback_item<AR, RF, DF, ARO, RFO, DFO>(
+    __scope: &mut RenderScope,
+    fb: BetaFeedback,
+    ch_title: String,
+    author_reply: AR,
+    resolve_feedback: RF,
+    delete_feedback: DF,
+) -> NodeHandle
+where
+    AR: Fn(String) -> ARO + 'static + Copy,
+    RF: Fn(String) -> RFO + 'static + Copy,
+    DF: Fn(String) -> DFO + 'static + Copy,
+    ARO: Fn() + 'static,
+    RFO: Fn() + 'static,
+    DFO: Fn() + 'static,
+{
+    let _fb_id = fb.id.clone();
+    let fb_id2 = fb.id.clone();
+    let fb_id3 = fb.id.clone();
+    let fb_id4 = fb.id.clone();
+    let fb_id5 = fb.id.clone();
+    let class = if fb.resolved { "feedback-card resolved" } else { "feedback-card" };
+    let fb_reader = fb.reader_name.clone();
+    let fb_comment = fb.comment.clone();
+    let quote_style = if fb.selected_text.is_empty() { "display:none" } else { "" };
+    let quote_text = if !fb.selected_text.is_empty() {
+        let t = if fb.selected_text.len() > 100 { format!("{}...", &fb.selected_text[..100]) } else { fb.selected_text.clone() };
+        format!("\u{201c}{}\u{201d}", t)
+    } else { String::new() };
+    let reply_nodes: Vec<NodeHandle> = fb.replies.iter().map(|r| {
+        book_reply_item(__scope, r.author_type.clone(), r.author_name.clone(), r.content.clone())
+    }).collect();
+
+    rsx! {
+        Paper {
+            key: _fb_id,
+            shadow: "xs",
+            p: "sm",
+            radius: "sm",
+            class: class,
+
+            div {
+                style: "display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;",
+                div {
+                    style: "display: flex; align-items: center; gap: 6px;",
+                    Badge { variant: "light", size: "xs", {fb_reader} }
+                    Text { size: "xs", color: "dimmed", {ch_title} }
+                }
+                div {
+                    style: "display: flex; gap: 4px;",
+                    ActionIcon {
+                        variant: "subtle",
+                        size: "xs",
+                        onclick: resolve_feedback(fb_id2),
+                        {render_tabler_icon(__scope, TablerIcon::Check, TablerIconStyle::Outline)}
+                    }
+                    ActionIcon {
+                        variant: "subtle",
+                        size: "xs",
+                        color: "red",
+                        onclick: delete_feedback(fb_id3),
+                        {render_tabler_icon(__scope, TablerIcon::Trash, TablerIconStyle::Outline)}
+                    }
+                }
+            }
+
+            div { class: "feedback-quote", style: quote_style, {quote_text} }
+            div { class: "feedback-comment", {fb_comment} }
+
+            div { class: "feedback-replies",
+                {reply_nodes}
+            }
+
+            div { class: "feedback-reply-input",
+                onsubmit: author_reply(fb_id5.clone()),
+                textarea {
+                    id: {format!("author-reply-{}", fb_id4)},
+                    placeholder: "Reply...",
+                    rows: "1",
+                }
+                ActionIcon {
+                    variant: "subtle",
+                    size: "xs",
+                    onclick: author_reply(fb_id5),
+                    {render_tabler_icon(__scope, TablerIcon::Send, TablerIconStyle::Outline)}
+                }
+            }
+        }
+    }
+}
+
+fn book_reply_item(
+    __scope: &mut RenderScope,
+    author_type: String,
+    author_name: String,
+    content: String,
+) -> NodeHandle {
+    let class_str = if author_type == "owner" { "feedback-reply-author owner" } else { "feedback-reply-author" };
+    rsx! {
+        div { class: "feedback-reply",
+            span { class: class_str, {format!("{}: ", author_name)} }
+            {content}
+        }
+    }
+}
+
+fn render_feedback_overview<AR, RF, DF, ARO, RFO, DFO>(
+    __scope: &mut RenderScope,
+    feedback: &[BetaFeedback],
+    chapters: &[Chapter],
+    author_reply: AR,
+    resolve_feedback: RF,
+    delete_feedback: DF,
+) -> NodeHandle
+where
+    AR: Fn(String) -> ARO + 'static + Copy,
+    RF: Fn(String) -> RFO + 'static + Copy,
+    DF: Fn(String) -> DFO + 'static + Copy,
+    ARO: Fn() + 'static,
+    RFO: Fn() + 'static,
+    DFO: Fn() + 'static,
+{
+    let nodes: Vec<NodeHandle> = feedback.iter().map(|fb| {
+        let ch_title = chapters.iter()
+            .find(|c| c.id == fb.chapter_id)
+            .map(|c| c.title.clone())
+            .unwrap_or_else(|| String::from("Unknown"));
+        overview_feedback_item(__scope, fb.clone(), ch_title, author_reply, resolve_feedback, delete_feedback)
+    }).collect();
+    rsx! { {nodes} }
+}
+
 /// Switch to editing a chapter. Saves current chapter if editing, clears timers, loads new chapter.
 /// All parameters are Copy or Clone so this can be called from rsx! closures without ownership issues.
 fn do_switch_chapter(
@@ -676,6 +1042,112 @@ fn do_switch_chapter(
     });
 }
 
+fn render_beta_link_card<CB, TG, DL, CBO, TGO, DLO>(
+    __scope: &mut RenderScope,
+    link: BetaReaderLink,
+    edit_beta_reader_name: Signal<String>,
+    edit_beta_max_chapter: Signal<Option<i64>>,
+    edit_beta_pinned: Signal<bool>,
+    editing_beta_link: Signal<Option<BetaReaderLink>>,
+    copy_beta_link: CB,
+    toggle_beta_link_active: TG,
+    delete_beta_link: DL,
+) -> NodeHandle
+where
+    CB: Fn(String) -> CBO + 'static + Copy,
+    TG: Fn(String, bool) -> TGO + 'static + Copy,
+    DL: Fn(String) -> DLO + 'static + Copy,
+    CBO: Fn() + 'static,
+    TGO: Fn() + 'static,
+    DLO: Fn() + 'static,
+{
+    let _link_key = link.id.clone();
+    let card_class = if link.active { "beta-link-card" } else { "beta-link-card inactive" };
+    let link_name = link.reader_name.clone();
+    let link_active = link.active;
+    let link_token = link.token.clone();
+    let link_id_for_toggle = link.id.clone();
+    let link_id_for_delete = link.id.clone();
+    let meta_text = if let Some(max) = link.max_chapter_index {
+        format!("Access: up to chapter {} | Created: {}", max + 1, link.created_at)
+    } else {
+        format!("Access: all chapters | Created: {}", link.created_at)
+    };
+    let pin_badge = if let Some(ref commit) = link.pinned_commit {
+        format!("Pinned: {}", &commit[..7.min(commit.len())])
+    } else {
+        String::new()
+    };
+    let is_pinned = link.pinned_commit.is_some();
+    let edit_link = link;
+
+    rsx! {
+        Paper {
+            key: link_key,
+            shadow: "xs",
+            p: "md",
+            radius: "sm",
+            class: card_class,
+
+            div { class: "beta-link-header",
+                div {
+                    style: "display: flex; align-items: center; gap: 8px;",
+                    {render_tabler_icon(__scope, TablerIcon::User, TablerIconStyle::Outline)}
+                    Text { weight: "600", {link_name} }
+                    if !link_active {
+                        Badge { variant: "light", size: "xs", color: "red", "Inactive" }
+                    }
+                }
+                div {
+                    style: "display: flex; align-items: center; gap: 4px;",
+                    ActionIcon {
+                        variant: "subtle",
+                        size: "sm",
+                        onclick: move || {
+                            edit_beta_reader_name.set(edit_link.reader_name.clone());
+                            edit_beta_max_chapter.set(edit_link.max_chapter_index);
+                            edit_beta_pinned.set(edit_link.pinned_commit.is_some());
+                            editing_beta_link.set(Some(edit_link.clone()));
+                        },
+                        {render_tabler_icon(__scope, TablerIcon::Pencil, TablerIconStyle::Outline)}
+                    }
+                    ActionIcon {
+                        variant: "subtle",
+                        size: "sm",
+                        onclick: copy_beta_link(link_token),
+                        {render_tabler_icon(__scope, TablerIcon::Copy, TablerIconStyle::Outline)}
+                    }
+                    ActionIcon {
+                        variant: "subtle",
+                        size: "sm",
+                        onclick: toggle_beta_link_active(link_id_for_toggle, link_active),
+                        {render_tabler_icon(
+                            __scope,
+                            if link_active { TablerIcon::PlayerPause } else { TablerIcon::PlayerPlay },
+                            TablerIconStyle::Outline,
+                        )}
+                    }
+                    ActionIcon {
+                        variant: "subtle",
+                        color: "red",
+                        size: "sm",
+                        onclick: delete_beta_link(link_id_for_delete),
+                        {render_tabler_icon(__scope, TablerIcon::Trash, TablerIconStyle::Outline)}
+                    }
+                }
+            }
+            div { class: "beta-link-meta",
+                Text { size: "xs", color: "dimmed", {meta_text} }
+                if is_pinned {
+                    Badge { variant: "light", size: "xs", {pin_badge.clone()} }
+                } else {
+                    Badge { variant: "outline", size: "xs", "Live" }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn book_page(book_id: String) -> NodeHandle {
     let store = use_store::<AppStore>();
@@ -694,6 +1166,22 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let font_save_timer_id = Signal::new(0_i32);
     let listeners_attached = Signal::new(false);
 
+    // Beta reader signals
+    let beta_links: Signal<Vec<BetaReaderLink>> = Signal::new(Vec::new());
+    let beta_feedback: Signal<Vec<BetaFeedback>> = Signal::new(Vec::new());
+    let show_beta_link_modal = Signal::new(false);
+    let new_beta_reader_name = Signal::new(String::new());
+    let new_beta_max_chapter: Signal<Option<i64>> = Signal::new(None);
+    let show_feedback_sidebar = Signal::new(false);
+    let _beta_reply_text: Signal<String> = Signal::new(String::new());
+
+    // Edit beta link signals
+    let editing_beta_link: Signal<Option<BetaReaderLink>> = Signal::new(None);
+    let edit_beta_reader_name: Signal<String> = Signal::new(String::new());
+    let edit_beta_max_chapter: Signal<Option<i64>> = Signal::new(None);
+    let new_beta_pin_version: Signal<bool> = Signal::new(false);
+    let edit_beta_pinned: Signal<bool> = Signal::new(false);
+
     // Trigger font catalog fetch
     fonts::fetch_font_catalog();
 
@@ -709,7 +1197,49 @@ pub fn book_page(book_id: String) -> NodeHandle {
         if let Ok(chapters) = api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid)).await {
             store.chapters.set(chapters);
         }
+        if let Ok(links) = api::get::<Vec<BetaReaderLink>>(&format!("/api/books/{}/beta-links", bid)).await {
+            beta_links.set(links);
+        }
+        if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/books/{}/feedback", bid)).await {
+            beta_feedback.set(fb);
+        }
     });
+
+    // Connect WebSocket for real-time feedback
+    {
+        let bid = book_id.clone();
+        let ws_url = crate::ws::ws_url(&format!("/api/books/{}/feedback/ws", bid));
+        crate::ws::connect_feedback_ws(&ws_url, move |msg| {
+            match msg {
+                crate::ws::WsMessage::NewFeedback(fb) => {
+                    beta_feedback.update(|list| {
+                        if !list.iter().any(|f| f.id == fb.id) {
+                            list.insert(0, fb);
+                        }
+                    });
+                }
+                crate::ws::WsMessage::NewReply { feedback_id, reply } => {
+                    beta_feedback.update(|list| {
+                        if let Some(fb) = list.iter_mut().find(|f| f.id == feedback_id) {
+                            if !fb.replies.iter().any(|r| r.id == reply.id) {
+                                fb.replies.push(reply);
+                            }
+                        }
+                    });
+                }
+                crate::ws::WsMessage::FeedbackResolved { feedback_id, resolved } => {
+                    beta_feedback.update(|list| {
+                        if let Some(fb) = list.iter_mut().find(|f| f.id == feedback_id) {
+                            fb.resolved = resolved;
+                        }
+                    });
+                }
+                crate::ws::WsMessage::FeedbackDeleted { feedback_id } => {
+                    beta_feedback.update(|list| list.retain(|f| f.id != feedback_id));
+                }
+            }
+        });
+    }
 
     // ── Save helper for the editor ──────────────────────────────
     let save_content = move |chapter_id_to_save: String| {
@@ -1228,8 +1758,179 @@ pub fn book_page(book_id: String) -> NodeHandle {
         move || do_switch_chapter(active_pane, auto_save_timer_id, save_status, editor_loaded, chapter_title, store, &bid_signal.get(), &chapter_id)
     };
 
+    // ── Beta reader actions ────────────────────────────────────────
+    let add_beta_link = move || {
+        let name = new_beta_reader_name.get();
+        if name.trim().is_empty() { return; }
+        show_beta_link_modal.set(false);
+        let bid = bid_signal.get();
+        let max_ch = new_beta_max_chapter.get();
+        let pinned = if new_beta_pin_version.get() { Some("HEAD".to_string()) } else { None };
+        wasm_bindgen_futures::spawn_local(async move {
+            let req = CreateBetaLinkRequest { reader_name: name, max_chapter_index: max_ch, pinned_commit: pinned };
+            if let Ok(link) = api::post::<_, BetaReaderLink>(
+                &format!("/api/books/{}/beta-links", bid), &req,
+            ).await {
+                beta_links.update(|l| l.insert(0, link));
+            }
+        });
+    };
+
+    let delete_beta_link = move |link_id: String| {
+        move || {
+            let bid = bid_signal.get();
+            let lid = link_id.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::delete_req::<serde_json::Value>(
+                    &format!("/api/books/{}/beta-links/{}", bid, lid),
+                ).await.is_ok() {
+                    beta_links.update(|l| l.retain(|x| x.id != lid));
+                }
+            });
+        }
+    };
+
+    let update_beta_link = move || {
+        let link = match editing_beta_link.get() {
+            Some(l) => l,
+            None => return,
+        };
+        let name = edit_beta_reader_name.get();
+        if name.trim().is_empty() { return; }
+        let max_ch = edit_beta_max_chapter.get();
+        let is_pinned = edit_beta_pinned.get();
+        let was_pinned = link.pinned_commit.is_some();
+        let pinned_commit = if is_pinned && !was_pinned {
+            Some(Some("HEAD".to_string()))
+        } else if !is_pinned && was_pinned {
+            Some(None)
+        } else {
+            None
+        };
+        let bid = bid_signal.get();
+        let lid = link.id.clone();
+        editing_beta_link.set(None);
+        wasm_bindgen_futures::spawn_local(async move {
+            let req = UpdateBetaLinkRequest {
+                reader_name: Some(name.clone()),
+                max_chapter_index: Some(max_ch),
+                active: None,
+                pinned_commit,
+            };
+            if api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/beta-links/{}", bid, lid), &req,
+            ).await.is_ok() {
+                // Refresh links to get resolved pinned_commit hash
+                if let Ok(links) = api::get::<Vec<BetaReaderLink>>(
+                    &format!("/api/books/{}/beta-links", bid),
+                ).await {
+                    beta_links.set(links);
+                }
+            }
+        });
+    };
+
+    let toggle_beta_link_active = move |link_id: String, currently_active: bool| {
+        move || {
+            let bid = bid_signal.get();
+            let lid = link_id.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let req = UpdateBetaLinkRequest {
+                    reader_name: None,
+                    max_chapter_index: None,
+                    active: Some(!currently_active),
+                    pinned_commit: None,
+                };
+                if api::put::<_, serde_json::Value>(
+                    &format!("/api/books/{}/beta-links/{}", bid, lid), &req,
+                ).await.is_ok() {
+                    beta_links.update(|l| {
+                        if let Some(link) = l.iter_mut().find(|x| x.id == lid) {
+                            link.active = !currently_active;
+                        }
+                    });
+                }
+            });
+        }
+    };
+
+    let resolve_feedback = move |feedback_id: String| {
+        move || {
+            let bid = bid_signal.get();
+            let fid = feedback_id.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::put::<_, serde_json::Value>(
+                    &format!("/api/books/{}/feedback/{}/resolve", bid, fid),
+                    &serde_json::json!({}),
+                ).await.is_ok() {
+                    beta_feedback.update(|fb| {
+                        if let Some(f) = fb.iter_mut().find(|x| x.id == fid) {
+                            f.resolved = !f.resolved;
+                        }
+                    });
+                }
+            });
+        }
+    };
+
+    let delete_feedback = move |feedback_id: String| {
+        move || {
+            let bid = bid_signal.get();
+            let fid = feedback_id.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::delete_req::<serde_json::Value>(
+                    &format!("/api/books/{}/feedback/{}", bid, fid),
+                ).await.is_ok() {
+                    beta_feedback.update(|fb| fb.retain(|x| x.id != fid));
+                }
+            });
+        }
+    };
+
+    let author_reply = move |feedback_id: String| {
+        move || {
+            let doc = web_sys::window().unwrap().document().unwrap();
+            let selector = format!("#author-reply-{}", feedback_id);
+            let input: web_sys::HtmlTextAreaElement = match doc.query_selector(&selector).ok().flatten() {
+                Some(el) => el.dyn_into().unwrap(),
+                None => return,
+            };
+            let content = input.value();
+            if content.trim().is_empty() { return; }
+            input.set_value("");
+            let bid = bid_signal.get();
+            let fid = feedback_id.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let req = CreateBetaReplyRequest { content };
+                if api::post::<_, serde_json::Value>(
+                    &format!("/api/books/{}/feedback/{}/replies", bid, fid), &req,
+                ).await.is_ok() {
+                    // Refresh feedback
+                    if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/books/{}/feedback", bid)).await {
+                        beta_feedback.set(fb);
+                    }
+                }
+            });
+        }
+    };
+
+    let copy_beta_link = move |token: String| {
+        move || {
+            let origin = web_sys::window()
+                .and_then(|w| w.location().origin().ok())
+                .unwrap_or_default();
+            let url = format!("{}/read/{}", origin, token);
+            if let Some(window) = web_sys::window() {
+                if let Ok(clipboard) = js_sys::Reflect::get(&window.navigator(), &"clipboard".into()) {
+                    let clipboard: web_sys::Clipboard = clipboard.unchecked_into();
+                    let _ = clipboard.write_text(&url);
+                }
+            }
+        }
+    };
+
     // ── Sidebar click handlers ──────────────────────────────────
-    let open_chapters_pane = move || {
+    let _open_chapters_pane = move || {
         active_pane.set(BookPane::Chapters);
         store.sidebar_open.set(false);
     };
@@ -1242,6 +1943,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
             setup();
             store.sidebar_open.set(false);
         }
+    };
+
+    let open_beta_pane = move || {
+        active_pane.set(BookPane::BetaReaders);
+        store.sidebar_open.set(false);
     };
 
     let go_back_to_chapters = move || {
@@ -1355,6 +2061,23 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             class: {move || if matches!(active_pane.get(), BookPane::Typography) { "sidebar-section-header active" } else { "sidebar-section-header" }},
                             onclick: open_typography_pane,
                             "Typography"
+                        }
+
+                        // Beta Readers section header
+                        div {
+                            class: {move || if matches!(active_pane.get(), BookPane::BetaReaders) { "sidebar-section-header active" } else { "sidebar-section-header" }},
+                            onclick: open_beta_pane,
+                            div {
+                                style: "display: flex; align-items: center; justify-content: space-between; width: 100%;",
+                                "Beta Readers"
+                                if !beta_links.get().is_empty() {
+                                    Badge {
+                                        variant: "light",
+                                        size: "xs",
+                                        {move || format!("{}", beta_links.get().len())}
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -1503,23 +2226,77 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 Text { weight: "600", {|| chapter_title.get()} }
                             }
                             div {
-                                class: {|| format!("save-indicator {}", save_status.get())},
-                                {|| match save_status.get() {
-                                    "saving" => "Saving...".to_string(),
-                                    "saved" => "Saved".to_string(),
-                                    _ => "Unsaved".to_string(),
-                                }}
+                                style: "display: flex; align-items: center; gap: 8px;",
+                                div {
+                                    class: {|| format!("save-indicator {}", save_status.get())},
+                                    {|| match save_status.get() {
+                                        "saving" => "Saving...".to_string(),
+                                        "saved" => "Saved".to_string(),
+                                        _ => "Unsaved".to_string(),
+                                    }}
+                                }
+                                if !beta_feedback.get().is_empty() {
+                                    ActionIcon {
+                                        variant: {move || if show_feedback_sidebar.get() { "filled".to_string() } else { "subtle".to_string() }},
+                                        size: "sm",
+                                        onclick: move || show_feedback_sidebar.update(|v| *v = !*v),
+                                        {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
+                                    }
+                                }
                             }
                         }
 
                         {editor_utils::editor_toolbar(__scope)}
 
-                        div { class: "editor-scroll",
+                        div {
+                            style: "display: flex; flex: 1; overflow: hidden;",
+                            div { class: "editor-scroll",
+                                div {
+                                    contenteditable: "true",
+                                    class: "editor-content",
+                                    id: "editor-main",
+                                    p { "Start writing..." }
+                                }
+                            }
+
+                            // Feedback sidebar (in editor)
                             div {
-                                contenteditable: "true",
-                                class: "editor-content",
-                                id: "editor-main",
-                                p { "Start writing..." }
+                                class: "editor-feedback-sidebar",
+                                style: {move || if show_feedback_sidebar.get() { "" } else { "display: none;" }},
+
+                                div { class: "editor-feedback-header",
+                                    "Feedback"
+                                    ActionIcon {
+                                        variant: "subtle",
+                                        size: "xs",
+                                        onclick: move || show_feedback_sidebar.set(false),
+                                        {render_tabler_icon(__scope, TablerIcon::X, TablerIconStyle::Outline)}
+                                    }
+                                }
+                                div { class: "editor-feedback-list",
+                                    for fb in beta_feedback.get().into_iter().filter(|f| {
+                                        if let BookPane::Editor(ref cid) = active_pane.get() {
+                                            f.chapter_id == *cid
+                                        } else {
+                                            false
+                                        }
+                                    }) {
+                                        {editor_feedback_item(__scope, fb, author_reply, resolve_feedback, delete_feedback)}
+                                    }
+
+                                    if beta_feedback.get().iter().filter(|f| {
+                                        if let BookPane::Editor(ref cid) = active_pane.get() {
+                                            f.chapter_id == *cid
+                                        } else {
+                                            false
+                                        }
+                                    }).count() == 0 {
+                                        Center {
+                                            style: "padding: 20px 0;",
+                                            Text { color: "dimmed", size: "sm", "No feedback for this chapter." }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1543,6 +2320,68 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 Space { h: "lg" }
                                 Text { size: "sm", color: "dimmed", "Preview:" }
                                 div { class: "font-preview-box", id: "font-preview" }
+                            }
+                        }
+                    }
+
+                    // Beta Readers pane (CSS toggle)
+                    div {
+                        class: "book-main-scroll",
+                        style: {move || if matches!(active_pane.get(), BookPane::BetaReaders) { "" } else { "display:none;" }},
+
+                        div { class: "chapters-pane",
+                            div { class: "chapters-pane-header",
+                                Title { order: 3, "Beta Readers" }
+                                Button {
+                                    size: "sm",
+                                    onclick: move || {
+                                        new_beta_reader_name.set(String::new());
+                                        new_beta_max_chapter.set(None);
+                                        new_beta_pin_version.set(false);
+                                        show_beta_link_modal.set(true);
+                                    },
+                                    "Create Link"
+                                }
+                            }
+
+                            Space { h: "sm" }
+                            Text { size: "sm", color: "dimmed",
+                                "Share these links with your beta readers. They can read and leave feedback without needing an account."
+                            }
+                            Space { h: "md" }
+
+                            if beta_links.get().is_empty() {
+                                Center {
+                                    style: "padding: 40px 0;",
+                                    Text { color: "dimmed", "No beta reader links yet." }
+                                }
+                            }
+
+                            div { class: "beta-link-list",
+                                for link in beta_links.get() {
+                                    {render_beta_link_card(
+                                        __scope,
+                                        link,
+                                        edit_beta_reader_name,
+                                        edit_beta_max_chapter,
+                                        edit_beta_pinned,
+                                        editing_beta_link,
+                                        copy_beta_link,
+                                        toggle_beta_link_active,
+                                        delete_beta_link,
+                                    )}
+                                }
+                            }
+
+                            // Feedback overview section
+                            if !beta_feedback.get().is_empty() {
+                                Space { h: "lg" }
+                                Title { order: 4, "All Feedback" }
+                                Space { h: "sm" }
+
+                                div { class: "beta-feedback-overview",
+                                    {render_feedback_overview(__scope, &beta_feedback.get(), &store.chapters.get(), author_reply, resolve_feedback, delete_feedback)}
+                                }
                             }
                         }
                     }
@@ -1573,6 +2412,149 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     Button {
                         onclick: add_chapter,
                         "Add"
+                    }
+                }
+            }
+
+            // Create Beta Link Modal
+            Modal {
+                opened_fn: move || show_beta_link_modal.get(),
+                onclose: move || show_beta_link_modal.set(false),
+                title: "Create Beta Reader Link",
+
+                TextInput {
+                    label: "Reader Name",
+                    placeholder: "e.g. Alice, Book Club, etc.",
+                    value_fn: move || new_beta_reader_name.get(),
+                    oninput: move |v: String| new_beta_reader_name.set(v),
+                    onsubmit: add_beta_link,
+                }
+                Space { h: "md" }
+                Text { size: "sm", color: "dimmed",
+                    "Optionally restrict how many chapters the reader can access:"
+                }
+                Space { h: "xs" }
+                div {
+                    style: "display: flex; align-items: center; gap: 8px;",
+                    Text { size: "sm", "Max chapters:" }
+                    input {
+                        id: "beta-max-chapter-input",
+                        r#type: "number",
+                        min: "1",
+                        placeholder: "All",
+                        style: "width: 80px; padding: 4px 8px; border: 1px solid var(--rinch-color-border); border-radius: 4px; background: var(--rinch-color-surface); color: var(--rinch-color-text); font-size: 13px;",
+                    }
+                }
+                Space { h: "md" }
+                div {
+                    style: "display: flex; align-items: center; gap: 8px; cursor: pointer;",
+                    onclick: move || new_beta_pin_version.update(|v| *v = !*v),
+                    div {
+                        style: "width: 20px; height: 20px; border: 1px solid var(--rinch-color-border); border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 14px;",
+                        {move || if new_beta_pin_version.get() { "\u{2713}" } else { "" }}
+                    }
+                    Text { size: "sm", "Pin to current version" }
+                }
+                Text { size: "xs", color: "dimmed",
+                    "If pinned, the reader sees a snapshot of the book as it is now. Otherwise, they always see the latest version."
+                }
+                Space { h: "lg" }
+                Group {
+                    justify: "flex-end",
+                    Button {
+                        variant: "subtle",
+                        onclick: move || show_beta_link_modal.set(false),
+                        "Cancel"
+                    }
+                    Button {
+                        onclick: move || {
+                            // Read max chapter input
+                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                if let Ok(Some(el)) = doc.query_selector("#beta-max-chapter-input") {
+                                    let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
+                                    let val = input.value();
+                                    if let Ok(n) = val.parse::<i64>() {
+                                        new_beta_max_chapter.set(Some(n - 1)); // 0-indexed
+                                    } else {
+                                        new_beta_max_chapter.set(None);
+                                    }
+                                }
+                            }
+                            add_beta_link();
+                        },
+                        "Create"
+                    }
+                }
+            }
+
+            // Edit Beta Link Modal
+            Modal {
+                opened_fn: move || editing_beta_link.get().is_some(),
+                onclose: move || editing_beta_link.set(None),
+                title: "Edit Beta Reader Link",
+
+                TextInput {
+                    label: "Reader Name",
+                    placeholder: "e.g. Alice, Book Club, etc.",
+                    value_fn: move || edit_beta_reader_name.get(),
+                    oninput: move |v: String| edit_beta_reader_name.set(v),
+                    onsubmit: update_beta_link,
+                }
+                Space { h: "md" }
+                Text { size: "sm", color: "dimmed",
+                    "Restrict how many chapters the reader can access (leave empty for all):"
+                }
+                Space { h: "xs" }
+                div {
+                    style: "display: flex; align-items: center; gap: 8px;",
+                    Text { size: "sm", "Max chapters:" }
+                    input {
+                        id: "beta-edit-max-chapter-input",
+                        r#type: "number",
+                        min: "1",
+                        placeholder: "All",
+                        value: {move || edit_beta_max_chapter.get().map(|v| (v + 1).to_string()).unwrap_or_default()},
+                        style: "width: 80px; padding: 4px 8px; border: 1px solid var(--rinch-color-border); border-radius: 4px; background: var(--rinch-color-surface); color: var(--rinch-color-text); font-size: 13px;",
+                    }
+                }
+                Space { h: "md" }
+                div {
+                    style: "display: flex; align-items: center; gap: 8px; cursor: pointer;",
+                    onclick: move || edit_beta_pinned.update(|v| *v = !*v),
+                    div {
+                        style: "width: 20px; height: 20px; border: 1px solid var(--rinch-color-border); border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 14px;",
+                        {move || if edit_beta_pinned.get() { "\u{2713}" } else { "" }}
+                    }
+                    Text { size: "sm", "Pin to current version" }
+                }
+                Text { size: "xs", color: "dimmed",
+                    "If pinned, the reader sees a snapshot. Unpin to show the latest version."
+                }
+                Space { h: "lg" }
+                Group {
+                    justify: "flex-end",
+                    Button {
+                        variant: "subtle",
+                        onclick: move || editing_beta_link.set(None),
+                        "Cancel"
+                    }
+                    Button {
+                        onclick: move || {
+                            // Read max chapter input
+                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                if let Ok(Some(el)) = doc.query_selector("#beta-edit-max-chapter-input") {
+                                    let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
+                                    let val = input.value();
+                                    if let Ok(n) = val.parse::<i64>() {
+                                        edit_beta_max_chapter.set(Some(n - 1)); // 0-indexed
+                                    } else {
+                                        edit_beta_max_chapter.set(None);
+                                    }
+                                }
+                            }
+                            update_beta_link();
+                        },
+                        "Save"
                     }
                 }
             }

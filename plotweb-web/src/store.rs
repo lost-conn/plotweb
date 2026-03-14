@@ -36,6 +36,7 @@ pub enum Route {
     Register,
     Dashboard,
     Book(String),
+    Reader(String),
     ThemePreview,
 }
 
@@ -46,6 +47,7 @@ impl Route {
             Route::Login => "/login".into(),
             Route::Register => "/register".into(),
             Route::Book(id) => format!("/book/{}", id),
+            Route::Reader(token) => format!("/read/{}", token),
             Route::ThemePreview => "/theme".into(),
         }
     }
@@ -63,6 +65,14 @@ impl Route {
                     Route::Dashboard
                 } else {
                     Route::Book(id.to_string())
+                }
+            }
+            _ if path.starts_with("/read/") => {
+                let token = &path[6..];
+                if token.is_empty() {
+                    Route::Dashboard
+                } else {
+                    Route::Reader(token.to_string())
                 }
             }
             _ => Route::Dashboard,

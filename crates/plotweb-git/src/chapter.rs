@@ -198,6 +198,65 @@ pub fn reorder_chapters(base_dir: &PathBuf, book_id: &str, chapter_ids: &[String
     Ok(())
 }
 
+pub fn get_chapter_at_commit(
+    base_dir: &PathBuf,
+    book_id: &str,
+    chapter_id: &str,
+    commit_hex: &str,
+) -> Result<ChapterData> {
+    let dir = book::book_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&dir)?;
+    let oid = git2::Oid::from_str(commit_hex)?;
+
+    let book_json: BookJson = crate::repo::read_json_at_commit(&git_repo, oid, "book.json")?;
+    let sort_order = book_json
+        .chapter_order
+        .iter()
+        .position(|id| id == chapter_id)
+        .unwrap_or(0) as i64;
+
+    let ch_path = format!("chapters/{}.json", chapter_id);
+    let ch: ChapterJson = crate::repo::read_json_at_commit(&git_repo, oid, &ch_path)?;
+
+    Ok(ChapterData {
+        id: chapter_id.to_string(),
+        title: ch.title,
+        content: ch.content,
+        sort_order,
+        created_at: ch.created_at,
+        updated_at: String::new(),
+    })
+}
+
+pub fn list_chapters_at_commit(
+    base_dir: &PathBuf,
+    book_id: &str,
+    commit_hex: &str,
+) -> Result<Vec<ChapterData>> {
+    let dir = book::book_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&dir)?;
+    let oid = git2::Oid::from_str(commit_hex)?;
+
+    let book_json: BookJson = crate::repo::read_json_at_commit(&git_repo, oid, "book.json")?;
+    let mut chapters = Vec::new();
+
+    for (i, chapter_id) in book_json.chapter_order.iter().enumerate() {
+        let ch_path = format!("chapters/{}.json", chapter_id);
+        if let Ok(ch) = crate::repo::read_json_at_commit::<ChapterJson>(&git_repo, oid, &ch_path) {
+            chapters.push(ChapterData {
+                id: chapter_id.clone(),
+                title: ch.title,
+                content: ch.content,
+                sort_order: i as i64,
+                created_at: ch.created_at,
+                updated_at: String::new(),
+            });
+        }
+    }
+
+    Ok(chapters)
+}
+
 fn file_mtime_str(path: &std::path::Path) -> String {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
