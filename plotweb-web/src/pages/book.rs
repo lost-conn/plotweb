@@ -385,6 +385,7 @@ const BOOK_WORKSPACE_CSS: &str = r#"
 .mobile-topbar {
     display: none;
     align-items: center;
+    justify-content: space-between;
     padding: 8px 16px;
     border-bottom: 1px solid var(--rinch-color-border);
     background: var(--pw-color-deep);
@@ -392,6 +393,10 @@ const BOOK_WORKSPACE_CSS: &str = r#"
 }
 
 .sidebar-backdrop {
+    display: none;
+}
+
+.editor-feedback-backdrop {
     display: none;
 }
 
@@ -427,6 +432,23 @@ const BOOK_WORKSPACE_CSS: &str = r#"
     }
     .book-main-scroll {
         padding: 24px 16px;
+    }
+
+    /* Editor feedback bottom sheet */
+    .editor-feedback-sidebar {
+        position: fixed; bottom: 0; left: 0; right: 0;
+        height: 60vh; z-index: 200;
+        width: 100% !important; min-width: 100% !important;
+        border-radius: 12px 12px 0 0;
+        border-top: 1px solid var(--rinch-color-border);
+        border-left: none;
+    }
+    .editor-feedback-sidebar.hidden { display: none !important; }
+    .editor-feedback-sidebar.visible { display: flex !important; }
+    .editor-feedback-backdrop.open {
+        display: block;
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.3); z-index: 199;
     }
 }
 
@@ -2447,6 +2469,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             onclick: toggle_sidebar,
                             {render_tabler_icon(__scope, TablerIcon::Menu2, TablerIconStyle::Outline)}
                         }
+                        if !beta_feedback.get().is_empty() && matches!(active_pane.get(), BookPane::Editor(_)) {
+                            ActionIcon {
+                                variant: {move || if show_feedback_sidebar.get() { "filled".to_string() } else { "subtle".to_string() }},
+                                size: "sm",
+                                onclick: move || show_feedback_sidebar.update(|v| *v = !*v),
+                                {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
+                            }
+                        }
                     }
 
                     // Chapters pane (CSS toggle, always in DOM)
@@ -2587,10 +2617,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 }
                             }
 
+                            // Editor feedback backdrop (mobile)
+                            div {
+                                class: {move || if show_feedback_sidebar.get() { "editor-feedback-backdrop open" } else { "editor-feedback-backdrop" }},
+                                onclick: move || show_feedback_sidebar.set(false),
+                            }
+
                             // Feedback sidebar (in editor)
                             div {
-                                class: "editor-feedback-sidebar",
-                                style: {move || if show_feedback_sidebar.get() { "" } else { "display: none;" }},
+                                class: {move || if show_feedback_sidebar.get() { "editor-feedback-sidebar visible" } else { "editor-feedback-sidebar hidden" }},
 
                                 div { class: "editor-feedback-header",
                                     "Feedback"
@@ -2708,7 +2743,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 Space { h: "sm" }
 
                                 div { class: "beta-feedback-overview",
-                                    {render_feedback_overview(__scope, &beta_feedback.get(), &store.chapters.get(), author_reply, resolve_feedback, delete_feedback, navigate_to_feedback)}
+                                    for fb in beta_feedback.get().into_iter().map(|fb| {
+                                        let ch_title = store.chapters.get().iter()
+                                            .find(|c| c.id == fb.chapter_id)
+                                            .map(|c| c.title.clone())
+                                            .unwrap_or_else(|| String::from("Unknown"));
+                                        (fb, ch_title)
+                                    }) {
+                                        {overview_feedback_item(__scope, fb.0, fb.1, author_reply, resolve_feedback, delete_feedback, navigate_to_feedback)}
+                                    }
                                 }
                             }
                         }

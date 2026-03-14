@@ -316,10 +316,63 @@ const READER_CSS: &str = r#"
     margin-bottom: 8px;
 }
 
+/* Mobile topbar */
+.reader-mobile-topbar {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--rinch-color-border);
+    background: var(--pw-color-deep);
+    flex-shrink: 0;
+}
+
+.reader-sidebar-backdrop { display: none; }
+.reader-feedback-backdrop { display: none; }
+
 @media (max-width: 768px) {
-    .reader-sidebar { display: none; }
-    .reader-feedback-panel { display: none; }
+    .reader-mobile-topbar { display: flex; }
+    .reader-topbar { display: none; }
     .reader-content { padding: 16px; }
+
+    /* Sidebar drawer */
+    .reader-sidebar {
+        display: none;
+        position: fixed; top: 0; left: 0; bottom: 0;
+        z-index: 200; width: 280px; min-width: 280px;
+    }
+    .reader-sidebar.open { display: flex; }
+    .reader-sidebar-backdrop.open {
+        display: block;
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.5); z-index: 199;
+    }
+
+    /* Feedback bottom sheet */
+    .reader-feedback-panel {
+        display: none !important;
+        position: fixed; bottom: 0; left: 0; right: 0;
+        height: 60vh; z-index: 200;
+        width: 100%; min-width: 100%;
+        border-radius: 12px 12px 0 0;
+        border-top: 1px solid var(--rinch-color-border);
+        border-left: none;
+    }
+    .reader-feedback-panel.mobile-open { display: flex !important; }
+    .reader-feedback-backdrop.open {
+        display: block;
+        position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0,0,0,0.3); z-index: 199;
+    }
+
+    /* Tooltip as bottom sheet on mobile */
+    .feedback-tooltip.visible {
+        left: 0 !important; right: 0 !important;
+        top: auto !important; bottom: 0 !important;
+        width: 100%; border-radius: 12px 12px 0 0;
+        padding: 16px;
+    }
+    .feedback-tooltip textarea { width: 100%; }
 }
 "#;
 
@@ -439,6 +492,8 @@ pub fn reader_page(token: String) -> NodeHandle {
     let active_chapter_id: Signal<Option<String>> = Signal::new(None);
     let feedback_list: Signal<Vec<BetaFeedback>> = Signal::new(Vec::new());
     let show_feedback_panel: Signal<bool> = Signal::new(true);
+    let sidebar_open: Signal<bool> = Signal::new(false);
+    let mobile_feedback_open: Signal<bool> = Signal::new(false);
     let error_msg: Signal<Option<String>> = Signal::new(None);
 
     // Tooltip state
@@ -516,6 +571,7 @@ pub fn reader_page(token: String) -> NodeHandle {
         move || {
             active_chapter_id.set(Some(chapter_id.clone()));
             tooltip_visible.set(false);
+            sidebar_open.set(false);
             let tok = token_signal.get();
             let cid = chapter_id.clone();
             wasm_bindgen_futures::spawn_local(async move {
@@ -546,11 +602,61 @@ pub fn reader_page(token: String) -> NodeHandle {
         }
     };
 
-    // Set up text selection listener for feedback tooltip
+    // Shared selection handler for both mouse and touch
+    let handle_selection = std::rc::Rc::new(move |client_x: i32, client_y: i32| {
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let sel = match doc.get_selection().ok().flatten() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let text = sel.to_string().as_string().unwrap_or_default();
+        if text.trim().is_empty() {
+            tooltip_visible.set(false);
+            return;
+        }
+
+        // Get context block (parent paragraph text)
+        let context = if sel.range_count() > 0 {
+            if let Ok(range) = sel.get_range_at(0) {
+                let container = range.common_ancestor_container().ok();
+                let mut node = container;
+                let mut block_text = String::new();
+                // Walk up to find block element
+                while let Some(n) = node {
+                    if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
+                        let tag = el.tag_name().to_lowercase();
+                        if matches!(tag.as_str(), "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" | "li") {
+                            block_text = el.text_content().unwrap_or_default();
+                            break;
+                        }
+                    }
+                    node = n.parent_node();
+                }
+                if block_text.len() > 200 {
+                    block_text.truncate(200);
+                }
+                block_text
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        tooltip_selected_text.set(text);
+        tooltip_context.set(context);
+        tooltip_comment.set(String::new());
+        tooltip_x.set(client_x);
+        tooltip_y.set(client_y);
+        tooltip_visible.set(true);
+    });
+
+    // Set up text selection listener for feedback tooltip (mouse)
     {
         let window = web_sys::window().unwrap();
+        let handle = handle_selection.clone();
         let mouseup_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
-            // Only respond to selection in the reader content area
             let target = match event.target() {
                 Some(t) => t,
                 None => return,
@@ -562,59 +668,46 @@ pub fn reader_page(token: String) -> NodeHandle {
             if el.closest("#reader-content").ok().flatten().is_none() {
                 return;
             }
-
-            let doc = web_sys::window().unwrap().document().unwrap();
-            let sel = match doc.get_selection().ok().flatten() {
-                Some(s) => s,
-                None => return,
-            };
-
-            let text = sel.to_string().as_string().unwrap_or_default();
-            if text.trim().is_empty() {
-                tooltip_visible.set(false);
-                return;
-            }
-
-            // Get context block (parent paragraph text)
-            let context = if sel.range_count() > 0 {
-                if let Ok(range) = sel.get_range_at(0) {
-                    let container = range.common_ancestor_container().ok();
-                    let mut node = container;
-                    let mut block_text = String::new();
-                    // Walk up to find block element
-                    while let Some(n) = node {
-                        if let Ok(el) = n.clone().dyn_into::<web_sys::Element>() {
-                            let tag = el.tag_name().to_lowercase();
-                            if matches!(tag.as_str(), "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" | "li") {
-                                block_text = el.text_content().unwrap_or_default();
-                                break;
-                            }
-                        }
-                        node = n.parent_node();
-                    }
-                    // Truncate to 200 chars
-                    if block_text.len() > 200 {
-                        block_text.truncate(200);
-                    }
-                    block_text
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
-
-            tooltip_selected_text.set(text);
-            tooltip_context.set(context);
-            tooltip_comment.set(String::new());
-            tooltip_x.set(event.client_x());
-            tooltip_y.set(event.client_y() - 10);
-            tooltip_visible.set(true);
+            handle(event.client_x(), event.client_y() - 10);
         }) as Box<dyn FnMut(_)>);
         window.document().unwrap()
             .add_event_listener_with_callback("mouseup", mouseup_closure.as_ref().unchecked_ref())
             .ok();
         mouseup_closure.forget();
+    }
+
+    // Set up text selection listener for feedback tooltip (touch)
+    {
+        let window = web_sys::window().unwrap();
+        let handle = handle_selection.clone();
+        let touchend_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::TouchEvent| {
+            let target: web_sys::EventTarget = match event.target() {
+                Some(t) => t,
+                None => return,
+            };
+            let el: web_sys::Element = match target.dyn_into() {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            if el.closest("#reader-content").ok().flatten().is_none() {
+                return;
+            }
+            // Delay to let mobile browser finalize selection
+            let handle = handle.clone();
+            let closure = wasm_bindgen::closure::Closure::once(move || {
+                handle(0, 0);
+            });
+            web_sys::window().unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    closure.as_ref().unchecked_ref(),
+                    100,
+                ).ok();
+            closure.forget();
+        }) as Box<dyn FnMut(_)>);
+        window.document().unwrap()
+            .add_event_listener_with_callback("touchend", touchend_closure.as_ref().unchecked_ref())
+            .ok();
+        touchend_closure.forget();
     }
 
     // Submit feedback
@@ -707,6 +800,11 @@ pub fn reader_page(token: String) -> NodeHandle {
                     format!(
                         ".reader-workspace {{ font-family: '{body}', serif; }}
                          .reader-sidebar-title {{ font-family: '{h1}', cursive; }}
+                         .reader-topbar {{ font-family: '{body}', serif; }}
+                         .reader-mobile-topbar {{ font-family: '{body}', serif; }}
+                         .feedback-tooltip {{ font-family: '{body}', serif; }}
+                         .feedback-quote {{ font-family: '{body}', serif; }}
+                         .reader-feedback-panel {{ font-family: '{body}', serif; }}
                          .reader-content {{ font-family: '{body}', serif; }}
                          .reader-content p {{ margin: 0 0 {p_spacing}px 0; text-indent: {p_indent}px; }}
                          .reader-content h1, .reader-content h2,
@@ -731,8 +829,15 @@ pub fn reader_page(token: String) -> NodeHandle {
                 }
             } else {
                 div { class: "reader-workspace",
+                    // Mobile sidebar backdrop
+                    div {
+                        class: {move || if sidebar_open.get() { "reader-sidebar-backdrop open" } else { "reader-sidebar-backdrop" }},
+                        onclick: move || sidebar_open.set(false),
+                    }
+
                     // Sidebar
-                    div { class: "reader-sidebar",
+                    div {
+                        class: {move || if sidebar_open.get() { "reader-sidebar open" } else { "reader-sidebar" }},
                         div { class: "reader-sidebar-title",
                             {move || view_data.get().map(|d| d.book_title.clone()).unwrap_or_default()}
                         }
@@ -751,6 +856,26 @@ pub fn reader_page(token: String) -> NodeHandle {
 
                     // Main pane
                     div { class: "reader-main-pane",
+                        // Mobile topbar
+                        div { class: "reader-mobile-topbar",
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "sm",
+                                onclick: move || sidebar_open.update(|v| *v = !*v),
+                                {render_tabler_icon(__scope, TablerIcon::Menu2, TablerIconStyle::Outline)}
+                            }
+                            Text { weight: "600", size: "sm",
+                                {move || current_chapter.get().map(|c| c.title.clone()).unwrap_or_else(|| "Select a chapter".into())}
+                            }
+                            ActionIcon {
+                                variant: {move || if mobile_feedback_open.get() { "filled".to_string() } else { "subtle".to_string() }},
+                                size: "sm",
+                                onclick: move || mobile_feedback_open.update(|v| *v = !*v),
+                                {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
+                            }
+                        }
+
+                        // Desktop topbar
                         div { class: "reader-topbar",
                             div {
                                 style: "display: flex; align-items: center; gap: 8px;",
@@ -791,9 +916,24 @@ pub fn reader_page(token: String) -> NodeHandle {
                                     }
                                 }
 
+                                // Mobile feedback backdrop
+                                div {
+                                    class: {move || if mobile_feedback_open.get() { "reader-feedback-backdrop open" } else { "reader-feedback-backdrop" }},
+                                    onclick: move || mobile_feedback_open.set(false),
+                                }
+
                                 // Feedback panel
                                 div {
-                                    class: {move || if show_feedback_panel.get() { "reader-feedback-panel" } else { "reader-feedback-panel hidden" }},
+                                    class: {move || {
+                                        let desktop = show_feedback_panel.get();
+                                        let mobile = mobile_feedback_open.get();
+                                        match (desktop, mobile) {
+                                            (true, true) => "reader-feedback-panel mobile-open",
+                                            (true, false) => "reader-feedback-panel",
+                                            (false, true) => "reader-feedback-panel hidden mobile-open",
+                                            (false, false) => "reader-feedback-panel hidden",
+                                        }
+                                    }},
                                     div { class: "reader-feedback-header",
                                         "Feedback"
                                         Badge {

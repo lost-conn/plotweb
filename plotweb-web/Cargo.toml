@@ -28,6 +28,7 @@ web-sys = { version = "0.3", features = [
     "History", "PopStateEvent",
     "Navigator", "Clipboard",
     "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "BinaryType",
+    "TouchEvent", "TouchList", "Touch",
 ] }
 
 serde = { version = "1", features = ["derive"] }
