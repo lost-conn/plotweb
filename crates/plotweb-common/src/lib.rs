@@ -194,7 +194,7 @@ pub struct BetaChapterSummary {
 
 // ── Import ──
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImportPreviewChapter {
     pub title: String,
     pub content_preview: String,

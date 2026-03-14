@@ -2992,7 +2992,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         r#type: "file",
                         accept: ".md,.txt,.docx,.markdown",
                         style: "display: none;",
-                        onchange: move |_event: web_sys::Event| {
+                        onchange: move |_v: String| {
                             if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                                 if let Ok(Some(el)) = doc.query_selector("#import-file-input") {
                                     let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
