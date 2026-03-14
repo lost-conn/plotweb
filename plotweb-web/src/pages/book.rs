@@ -1516,6 +1516,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let import_filename: Signal<String> = Signal::new(String::new());
     let import_loading: Signal<bool> = Signal::new(false);
     let import_error: Signal<Option<String>> = Signal::new(None);
+    let import_file: Signal<Option<web_sys::File>> = Signal::new(None);
     // Full chapter content stored separately (preview only has truncated text)
     let import_full_chapters: Signal<Vec<ImportChapter>> = Signal::new(Vec::new());
 
@@ -2964,6 +2965,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     import_full_chapters.set(Vec::new());
                     import_error.set(None);
                     import_filename.set(String::new());
+                    import_file.set(None);
                 },
                 title: "Import Manuscript",
 
@@ -2976,69 +2978,57 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     div {
                         style: "display: flex; flex-direction: column; align-items: center; padding: 32px; border: 2px dashed var(--rinch-color-border); border-radius: 8px; cursor: pointer;",
                         onclick: move || {
-                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                                if let Ok(Some(el)) = doc.query_selector("#import-file-input") {
-                                    let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
-                                    input.click();
+                            // Create a temporary file input, attach a change
+                            // listener, and click it.  rinch's onchange passes
+                            // a String (the input value) which is useless for
+                            // file inputs, so we use the raw DOM API instead.
+                            let doc = match web_sys::window().and_then(|w| w.document()) {
+                                Some(d) => d,
+                                None => return,
+                            };
+                            let input: web_sys::HtmlInputElement = doc
+                                .create_element("input").unwrap()
+                                .dyn_into().unwrap();
+                            input.set_type("file");
+                            input.set_accept(".md,.txt,.docx,.markdown");
+                            input.style().set_property("display", "none").ok();
+                            doc.body().unwrap().append_child(&input).ok();
+
+                            let input_clone = input.clone();
+                            let change_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
+                                if let Some(files) = input_clone.files() {
+                                    if let Some(file) = files.get(0) {
+                                        import_loading.set(true);
+                                        import_error.set(None);
+                                        import_file.set(Some(file.clone()));
+                                        let bid = bid_signal.get();
+                                        let input_remove = input_clone.clone();
+                                        wasm_bindgen_futures::spawn_local(async move {
+                                            match api::upload_file::<ImportPreviewResponse>(
+                                                &format!("/api/books/{}/import/preview", bid),
+                                                &file,
+                                            ).await {
+                                                Ok(resp) => {
+                                                    import_filename.set(resp.filename);
+                                                    import_preview.set(resp.chapters);
+                                                }
+                                                Err(e) => {
+                                                    import_error.set(Some(e.message));
+                                                }
+                                            }
+                                            import_loading.set(false);
+                                            input_remove.remove();
+                                        });
+                                    }
                                 }
-                            }
+                            }) as Box<dyn FnMut(_)>);
+                            input.add_event_listener_with_callback("change", change_handler.as_ref().unchecked_ref()).ok();
+                            change_handler.forget();
+                            input.click();
                         },
                         {render_tabler_icon(__scope, TablerIcon::Upload, TablerIconStyle::Outline)}
                         Space { h: "xs" }
                         Text { size: "sm", color: "dimmed", "Click to select file" }
-                    }
-                    input {
-                        id: "import-file-input",
-                        r#type: "file",
-                        accept: ".md,.txt,.docx,.markdown",
-                        style: "display: none;",
-                        onchange: move |_v: String| {
-                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                                if let Ok(Some(el)) = doc.query_selector("#import-file-input") {
-                                    let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
-                                    if let Some(files) = input.files() {
-                                        if let Some(file) = files.get(0) {
-                                            import_loading.set(true);
-                                            import_error.set(None);
-                                            let bid = bid_signal.get();
-                                            wasm_bindgen_futures::spawn_local(async move {
-                                                match api::upload_file::<ImportPreviewResponse>(
-                                                    &format!("/api/books/{}/import/preview", bid),
-                                                    &file,
-                                                ).await {
-                                                    Ok(resp) => {
-                                                        import_filename.set(resp.filename);
-                                                        // Store full content for confirm
-                                                        // For preview, we re-upload; but we need to store the file data.
-                                                        // Actually, the preview endpoint already returns everything we need.
-                                                        // But the confirm needs full content, which the preview only has truncated.
-                                                        // We'll need to re-read the file for confirm. Instead, let's
-                                                        // store the data from a second read.
-                                                        // Actually, let's just use the FileReader API to keep the raw bytes,
-                                                        // and parse both preview and confirm from that.
-                                                        // For simplicity: the server preview returns truncated content,
-                                                        // but the confirm endpoint takes { chapters: [{title, content}] }
-                                                        // which the user provides. So we need the full content.
-                                                        // Solution: have the server also return full content in the preview.
-                                                        // Or: upload the file again on confirm.
-                                                        // Simplest: upload once for preview, then on confirm just send
-                                                        // the chapter titles (user may have edited them).
-                                                        // Let's adjust: the confirm endpoint re-parses the file.
-                                                        // Actually simplest: just return full content from preview response
-                                                        // and store it client-side. The content_preview is for display only.
-                                                        import_preview.set(resp.chapters);
-                                                    }
-                                                    Err(e) => {
-                                                        import_error.set(Some(e.message));
-                                                    }
-                                                }
-                                                import_loading.set(false);
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        },
                     }
                 }
 
@@ -3097,38 +3087,31 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         Button {
                             onclick: move || {
                                 let bid = bid_signal.get();
+                                let file = match import_file.get() {
+                                    Some(f) => f,
+                                    None => return,
+                                };
                                 import_loading.set(true);
-                                // Re-upload file to confirm endpoint which re-parses and creates chapters
-                                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                                    if let Ok(Some(el)) = doc.query_selector("#import-file-input") {
-                                        let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
-                                        if let Some(files) = input.files() {
-                                            if let Some(file) = files.get(0) {
-                                                wasm_bindgen_futures::spawn_local(async move {
-                                                    match api::upload_file::<Vec<Chapter>>(
-                                                        &format!("/api/books/{}/import/confirm", bid),
-                                                        &file,
-                                                    ).await {
-                                                        Ok(new_chapters) => {
-                                                            store.chapters.update(|ch| ch.extend(new_chapters));
-                                                            show_import_modal.set(false);
-                                                            import_preview.set(Vec::new());
-                                                            import_full_chapters.set(Vec::new());
-                                                            import_error.set(None);
-                                                            import_filename.set(String::new());
-                                                        }
-                                                        Err(e) => {
-                                                            import_error.set(Some(e.message));
-                                                        }
-                                                    }
-                                                    import_loading.set(false);
-                                                });
-                                                return;
-                                            }
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    match api::upload_file::<Vec<Chapter>>(
+                                        &format!("/api/books/{}/import/confirm", bid),
+                                        &file,
+                                    ).await {
+                                        Ok(new_chapters) => {
+                                            store.chapters.update(|ch| ch.extend(new_chapters));
+                                            show_import_modal.set(false);
+                                            import_preview.set(Vec::new());
+                                            import_full_chapters.set(Vec::new());
+                                            import_error.set(None);
+                                            import_filename.set(String::new());
+                                            import_file.set(None);
+                                        }
+                                        Err(e) => {
+                                            import_error.set(Some(e.message));
                                         }
                                     }
-                                }
-                                import_loading.set(false);
+                                    import_loading.set(false);
+                                });
                             },
                             {move || format!("Import {} Chapters", import_preview.get().len())}
                         }
