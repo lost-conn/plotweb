@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use wasm_bindgen::JsCast;
 use rinch::prelude::*;
 use rinch_core::use_store;
@@ -1265,6 +1266,10 @@ fn do_switch_chapter(
     do_switch_chapter_inner(active_pane, auto_save_timer_id, save_status, editor_loaded, chapter_title, store, bid, new_chapter_id, None);
 }
 
+thread_local! {
+    static SWITCH_GEN: Cell<u32> = Cell::new(0);
+}
+
 fn do_switch_chapter_inner(
     active_pane: Signal<BookPane>,
     auto_save_timer_id: Signal<i32>,
@@ -1276,6 +1281,10 @@ fn do_switch_chapter_inner(
     new_chapter_id: &str,
     pending_scroll: Option<Signal<Option<(String, String)>>>,
 ) {
+    // Increment switch generation to cancel any in-flight loads
+    SWITCH_GEN.with(|g| g.set(g.get().wrapping_add(1)));
+    let switch_gen = SWITCH_GEN.with(|g| g.get());
+
     // Clear any pending auto-save timer
     let prev = auto_save_timer_id.get();
     if prev != 0 {
@@ -1331,6 +1340,10 @@ fn do_switch_chapter_inner(
             let content = chapter.content.clone();
             let window = web_sys::window().unwrap();
             let closure = wasm_bindgen::closure::Closure::once(move || {
+                // Bail if another switch happened since we started
+                if SWITCH_GEN.with(|g| g.get()) != switch_gen {
+                    return;
+                }
                 if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
                     if let Ok(Some(el)) = doc.query_selector("#editor-main") {
                         if content.is_empty() {
