@@ -2395,9 +2395,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         div {
                             class: {move || if matches!(active_pane.get(), BookPane::Chapters) { "sidebar-section-header active" } else { "sidebar-section-header" }},
                             div {
-                                style: "display: flex; align-items: center; gap: 4px; cursor: pointer;",
+                                style: "display: flex; align-items: center; cursor: pointer;",
                                 onclick: move || chapters_collapsed.update(|c| *c = !*c),
-                                {move || if chapters_collapsed.get() { "\u{25b8}" } else { "\u{25be}" }}
+                                span {
+                                    style: "margin-right: 6px; display: inline-flex; align-items: center; font-size: 10px; line-height: 1; position: relative; top: -1px;",
+                                    {move || if chapters_collapsed.get() { "\u{25b8}" } else { "\u{25be}" }}
+                                }
                                 "Chapters"
                             }
                             div {
