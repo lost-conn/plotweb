@@ -11,6 +11,7 @@ pub fn login_page() -> NodeHandle {
     let store = use_store::<AppStore>();
     let username = Signal::new(String::new());
     let password = Signal::new(String::new());
+    let password_visible = Signal::new(false);
     let remember_me = Signal::new(false);
     let error = Signal::new(Option::<String>::None);
     let submitting = Signal::new(false);
@@ -94,7 +95,9 @@ pub fn login_page() -> NodeHandle {
                     label: "Password",
                     placeholder: "Your password",
                     value_fn: move || password.get(),
+                    visible_fn: move || password_visible.get(),
                     oninput: move |v: String| password.set(v),
+                    ontoggle: move || password_visible.update(|v| *v = !*v),
                 }
                 Space { h: "md" }
                 Checkbox {
