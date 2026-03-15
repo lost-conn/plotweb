@@ -255,6 +255,14 @@ pub fn editor_toolbar() -> NodeHandle {
 
             {separator(__scope)}
 
+            // Text alignment
+            {toolbar_button(__scope, TablerIcon::AlignLeft, "Align Left", move || exec_cmd("justifyLeft"))}
+            {toolbar_button(__scope, TablerIcon::AlignCenter, "Align Center", move || exec_cmd("justifyCenter"))}
+            {toolbar_button(__scope, TablerIcon::AlignRight, "Align Right", move || exec_cmd("justifyRight"))}
+            {toolbar_button(__scope, TablerIcon::AlignJustified, "Justify", move || exec_cmd("justifyFull"))}
+
+            {separator(__scope)}
+
             // Undo / Redo
             {toolbar_button(__scope, TablerIcon::ArrowBackUp, "Undo (Ctrl+Z)", move || exec_cmd("undo"))}
             {toolbar_button(__scope, TablerIcon::ArrowForwardUp, "Redo (Ctrl+Shift+Z)", move || exec_cmd("redo"))}
@@ -267,6 +275,7 @@ pub fn markdown_to_html(md: &str) -> String {
     let mut html = String::new();
     let mut in_list = false;
     let mut list_type = "";
+    let mut pending_align: Option<&str> = None;
 
     for line in md.lines() {
         let trimmed = line.trim();
@@ -279,19 +288,38 @@ pub fn markdown_to_html(md: &str) -> String {
             continue;
         }
 
+        // Check for alignment marker: {align:center}, {align:right}, {align:justify}
+        if let Some(rest) = trimmed.strip_prefix("{align:") {
+            if let Some(align) = rest.strip_suffix('}') {
+                pending_align = match align {
+                    "center" => Some("center"),
+                    "right" => Some("right"),
+                    "justify" => Some("justify"),
+                    _ => None,
+                };
+                continue;
+            }
+        }
+
+        let style_attr = if let Some(align) = pending_align.take() {
+            format!(" style=\"text-align: {};\"", align)
+        } else {
+            String::new()
+        };
+
         // Headings
         if let Some(rest) = trimmed.strip_prefix("### ") {
             if in_list { html.push_str(&format!("</{}>", list_type)); in_list = false; }
-            html.push_str(&format!("<h3>{}</h3>", inline_md(rest)));
+            html.push_str(&format!("<h3{}>{}</h3>", style_attr, inline_md(rest)));
         } else if let Some(rest) = trimmed.strip_prefix("## ") {
             if in_list { html.push_str(&format!("</{}>", list_type)); in_list = false; }
-            html.push_str(&format!("<h2>{}</h2>", inline_md(rest)));
+            html.push_str(&format!("<h2{}>{}</h2>", style_attr, inline_md(rest)));
         } else if let Some(rest) = trimmed.strip_prefix("# ") {
             if in_list { html.push_str(&format!("</{}>", list_type)); in_list = false; }
-            html.push_str(&format!("<h1>{}</h1>", inline_md(rest)));
+            html.push_str(&format!("<h1{}>{}</h1>", style_attr, inline_md(rest)));
         } else if let Some(rest) = trimmed.strip_prefix("> ") {
             if in_list { html.push_str(&format!("</{}>", list_type)); in_list = false; }
-            html.push_str(&format!("<blockquote><p>{}</p></blockquote>", inline_md(rest)));
+            html.push_str(&format!("<blockquote><p{}>{}</p></blockquote>", style_attr, inline_md(rest)));
         } else if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
             if !in_list || list_type != "ul" {
                 if in_list { html.push_str(&format!("</{}>", list_type)); }
@@ -314,7 +342,7 @@ pub fn markdown_to_html(md: &str) -> String {
             html.push_str("<hr>");
         } else {
             if in_list { html.push_str(&format!("</{}>", list_type)); in_list = false; }
-            html.push_str(&format!("<p>{}</p>", inline_md(trimmed)));
+            html.push_str(&format!("<p{}>{}</p>", style_attr, inline_md(trimmed)));
         }
     }
 
@@ -391,6 +419,35 @@ pub fn inline_md(text: &str) -> String {
     result
 }
 
+/// Extract text-align value from a tag's attributes string.
+/// Checks both `style="text-align: center"` and `align="center"` (legacy).
+fn extract_text_align(tag_attrs: &str) -> Option<&'static str> {
+    // Check style attribute
+    if let Some(style_start) = tag_attrs.find("text-align:") {
+        let rest = &tag_attrs[style_start + 11..];
+        let rest = rest.trim_start();
+        if rest.starts_with("center") {
+            return Some("center");
+        } else if rest.starts_with("right") {
+            return Some("right");
+        } else if rest.starts_with("justify") {
+            return Some("justify");
+        }
+    }
+    // Check legacy align attribute: align="center"
+    if let Some(align_start) = tag_attrs.find("align=\"") {
+        let rest = &tag_attrs[align_start + 7..];
+        if rest.starts_with("center") {
+            return Some("center");
+        } else if rest.starts_with("right") {
+            return Some("right");
+        } else if rest.starts_with("justify") {
+            return Some("justify");
+        }
+    }
+    None
+}
+
 /// Simple HTML to markdown converter for saving content.
 pub fn html_to_markdown(html: &str) -> String {
     let mut md = String::new();
@@ -420,6 +477,11 @@ pub fn html_to_markdown(html: &str) -> String {
             let tag = tag_name.split_whitespace().next().unwrap_or("").to_lowercase();
 
             if !is_closing {
+                // Check for text-align in tag attributes
+                if let Some(align) = extract_text_align(&tag_name) {
+                    md.push_str(&format!("{{align:{}}}\n", align));
+                }
+
                 match tag.as_str() {
                     "h1" => md.push_str("# "),
                     "h2" => md.push_str("## "),
@@ -447,7 +509,7 @@ pub fn html_to_markdown(html: &str) -> String {
                 }
             } else {
                 match tag.as_str() {
-                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "blockquote" | "li" => {
+                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "blockquote" | "li" => {
                         md.push('\n');
                     }
                     "strong" | "b" => md.push_str("**"),

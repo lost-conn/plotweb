@@ -50,7 +50,11 @@ pub fn split_chapters(data: &[u8]) -> Result<Vec<DetectedChapter>, ImportError> 
             }
             current_title = Some(para.text.clone());
         } else if !para.text.is_empty() {
-            current_lines.push(para.text.clone());
+            if let Some(ref align) = para.alignment {
+                current_lines.push(format!("{{align:{}}}\n{}", align, para.text));
+            } else {
+                current_lines.push(para.text.clone());
+            }
         }
     }
 
@@ -80,6 +84,7 @@ pub fn split_chapters(data: &[u8]) -> Result<Vec<DetectedChapter>, ImportError> 
 struct Paragraph {
     text: String,
     is_heading: bool,
+    alignment: Option<String>,
 }
 
 /// Map from style ID -> whether it's a heading style.
@@ -160,8 +165,15 @@ fn parse_document_xml(xml: &[u8], style_map: &StyleMap) -> Result<Vec<Paragraph>
 
     let mut in_paragraph = false;
     let mut in_run = false;
+    let mut in_rpr = false;
     let mut para_text = String::new();
     let mut is_heading = false;
+    let mut para_alignment: Option<String> = None;
+
+    // Run-level formatting flags (reset per run)
+    let mut run_bold = false;
+    let mut run_italic = false;
+    let mut run_text = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -174,6 +186,7 @@ fn parse_document_xml(xml: &[u8], style_map: &StyleMap) -> Result<Vec<Paragraph>
                         in_paragraph = true;
                         para_text.clear();
                         is_heading = false;
+                        para_alignment = None;
                     }
                     b"pStyle" if in_paragraph => {
                         for attr in e.attributes().flatten() {
@@ -196,8 +209,56 @@ fn parse_document_xml(xml: &[u8], style_map: &StyleMap) -> Result<Vec<Paragraph>
                             }
                         }
                     }
+                    b"jc" if in_paragraph => {
+                        for attr in e.attributes().flatten() {
+                            if local_name(attr.key.as_ref()) == b"val" {
+                                let val = String::from_utf8_lossy(&attr.value).to_lowercase();
+                                match val.as_str() {
+                                    "center" => para_alignment = Some("center".into()),
+                                    "right" | "end" => para_alignment = Some("right".into()),
+                                    "both" | "distribute" => para_alignment = Some("justify".into()),
+                                    _ => {} // "left"/"start" is the default
+                                }
+                            }
+                        }
+                    }
                     b"r" if in_paragraph => {
                         in_run = true;
+                        run_bold = false;
+                        run_italic = false;
+                        run_text.clear();
+                    }
+                    b"rPr" if in_run => {
+                        in_rpr = true;
+                    }
+                    b"b" if in_rpr => {
+                        // <b/> or <b w:val="true"/> means bold; <b w:val="false"/> means not bold
+                        let mut is_off = false;
+                        for attr in e.attributes().flatten() {
+                            if local_name(attr.key.as_ref()) == b"val" {
+                                let v = String::from_utf8_lossy(&attr.value).to_lowercase();
+                                if v == "false" || v == "0" {
+                                    is_off = true;
+                                }
+                            }
+                        }
+                        if !is_off {
+                            run_bold = true;
+                        }
+                    }
+                    b"i" if in_rpr => {
+                        let mut is_off = false;
+                        for attr in e.attributes().flatten() {
+                            if local_name(attr.key.as_ref()) == b"val" {
+                                let v = String::from_utf8_lossy(&attr.value).to_lowercase();
+                                if v == "false" || v == "0" {
+                                    is_off = true;
+                                }
+                            }
+                        }
+                        if !is_off {
+                            run_italic = true;
+                        }
                     }
                     b"br" if in_run => {
                         para_text.push('\n');
@@ -216,17 +277,25 @@ fn parse_document_xml(xml: &[u8], style_map: &StyleMap) -> Result<Vec<Paragraph>
                     b"p" => {
                         in_paragraph = false;
                         let text = para_text.trim().to_string();
-                        paragraphs.push(Paragraph { text, is_heading });
+                        paragraphs.push(Paragraph { text, is_heading, alignment: para_alignment.take() });
                     }
                     b"r" => {
+                        // Flush run text with formatting
+                        if !run_text.is_empty() {
+                            let formatted = wrap_formatting(&run_text, run_bold, run_italic);
+                            para_text.push_str(&formatted);
+                        }
                         in_run = false;
+                    }
+                    b"rPr" => {
+                        in_rpr = false;
                     }
                     _ => {}
                 }
             }
             Ok(Event::Text(ref e)) if in_run => {
                 if let Ok(text) = e.unescape() {
-                    para_text.push_str(&text);
+                    run_text.push_str(&text);
                 }
             }
             Ok(Event::Eof) => break,
@@ -237,6 +306,16 @@ fn parse_document_xml(xml: &[u8], style_map: &StyleMap) -> Result<Vec<Paragraph>
     }
 
     Ok(paragraphs)
+}
+
+/// Wrap text in markdown bold/italic markers.
+fn wrap_formatting(text: &str, bold: bool, italic: bool) -> String {
+    match (bold, italic) {
+        (true, true) => format!("***{}***", text),
+        (true, false) => format!("**{}**", text),
+        (false, true) => format!("*{}*", text),
+        (false, false) => text.to_string(),
+    }
 }
 
 /// Get the local name of an XML tag, stripping the namespace prefix.
