@@ -798,15 +798,19 @@ pub fn reader_page(token: String) -> NodeHandle {
                     let p_indent = fs.paragraph_indent.unwrap_or(0.0);
 
                     format!(
-                        ".reader-workspace {{ font-family: '{body}', serif; }}
+                        ".reader-workspace {{ --rinch-font-family: '{body}', serif; font-family: '{body}', serif; }}
                          .reader-sidebar-title {{ font-family: '{h1}', cursive; }}
                          .reader-topbar {{ font-family: '{body}', serif; }}
+                         .reader-topbar > div:first-child .rinch-text {{ font-family: '{h1}', cursive; }}
                          .reader-mobile-topbar {{ font-family: '{body}', serif; }}
+                         .reader-mobile-topbar > .rinch-text {{ font-family: '{h1}', cursive; }}
                          .feedback-tooltip {{ font-family: '{body}', serif; }}
+                         .feedback-tooltip .rinch-button {{ font-family: '{body}', serif; }}
                          .feedback-quote {{ font-family: '{body}', serif; }}
                          .reader-feedback-panel {{ font-family: '{body}', serif; }}
                          .reader-content {{ font-family: '{body}', serif; }}
                          .reader-content p {{ margin: 0 0 {p_spacing}px 0; text-indent: {p_indent}px; }}
+                         .reader-welcome h2 {{ font-family: '{h1}', cursive; }}
                          .reader-content h1, .reader-content h2,
                          .reader-content h3 {{ font-family: '{h1}', cursive; }}
                          .reader-content blockquote {{ font-family: '{quote}', serif; }}"
