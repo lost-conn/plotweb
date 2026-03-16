@@ -12,11 +12,11 @@ PlotWeb is a fiction writing web application with a Rust backend (Axum) and a Ru
 
 - `crates/plotweb-common` — Shared types (User, Book, Chapter, API request/response structs) used by both server and web client.
 - `crates/plotweb-server` — Axum REST API server. SQLite via sqlx, session auth via tower-sessions (in-memory store). Runs on port 3000. Serves the built frontend as a static SPA fallback from `plotweb-web/dist/`.
-- `crates/plotweb-git` — Git-backed storage engine for book/chapter content. Per-book locking via `HashMap<String, Arc<Mutex<()>>>`. All git/disk operations wrapped in `tokio::task::spawn_blocking`.
+- `crates/plotweb-git` — Git-backed storage engine for book/chapter content and notes. Per-book locking via `HashMap<String, Arc<Mutex<()>>>`. All git/disk operations wrapped in `tokio::task::spawn_blocking`.
 - `crates/plotweb-import` — Document import supporting Markdown and DOCX. Auto-detects chapter boundaries.
 - `plotweb-web` — WASM frontend built with **Trunk**. Uses the rinch UI framework (signals, `rsx!` macro, components). Proxies `/api/` to `localhost:3000` in dev via Trunk config.
 
-**Storage** — After migration 003, chapters live only in git repositories (one repo per book under `DATA_DIR`). SQLite tracks ownership (user→book mapping) but not content. Chapters are stored as JSON files with a `book.json` containing chapter order.
+**Storage** — After migration 003, chapters live only in git repositories (one repo per book under `DATA_DIR`). SQLite tracks ownership (user→book mapping) but not content. Chapters are stored as JSON files with a `book.json` containing chapter order. Notes are also stored in git with a hierarchical tree structure (`notes.json` for tree, individual note JSON files).
 
 **Database** — SQLite (`plotweb.db`), WAL mode, foreign keys enabled at connection time. Migrations applied at startup from `migrations/*.sql` via `include_str!` in `crates/plotweb-server/src/db.rs`. Migrations are run manually in order (not using sqlx migrate). Five migrations: initial schema → font_settings → git migration → beta readers → pinned commits.
 
@@ -33,6 +33,7 @@ All under `/api/`:
 - **Auth**: `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`
 - **Books**: `/books` (list/create), `/books/{id}` (get/update/delete)
 - **Chapters**: `/books/{book_id}/chapters` (CRUD + reorder)
+- **Notes**: `/books/{book_id}/notes` (CRUD + `/move` + `/tree`)
 - **Import**: `/books/{book_id}/import/preview`, `/books/{book_id}/import/confirm`
 - **Fonts**: `/fonts` (list Google Fonts, cached)
 - **Beta Links** (auth'd): `/books/{book_id}/beta-links` (CRUD)

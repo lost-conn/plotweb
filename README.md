@@ -32,6 +32,10 @@ The kind of stack that makes people say "wait, really?"
 - **Session auth** with "remember me" (stay logged in for 30 days, or don't — your call)
 - **Enter to submit** on every form, because clicking buttons is for 2008
 - **Git-versioned content** — every save is a commit, every book is a repo
+- **Beta reader links** — generate shareable URLs that give readers access to your manuscript without needing an account. Control how many chapters they can see, pin them to a specific version so your midnight rewrites don't ambush someone mid-read, and deactivate links when you've had enough feedback for one lifetime
+- **Inline feedback** — beta readers highlight text and leave comments right where the problems are. Authors can reply, resolve, or quietly pretend they didn't see it. WebSocket updates mean feedback appears in real time, so you can watch your prose get critiqued live if you enjoy that sort of thing
+- **Manuscript import** — drag in a Markdown or DOCX file and PlotWeb will auto-detect chapter boundaries, split everything up, and preserve your bold, italic, and alignment. For when you're migrating from the tool you've already outgrown
+- **Hierarchical notes** — color-coded note cards that nest inside each other, with drag-and-drop reordering. For character sheets, world-building, plot threads, or the increasingly desperate list of things you need to fix in act two
 
 ## Running locally
 
@@ -58,9 +62,10 @@ docker compose up --build
 crates/
   plotweb-common/    Shared types — the diplomatic middle ground
   plotweb-server/    Axum API, SQLite, session auth, font proxy
-  plotweb-git/       Git-backed book/chapter storage engine
+  plotweb-git/       Git-backed book/chapter/notes storage engine
+  plotweb-import/    Markdown and DOCX import with chapter detection
 plotweb-web/         WASM frontend (separate build toolchain)
-migrations/          SQLite schema (001: initial, 002: fonts, 003: git migration)
+migrations/          SQLite schema (5 migrations: schema → fonts → git → beta readers → pinned commits)
 deploy.sh            Auto-deploy script for the cron-inclined
 ```
 
