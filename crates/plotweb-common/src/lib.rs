@@ -218,6 +218,59 @@ pub struct ImportChapter {
     pub content: String,
 }
 
+// ── Notes ──
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Note {
+    pub id: String,
+    pub book_id: String,
+    pub title: String,
+    pub content: String,
+    pub color: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NoteTree {
+    pub root_order: Vec<String>,
+    pub children: std::collections::HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub collapsed: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NotesResponse {
+    pub notes: Vec<Note>,
+    pub tree: NoteTree,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateNoteRequest {
+    pub title: String,
+    pub parent_id: Option<String>,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateNoteRequest {
+    pub title: Option<String>,
+    pub content: Option<String>,
+    pub color: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoveNoteRequest {
+    pub note_id: String,
+    pub new_parent_id: Option<String>,
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateNoteTreeRequest {
+    pub tree: NoteTree,
+}
+
 // ── Error ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,9 +5,10 @@ use rinch_core::use_store;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{
     BetaFeedback, BetaReaderLink, Book, Chapter, CreateBetaLinkRequest,
-    CreateBetaReplyRequest, CreateChapterRequest, FontSettings,
-    ImportChapter, ImportPreviewChapter, ImportPreviewResponse,
-    ReorderChaptersRequest, UpdateBetaLinkRequest, UpdateBookRequest, UpdateChapterRequest,
+    CreateBetaReplyRequest, CreateChapterRequest, CreateNoteRequest, FontSettings,
+    ImportChapter, ImportPreviewChapter, ImportPreviewResponse, MoveNoteRequest,
+    Note, NoteTree, NotesResponse, ReorderChaptersRequest, UpdateBetaLinkRequest,
+    UpdateBookRequest, UpdateChapterRequest, UpdateNoteRequest, UpdateNoteTreeRequest,
 };
 
 use crate::api;
@@ -25,6 +26,8 @@ enum BookPane {
     Editor(String),
     Typography,
     BetaReaders,
+    Notes,
+    NoteEditor(String),
 }
 
 /// CSS for the typography settings section.
@@ -188,6 +191,214 @@ const TYPOGRAPHY_CSS: &str = r#"
     padding: 2px 5px;
     border-radius: 3px;
     font-size: 0.9em;
+}
+"#;
+
+/// CSS for the notes tree.
+const NOTES_CSS: &str = r#"
+.notes-pane {
+    padding: 0;
+    overflow-x: auto;
+    overflow-y: auto;
+    height: 100%;
+}
+.notes-pane-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 24px 24px 0 24px;
+}
+.notes-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px 24px 24px;
+    min-width: min-content;
+}
+.notes-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 24px;
+}
+.note-branch {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 0;
+}
+.note-card {
+    width: 220px;
+    min-height: 48px;
+    flex-shrink: 0;
+    padding: 8px 10px;
+    border-radius: var(--rinch-radius-sm);
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    border-left: 3px solid var(--note-color, var(--rinch-color-teal-6));
+    cursor: grab;
+    transition: box-shadow 0.15s, border-color 0.15s;
+    position: relative;
+}
+.note-card:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.note-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+}
+.note-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    color: var(--rinch-color-text);
+}
+.note-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.note-card:hover .note-card-actions {
+    opacity: 1;
+}
+.note-card-preview {
+    font-size: 11px;
+    color: var(--rinch-color-dimmed);
+    margin-top: 4px;
+    max-height: 80px;
+    overflow: hidden;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.note-children {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-left: 16px;
+    position: relative;
+    justify-content: center;
+}
+.note-children::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 20px;
+    bottom: 20px;
+    width: 1px;
+    background: var(--rinch-color-border);
+}
+.note-child-row {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    position: relative;
+}
+.note-child-row::before {
+    content: '';
+    position: absolute;
+    left: -16px;
+    width: 16px;
+    height: 1px;
+    background: var(--rinch-color-border);
+    top: 20px;
+}
+.note-collapse-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border: none;
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 9px;
+    color: var(--rinch-color-dimmed);
+    position: absolute;
+    right: -9px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 1;
+    line-height: 1;
+}
+.note-collapse-btn:hover {
+    background: var(--rinch-color-border);
+}
+.note-drop-zone {
+    height: 0;
+    border-radius: 2px;
+    transition: height 0.1s, background 0.1s;
+    flex-shrink: 0;
+}
+.note-drop-zone.visible {
+    height: 8px;
+}
+.note-drop-zone.active {
+    height: 8px;
+    background: var(--rinch-color-teal-6);
+}
+.note-card.dragging {
+    opacity: 0.4;
+    pointer-events: none;
+}
+.note-card.drop-child {
+    border-color: var(--rinch-color-teal-6);
+    box-shadow: 0 0 0 2px var(--rinch-color-teal-6);
+}
+.note-editor-pane {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+.note-editor-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--rinch-color-border);
+    flex-shrink: 0;
+}
+.note-editor-topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.note-editor-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+}
+.note-color-picker {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.note-color-dot {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: border-color 0.15s, transform 0.15s;
+}
+.note-color-dot:hover {
+    transform: scale(1.15);
+}
+.note-color-dot.selected {
+    border-color: var(--rinch-color-text);
+}
+.note-save-indicator {
+    font-size: 12px;
+    color: var(--rinch-color-dimmed);
 }
 "#;
 
@@ -1486,6 +1697,313 @@ where
     }
 }
 
+/// Render a drop zone for reordering notes between siblings.
+/// `parent_id` is None for root level, Some(id) for children of a note.
+/// `index` is the insertion position among siblings.
+fn render_drop_zone(
+    __scope: &mut RenderScope,
+    parent_id: Signal<Option<String>>,
+    index: usize,
+    drop_target: Signal<Option<(Option<String>, usize)>>,
+    dragging_note_id: Signal<Option<String>>,
+) -> NodeHandle {
+    rsx! {
+        div {
+            class: {move || {
+                if dragging_note_id.get().is_none() {
+                    "note-drop-zone"
+                } else {
+                    let is_active = drop_target.get()
+                        .map(|(pid, idx)| pid == parent_id.get() && idx == index)
+                        .unwrap_or(false);
+                    if is_active { "note-drop-zone active" } else { "note-drop-zone visible" }
+                }
+            }},
+            ondragenter: move || {
+                drop_target.set(Some((parent_id.get(), index)));
+            },
+        }
+    }
+}
+
+/// Helper to strip HTML tags and produce a text preview, preserving paragraph breaks.
+fn note_content_preview(html: &str) -> String {
+    if html.is_empty() {
+        return String::new();
+    }
+    let text = html
+        .replace("</p>", "\n")
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+        .replace("</div>", "\n")
+        .replace("</li>", "\n");
+    let mut result = String::new();
+    let mut in_tag = false;
+    for ch in text.chars() {
+        if ch == '<' { in_tag = true; }
+        else if ch == '>' { in_tag = false; }
+        else if !in_tag { result.push(ch); }
+    }
+    let mut cleaned = String::new();
+    let mut last_was_newline = false;
+    for ch in result.trim().chars() {
+        if ch == '\n' {
+            if !last_was_newline {
+                cleaned.push('\n');
+                last_was_newline = true;
+            }
+        } else {
+            cleaned.push(ch);
+            last_was_newline = false;
+        }
+    }
+    cleaned.chars().take(200).collect()
+}
+
+/// Render a note card and its children recursively as a horizontal tree.
+/// All data is read reactively from store signals inside closures.
+fn render_note_card(
+    __scope: &mut RenderScope,
+    note_id: String,
+    store: AppStore,
+    active_pane: Signal<BookPane>,
+    bid_signal: Signal<String>,
+    new_note_title: Signal<String>,
+    new_note_parent_id: Signal<Option<String>>,
+    new_note_color: Signal<String>,
+    show_note_modal: Signal<bool>,
+    note_editor_title: Signal<String>,
+    note_editor_color: Signal<Option<String>>,
+    dragging_note_id: Signal<Option<String>>,
+    drop_target: Signal<Option<(Option<String>, usize)>>,
+) -> NodeHandle {
+    let nid = Signal::new(note_id);
+
+    rsx! {
+        div { class: "note-branch",
+            div {
+                style: "position: relative; flex-shrink: 0;",
+                div {
+                    class: {move || {
+                        let mut cls = "note-card".to_string();
+                        let n = nid.get();
+                        if dragging_note_id.get().as_deref() == Some(n.as_str()) {
+                            cls.push_str(" dragging");
+                        }
+                        if let Some((ref pid, _)) = drop_target.get() {
+                            if pid.as_deref() == Some(n.as_str()) {
+                                cls.push_str(" drop-child");
+                            }
+                        }
+                        cls
+                    }},
+                    style: {move || {
+                        let notes = store.notes.get();
+                        let n = nid.get();
+                        let color = notes.iter().find(|note| note.id == n)
+                            .and_then(|note| note.color.clone())
+                            .unwrap_or_else(|| "teal".to_string());
+                        format!("--note-color: var(--rinch-color-{}-6);", color)
+                    }},
+                    draggable: "true",
+                    ondragstart: move || {
+                        dragging_note_id.set(Some(nid.get()));
+                    },
+                    ondragend: move || {
+                        if let Some(target) = drop_target.get() {
+                            if let Some(drag_id) = dragging_note_id.get() {
+                                let bid = bid_signal.get();
+                                let req = MoveNoteRequest {
+                                    note_id: drag_id,
+                                    new_parent_id: target.0,
+                                    index: target.1,
+                                };
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(_) = api::put::<_, serde_json::Value>(
+                                        &format!("/api/books/{}/notes/move", bid), &req,
+                                    ).await {
+                                        if let Ok(resp) = api::get::<NotesResponse>(
+                                            &format!("/api/books/{}/notes", bid),
+                                        ).await {
+                                            store.notes.set(resp.notes);
+                                            store.note_tree.set(Some(resp.tree));
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        dragging_note_id.set(None);
+                        drop_target.set(None);
+                    },
+                    ondragenter: move || {
+                        drop_target.set(Some((Some(nid.get()), 0)));
+                    },
+                    onclick: move || {
+                        let n = nid.get();
+                        let bid = bid_signal.get();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Ok(note) = api::get::<Note>(
+                                &format!("/api/books/{}/notes/{}", bid, n),
+                            ).await {
+                                note_editor_title.set(note.title);
+                                note_editor_color.set(note.color);
+                                active_pane.set(BookPane::NoteEditor(n.clone()));
+
+                                let content = note.content;
+                                let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+                                    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                        if let Some(el) = doc.get_element_by_id("note-editor-main") {
+                                            el.set_inner_html(&content);
+                                        }
+                                    }
+                                }) as Box<dyn FnMut()>);
+                                if let Some(w) = web_sys::window() {
+                                    w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                        closure.as_ref().unchecked_ref(), 50,
+                                    ).ok();
+                                }
+                                closure.forget();
+                            }
+                        });
+                        store.sidebar_open.set(false);
+                    },
+
+                    div { class: "note-card-header",
+                        div { class: "note-card-title",
+                            {move || {
+                                let notes = store.notes.get();
+                                let n = nid.get();
+                                notes.iter().find(|note| note.id == n)
+                                    .map(|note| note.title.clone())
+                                    .unwrap_or_default()
+                            }}
+                        }
+                        div { class: "note-card-actions",
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "xs",
+                                onclick: move || {
+                                    new_note_title.set(String::new());
+                                    new_note_parent_id.set(Some(nid.get()));
+                                    new_note_color.set("teal".to_string());
+                                    show_note_modal.set(true);
+                                },
+                                {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
+                            }
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "xs",
+                                color: "red",
+                                onclick: move || {
+                                    let n = nid.get();
+                                    let bid = bid_signal.get();
+                                    wasm_bindgen_futures::spawn_local(async move {
+                                        if let Ok(_) = api::delete_req::<serde_json::Value>(
+                                            &format!("/api/books/{}/notes/{}", bid, n),
+                                        ).await {
+                                            if let Ok(resp) = api::get::<NotesResponse>(
+                                                &format!("/api/books/{}/notes", bid),
+                                            ).await {
+                                                store.notes.set(resp.notes);
+                                                store.note_tree.set(Some(resp.tree));
+                                            }
+                                        }
+                                    });
+                                },
+                                {render_tabler_icon(__scope, TablerIcon::Trash, TablerIconStyle::Outline)}
+                            }
+                        }
+                    }
+                    div {
+                        class: "note-card-preview",
+                        {move || {
+                            let notes = store.notes.get();
+                            let n = nid.get();
+                            note_content_preview(
+                                &notes.iter().find(|note| note.id == n)
+                                    .map(|note| note.content.clone())
+                                    .unwrap_or_default()
+                            )
+                        }}
+                    }
+                }
+                if store.note_tree.get().map(|t| t.children.get(&nid.get()).map(|c| !c.is_empty()).unwrap_or(false)).unwrap_or(false) {
+                    button {
+                        class: "note-collapse-btn",
+                        onclick: move || {
+                            if let Some(tree) = store.note_tree.get() {
+                                let n = nid.get();
+                                let mut new_tree = tree.clone();
+                                if new_tree.collapsed.contains(&n) {
+                                    new_tree.collapsed.retain(|id| id != &n);
+                                } else {
+                                    new_tree.collapsed.push(n.clone());
+                                }
+                                store.note_tree.set(Some(new_tree.clone()));
+                                let bid = bid_signal.get();
+                                let tree_req = UpdateNoteTreeRequest {
+                                    tree: NoteTree {
+                                        root_order: new_tree.root_order,
+                                        children: new_tree.children,
+                                        collapsed: new_tree.collapsed,
+                                    },
+                                };
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    api::put::<_, serde_json::Value>(
+                                        &format!("/api/books/{}/notes/tree", bid),
+                                        &tree_req,
+                                    ).await.ok();
+                                });
+                            }
+                        },
+                        {move || {
+                            if store.note_tree.get().map(|t| t.collapsed.contains(&nid.get())).unwrap_or(false) {
+                                "\u{25b8}"
+                            } else {
+                                "\u{25be}"
+                            }
+                        }}
+                    }
+                }
+            }
+
+            if store.note_tree.get().map(|t| {
+                let n = nid.get();
+                let has_children = t.children.get(&n).map(|c| !c.is_empty()).unwrap_or(false);
+                let collapsed = t.collapsed.contains(&n);
+                has_children && !collapsed
+            }).unwrap_or(false) {
+                div { class: "note-children",
+                    for (idx, child_id) in store.note_tree.get().and_then(|t| t.children.get(&nid.get()).cloned()).unwrap_or_default().into_iter().enumerate() {
+                        div { style: "display: contents;",
+                            {render_drop_zone(__scope, Signal::new(Some(nid.get())), idx, drop_target, dragging_note_id)}
+                            div { class: "note-child-row",
+                                {render_note_card(
+                                    __scope,
+                                    child_id.clone(),
+                                    store,
+                                    active_pane,
+                                    bid_signal,
+                                    new_note_title,
+                                    new_note_parent_id,
+                                    new_note_color,
+                                    show_note_modal,
+                                    note_editor_title,
+                                    note_editor_color,
+                                    dragging_note_id,
+                                    drop_target,
+                                )}
+                            }
+                        }
+                    }
+                    {render_drop_zone(__scope, Signal::new(Some(nid.get())), store.note_tree.get().and_then(|t| t.children.get(&nid.get()).map(|c| c.len())).unwrap_or(0), drop_target, dragging_note_id)}
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn book_page(book_id: String) -> NodeHandle {
     let store = use_store::<AppStore>();
@@ -1532,6 +2050,18 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let import_file: Signal<Option<web_sys::File>> = Signal::new(None);
     // Full chapter content stored separately (preview only has truncated text)
     let import_full_chapters: Signal<Vec<ImportChapter>> = Signal::new(Vec::new());
+
+    // Note signals
+    let show_note_modal: Signal<bool> = Signal::new(false);
+    let new_note_title: Signal<String> = Signal::new(String::new());
+    let new_note_parent_id: Signal<Option<String>> = Signal::new(None);
+    let new_note_color: Signal<String> = Signal::new("teal".to_string());
+    let note_save_status: Signal<&str> = Signal::new("saved");
+    let note_save_timer_id: Signal<i32> = Signal::new(0);
+    let note_editor_title: Signal<String> = Signal::new(String::new());
+    let note_editor_color: Signal<Option<String>> = Signal::new(None);
+    let dragging_note_id: Signal<Option<String>> = Signal::new(None);
+    let drop_target: Signal<Option<(Option<String>, usize)>> = Signal::new(None);
 
     // Trigger font catalog fetch
     fonts::fetch_font_catalog();
@@ -2324,6 +2854,114 @@ pub fn book_page(book_id: String) -> NodeHandle {
         store.sidebar_open.set(false);
     };
 
+    let open_notes_pane = move || {
+        active_pane.set(BookPane::Notes);
+        store.sidebar_open.set(false);
+        // Fetch notes
+        let bid = bid_signal.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(resp) = api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid)).await {
+                store.notes.set(resp.notes);
+                store.note_tree.set(Some(resp.tree));
+            }
+        });
+    };
+
+    let add_note = move || {
+        let title = new_note_title.get().trim().to_string();
+        if title.is_empty() {
+            return;
+        }
+        let parent_id = new_note_parent_id.get();
+        let color = new_note_color.get();
+        let bid = bid_signal.get();
+        show_note_modal.set(false);
+        // Switch to Notes pane so the new note is visible
+        active_pane.set(BookPane::Notes);
+        wasm_bindgen_futures::spawn_local(async move {
+            let req = CreateNoteRequest {
+                title,
+                parent_id: parent_id.clone(),
+                color: Some(color),
+            };
+            match api::post::<_, Note>(&format!("/api/books/{}/notes", bid), &req).await {
+                Ok(_note) => {
+                    // Refresh tree
+                    if let Ok(resp) = api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid)).await {
+                        store.notes.set(resp.notes);
+                        store.note_tree.set(Some(resp.tree));
+                    }
+                }
+                Err(e) => eprintln!("Failed to create note: {}", e.message),
+            }
+        });
+    };
+
+    let save_note_content = move || {
+        if let BookPane::NoteEditor(ref nid) = active_pane.get() {
+            let nid = nid.clone();
+            let bid = bid_signal.get();
+            let title_val = note_editor_title.get();
+            let color_val = note_editor_color.get();
+
+            let content = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id("note-editor-main"))
+                .map(|el| el.inner_html())
+                .unwrap_or_default();
+
+            note_save_status.set("saving");
+            wasm_bindgen_futures::spawn_local(async move {
+                let req = UpdateNoteRequest {
+                    title: Some(title_val),
+                    content: Some(content),
+                    color: color_val,
+                };
+                match api::put::<_, serde_json::Value>(
+                    &format!("/api/books/{}/notes/{}", bid, nid),
+                    &req,
+                ).await {
+                    Ok(_) => note_save_status.set("saved"),
+                    Err(_) => note_save_status.set("error"),
+                }
+            });
+        }
+    };
+
+    let schedule_note_save = move || {
+        note_save_status.set("unsaved");
+        let old_id = note_save_timer_id.get();
+        if old_id != 0 {
+            web_sys::window().unwrap().clear_timeout_with_handle(old_id);
+        }
+        let cb = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+            save_note_content();
+        }) as Box<dyn FnMut()>);
+        let id = web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                800,
+            )
+            .unwrap_or(0);
+        cb.forget();
+        note_save_timer_id.set(id);
+    };
+
+    let go_back_to_notes = move || {
+        // Save before navigating back
+        save_note_content();
+        active_pane.set(BookPane::Notes);
+        // Refresh notes list
+        let bid = bid_signal.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(resp) = api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid)).await {
+                store.notes.set(resp.notes);
+                store.note_tree.set(Some(resp.tree));
+            }
+        });
+    };
+
     let go_back_to_chapters = move || {
         active_pane.set(BookPane::Chapters);
     };
@@ -2331,6 +2969,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     rsx! {
         Fragment {
             style { {TYPOGRAPHY_CSS} }
+            style { {NOTES_CSS} }
             style { {BOOK_WORKSPACE_CSS} }
             style { {editor_utils::EDITOR_CSS} }
             // Editor font styles
@@ -2430,6 +3069,30 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     open_chapter,
                                     move_chapter,
                                 )}
+                            }
+                        }
+
+                        // Notes section header
+                        div {
+                            class: {move || if matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_)) { "sidebar-section-header active" } else { "sidebar-section-header" }},
+                            div {
+                                style: "display: flex; align-items: center; cursor: pointer; flex: 1;",
+                                onclick: open_notes_pane,
+                                "Notes"
+                            }
+                            div {
+                                style: "display: flex; align-items: center; gap: 2px;",
+                                ActionIcon {
+                                    variant: "subtle",
+                                    size: "xs",
+                                    onclick: move || {
+                                        new_note_title.set(String::new());
+                                        new_note_parent_id.set(None);
+                                        new_note_color.set("teal".to_string());
+                                        show_note_modal.set(true);
+                                    },
+                                    {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
+                                }
                             }
                         }
 
@@ -2797,6 +3460,187 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 }
                             }
                         }
+                    }
+
+                    // Notes pane (CSS toggle)
+                    div {
+                        class: "notes-pane",
+                        style: {move || if matches!(active_pane.get(), BookPane::Notes) { "" } else { "display:none;" }},
+
+                        div { class: "notes-pane-header",
+                            Title { order: 3, "Notes" }
+                            Button {
+                                size: "sm",
+                                onclick: move || {
+                                    new_note_title.set(String::new());
+                                    new_note_parent_id.set(None);
+                                    new_note_color.set("teal".to_string());
+                                    show_note_modal.set(true);
+                                },
+                                "Add Note"
+                            }
+                        }
+
+                        if store.notes.get().is_empty() {
+                            div { class: "notes-empty",
+                                Text { color: "dimmed", "No notes yet. Add one to start organizing your ideas!" }
+                            }
+                        }
+
+                        if !store.notes.get().is_empty() {
+                            div { class: "notes-tree",
+                                for (idx, root_id) in store.note_tree.get().map(|t| t.root_order.clone()).unwrap_or_default().into_iter().enumerate() {
+                                    div { style: "display: contents;",
+                                        {render_drop_zone(__scope, Signal::new(None), idx, drop_target, dragging_note_id)}
+                                        {render_note_card(
+                                            __scope,
+                                            root_id.clone(),
+                                            store,
+                                            active_pane,
+                                            bid_signal,
+                                            new_note_title,
+                                            new_note_parent_id,
+                                            new_note_color,
+                                            show_note_modal,
+                                            note_editor_title,
+                                            note_editor_color,
+                                            dragging_note_id,
+                                            drop_target,
+                                        )}
+                                    }
+                                }
+                                {render_drop_zone(__scope, Signal::new(None), store.note_tree.get().map(|t| t.root_order.len()).unwrap_or(0), drop_target, dragging_note_id)}
+                            }
+                        }
+                    }
+
+                    // Note Editor pane (CSS toggle)
+                    div {
+                        style: {move || if matches!(active_pane.get(), BookPane::NoteEditor(_)) { "" } else { "display:none;" }},
+                        class: "note-editor-pane",
+
+                        div { class: "note-editor-topbar",
+                            div { class: "note-editor-topbar-left",
+                                ActionIcon {
+                                    variant: "subtle",
+                                    onclick: go_back_to_notes,
+                                    {render_tabler_icon(__scope, TablerIcon::ArrowLeft, TablerIconStyle::Outline)}
+                                }
+                                Text { weight: "600", {move || note_editor_title.get()} }
+                            }
+                            div {
+                                style: "display: flex; align-items: center; gap: 8px;",
+                                div {
+                                    class: "note-save-indicator",
+                                    {move || match note_save_status.get() {
+                                        "saving" => "Saving...".to_string(),
+                                        "saved" => "Saved".to_string(),
+                                        _ => "Unsaved".to_string(),
+                                    }}
+                                }
+                            }
+                        }
+
+                        div { class: "note-editor-body",
+                            TextInput {
+                                label: "Title",
+                                value_fn: move || note_editor_title.get(),
+                                oninput: move |v: String| {
+                                    note_editor_title.set(v);
+                                    schedule_note_save();
+                                },
+                            }
+                            Space { h: "sm" }
+                            Text { size: "sm", weight: "500", "Color" }
+                            Space { h: "xs" }
+                            div { class: "note-color-picker",
+                                for color in ["teal", "blue", "violet", "pink", "red", "orange", "yellow", "green", "gray"] {
+                                    div {
+                                        class: {
+                                            let c = color.to_string();
+                                            move || {
+                                                let selected = note_editor_color.get().as_deref() == Some(&c) ||
+                                                    (note_editor_color.get().is_none() && c == "teal");
+                                                if selected { "note-color-dot selected" } else { "note-color-dot" }
+                                            }
+                                        },
+                                        style: {
+                                            let c = color.to_string();
+                                            move || format!("background: var(--rinch-color-{}-6);", c)
+                                        },
+                                        onclick: {
+                                            let c = color.to_string();
+                                            move || {
+                                                note_editor_color.set(Some(c.clone()));
+                                                schedule_note_save();
+                                            }
+                                        },
+                                    }
+                                }
+                            }
+                            Space { h: "md" }
+                            Text { size: "sm", weight: "500", "Content" }
+                            Space { h: "xs" }
+
+                            {editor_utils::editor_toolbar(__scope)}
+
+                            div {
+                                contenteditable: "true",
+                                class: "editor-content",
+                                id: "note-editor-main",
+                                style: "min-height: 200px; padding: 12px; border: 1px solid var(--rinch-color-border); border-radius: var(--rinch-radius-sm);",
+                                oninput: move |_: String| schedule_note_save(),
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Add Note Modal
+            Modal {
+                opened_fn: move || show_note_modal.get(),
+                onclose: move || show_note_modal.set(false),
+                title: "Add Note",
+
+                TextInput {
+                    label: "Note Title",
+                    placeholder: "Enter note title",
+                    value_fn: move || new_note_title.get(),
+                    oninput: move |v: String| new_note_title.set(v),
+                    onsubmit: add_note,
+                }
+                Space { h: "sm" }
+                Text { size: "sm", weight: "500", "Color" }
+                Space { h: "xs" }
+                div { class: "note-color-picker",
+                    for color in ["teal", "blue", "violet", "pink", "red", "orange", "yellow", "green", "gray"] {
+                        div {
+                            class: {
+                                let c = color.to_string();
+                                move || if new_note_color.get() == c { "note-color-dot selected" } else { "note-color-dot" }
+                            },
+                            style: {
+                                let c = color.to_string();
+                                move || format!("background: var(--rinch-color-{}-6);", c)
+                            },
+                            onclick: {
+                                let c = color.to_string();
+                                move || new_note_color.set(c.clone())
+                            },
+                        }
+                    }
+                }
+                Space { h: "lg" }
+                Group {
+                    justify: "flex-end",
+                    Button {
+                        variant: "subtle",
+                        onclick: move || show_note_modal.set(false),
+                        "Cancel"
+                    }
+                    Button {
+                        onclick: add_note,
+                        "Add"
                     }
                 }
             }

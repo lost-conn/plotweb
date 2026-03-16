@@ -92,6 +92,35 @@ async fn main() {
             "/api/books/{book_id}/chapters/{id}",
             delete(routes::chapters::delete),
         )
+        // Notes endpoints
+        .route(
+            "/api/books/{book_id}/notes",
+            get(routes::notes::list),
+        )
+        .route(
+            "/api/books/{book_id}/notes",
+            post(routes::notes::create),
+        )
+        .route(
+            "/api/books/{book_id}/notes/move",
+            put(routes::notes::move_note),
+        )
+        .route(
+            "/api/books/{book_id}/notes/tree",
+            put(routes::notes::update_tree),
+        )
+        .route(
+            "/api/books/{book_id}/notes/{id}",
+            get(routes::notes::get),
+        )
+        .route(
+            "/api/books/{book_id}/notes/{id}",
+            put(routes::notes::update),
+        )
+        .route(
+            "/api/books/{book_id}/notes/{id}",
+            delete(routes::notes::delete),
+        )
         // Import endpoints
         .route(
             "/api/books/{book_id}/import/preview",

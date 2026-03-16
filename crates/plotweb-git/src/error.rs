@@ -8,6 +8,12 @@ pub enum GitStoreError {
     #[error("chapter not found: {0}")]
     ChapterNotFound(String),
 
+    #[error("note not found: {0}")]
+    NoteNotFound(String),
+
+    #[error("circular reference: cannot move note into its own subtree")]
+    CircularReference,
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

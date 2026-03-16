@@ -4,3 +4,4 @@ pub mod books;
 pub mod chapters;
 pub mod fonts;
 pub mod import;
+pub mod notes;
