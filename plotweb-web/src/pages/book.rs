@@ -1023,27 +1023,57 @@ fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
         None => { log::warn!("scroll_to_text: no #editor-main"); return; }
     };
 
-    // Collect all text content with node boundaries
+    // Collect all text content with node boundaries.
+    // Insert a single space at block-element boundaries so that cross-paragraph
+    // selections (which include \n between blocks) can still be matched after
+    // we normalize whitespace in both the needle and the haystack.
     let mut text_nodes: Vec<web_sys::Node> = Vec::new();
     let mut full_text = String::new();
     let mut node_offsets: Vec<(usize, usize)> = Vec::new(); // (start_byte, end_byte) in full_text
 
-    collect_text_nodes(&editor.into(), &mut text_nodes);
+    collect_text_nodes_spaced(&editor.into(), &mut text_nodes, &mut full_text, &mut node_offsets);
 
-    for node in &text_nodes {
-        let start = full_text.len();
-        let content = node.text_content().unwrap_or_default();
-        full_text.push_str(&content);
-        node_offsets.push((start, full_text.len()));
+    // Normalize whitespace: collapse runs of whitespace into a single space.
+    // Build a mapping from normalized byte offset back to original byte offset.
+    let (norm_text, norm_to_orig) = normalize_whitespace_map(&full_text);
+
+    // Normalize the needle the same way
+    let norm_needle = normalize_whitespace(selected_text);
+    if norm_needle.is_empty() {
+        return;
     }
 
-    // Find all matches of selected_text in the full text
-    let needle = selected_text;
+    // Find all matches of the normalized needle in the normalized text
     let mut matches: Vec<usize> = Vec::new();
     let mut search_start = 0;
-    while let Some(pos) = full_text[search_start..].find(needle) {
+    while let Some(pos) = norm_text[search_start..].find(&norm_needle) {
         matches.push(search_start + pos);
         search_start += pos + 1;
+    }
+
+    // Fuzzy fallback: if no exact match, try progressively shorter prefixes
+    // (the author may have edited the text after feedback was left)
+    if matches.is_empty() && norm_needle.len() > 20 {
+        let min_len = norm_needle.len() / 2;
+        let mut try_len = norm_needle.len() - 1;
+        while try_len >= min_len {
+            // Ensure we don't cut in the middle of a UTF-8 char
+            while try_len > 0 && !norm_needle.is_char_boundary(try_len) {
+                try_len -= 1;
+            }
+            if try_len == 0 { break; }
+            let prefix = &norm_needle[..try_len];
+            search_start = 0;
+            while let Some(pos) = norm_text[search_start..].find(prefix) {
+                matches.push(search_start + pos);
+                search_start += pos + 1;
+            }
+            if !matches.is_empty() {
+                log::info!("scroll_to_text: fuzzy match with {}/{} chars", try_len, norm_needle.len());
+                break;
+            }
+            try_len -= 1;
+        }
     }
 
     if matches.is_empty() {
@@ -1052,25 +1082,49 @@ fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
     }
     log::info!("scroll_to_text: found {} match(es)", matches.len());
 
+    // Determine the effective needle length used (may be shorter if fuzzy matched)
+    let effective_needle_len = if matches.is_empty() { norm_needle.len() } else {
+        // Check if first match is an exact-length match
+        let first = matches[0];
+        if first + norm_needle.len() <= norm_text.len() && &norm_text[first..first + norm_needle.len()] == norm_needle.as_str() {
+            norm_needle.len()
+        } else {
+            // Fuzzy: find the prefix length that matched
+            let mut l = norm_needle.len() - 1;
+            while l > 0 {
+                if norm_needle.is_char_boundary(l) && norm_text[first..].starts_with(&norm_needle[..l]) {
+                    break;
+                }
+                l -= 1;
+            }
+            l
+        }
+    };
+
     // Pick the best match using context_block for disambiguation
-    let match_start = if matches.len() == 1 || context_block.is_empty() {
+    let norm_context = normalize_whitespace(context_block);
+    let norm_match_start = if matches.len() == 1 || norm_context.is_empty() {
         matches[0]
     } else {
         // Find the match whose surrounding text best matches context_block
+        // by looking for the longest common substring between context and surrounding text
         *matches.iter().min_by_key(|&&pos| {
-            // Extract surrounding text
-            let ctx_start = pos.saturating_sub(context_block.len());
-            let ctx_end = (pos + needle.len() + context_block.len()).min(full_text.len());
-            let surrounding = &full_text[ctx_start..ctx_end];
-            // Simple: count how many chars of context_block appear in the surrounding text
-            let overlap = context_block.chars()
-                .filter(|c| surrounding.contains(*c))
-                .count();
-            context_block.len().saturating_sub(overlap)
+            let ctx_start = pos.saturating_sub(norm_context.len());
+            let ctx_end = (pos + effective_needle_len + norm_context.len()).min(norm_text.len());
+            let surrounding = &norm_text[ctx_start..ctx_end];
+            // Score: length of longest contiguous overlap with context
+            let score = longest_common_substring(surrounding, &norm_context);
+            norm_context.len().saturating_sub(score)
         }).unwrap()
     };
 
-    let match_end = match_start + needle.len();
+    // Map normalized offsets back to original byte offsets
+    let match_start = norm_to_orig[norm_match_start];
+    let match_end = if norm_match_start + effective_needle_len < norm_to_orig.len() {
+        norm_to_orig[norm_match_start + effective_needle_len]
+    } else {
+        full_text.len()
+    };
 
     // Map byte offsets back to text node + byte offset within that node,
     // then convert to UTF-16 code unit offsets for the DOM Range/Text APIs.
@@ -1202,18 +1256,118 @@ fn utf8_byte_to_utf16(text: &str, byte_offset: usize) -> u32 {
     text[..clamped].encode_utf16().count() as u32
 }
 
-/// Recursively collect all text nodes under `node`.
-fn collect_text_nodes(node: &web_sys::Node, out: &mut Vec<web_sys::Node>) {
+/// Recursively collect text nodes under `node`, inserting a space at block-element
+/// boundaries so that cross-paragraph selections can be matched.
+fn collect_text_nodes_spaced(
+    node: &web_sys::Node,
+    text_nodes: &mut Vec<web_sys::Node>,
+    full_text: &mut String,
+    node_offsets: &mut Vec<(usize, usize)>,
+) {
     if node.node_type() == web_sys::Node::TEXT_NODE {
-        out.push(node.clone());
+        let start = full_text.len();
+        let content = node.text_content().unwrap_or_default();
+        full_text.push_str(&content);
+        node_offsets.push((start, full_text.len()));
+        text_nodes.push(node.clone());
         return;
+    }
+    // Insert a space before block elements to separate their text
+    let is_block = if let Ok(el) = node.clone().dyn_into::<web_sys::Element>() {
+        let tag = el.tag_name().to_lowercase();
+        matches!(tag.as_str(), "p" | "div" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "blockquote" | "li" | "br")
+    } else {
+        false
+    };
+    if is_block && !full_text.is_empty() && !full_text.ends_with(' ') {
+        full_text.push(' ');
     }
     let children = node.child_nodes();
     for i in 0..children.length() {
         if let Some(child) = children.item(i) {
-            collect_text_nodes(&child, out);
+            collect_text_nodes_spaced(&child, text_nodes, full_text, node_offsets);
         }
     }
+}
+
+/// Collapse runs of whitespace into a single space and trim.
+fn normalize_whitespace(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut last_was_space = true; // true to trim leading
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !last_was_space {
+                result.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            result.push(c);
+            last_was_space = false;
+        }
+    }
+    if result.ends_with(' ') {
+        result.pop();
+    }
+    result
+}
+
+/// Normalize whitespace and return a mapping from each normalized byte offset
+/// to the corresponding original byte offset.
+fn normalize_whitespace_map(s: &str) -> (String, Vec<usize>) {
+    let mut result = String::with_capacity(s.len());
+    let mut mapping = Vec::with_capacity(s.len());
+    let mut last_was_space = true;
+    for (byte_idx, c) in s.char_indices() {
+        if c.is_whitespace() {
+            if !last_was_space {
+                mapping.push(byte_idx);
+                result.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            // For multi-byte chars, push the byte_idx for each byte of the output char
+            let start = result.len();
+            result.push(c);
+            let added = result.len() - start;
+            for i in 0..added {
+                mapping.push(byte_idx + i);
+            }
+            last_was_space = false;
+        }
+    }
+    if result.ends_with(' ') {
+        result.pop();
+        mapping.pop();
+    }
+    // Sentinel: map one past the end
+    mapping.push(s.len());
+    (result, mapping)
+}
+
+/// Find the length of the longest common substring between two strings.
+fn longest_common_substring(a: &str, b: &str) -> usize {
+    // Simple O(n*m) approach, fine for short context blocks (<= 200 chars)
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    let mut max_len = 0;
+    // Use a single-row DP to save memory
+    let mut prev = vec![0usize; b_bytes.len() + 1];
+    let mut curr = vec![0usize; b_bytes.len() + 1];
+    for i in 1..=a_bytes.len() {
+        for j in 1..=b_bytes.len() {
+            if a_bytes[i - 1] == b_bytes[j - 1] {
+                curr[j] = prev[j - 1] + 1;
+                if curr[j] > max_len {
+                    max_len = curr[j];
+                }
+            } else {
+                curr[j] = 0;
+            }
+        }
+        std::mem::swap(&mut prev, &mut curr);
+        curr.iter_mut().for_each(|v| *v = 0);
+    }
+    max_len
 }
 
 /// Map a byte offset in the concatenated full text back to a (node_index, offset_within_node).
