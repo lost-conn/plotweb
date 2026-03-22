@@ -284,6 +284,44 @@ pub fn editor_toolbar() -> NodeHandle {
         }) as Box<dyn FnMut(_)>);
         doc.add_event_listener_with_callback("selectionchange", listener.as_ref().unchecked_ref()).ok();
         listener.forget();
+
+        // Override Ctrl+B/I/U so they work in Firefox (which otherwise
+        // opens bookmarks / page-info / view-source).
+        let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
+            if !(e.ctrl_key() || e.meta_key()) { return; }
+            let cmd: &'static str = match e.key().as_str() {
+                "b" | "B" => "bold",
+                "i" | "I" => "italic",
+                "u" | "U" => "underline",
+                _ => return,
+            };
+            // Only intercept when focus is inside a contenteditable
+            let in_editor = e.target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .and_then(|el| el.closest("[contenteditable=\"true\"]").ok().flatten())
+                .is_some();
+            if !in_editor { return; }
+            // Snapshot state before the browser's native handling runs.
+            let was_active = query_cmd_state(cmd);
+            e.prevent_default();
+            // Defer check: if the browser already toggled the format (Chrome
+            // applies bold via beforeinput despite keydown.preventDefault),
+            // don't double-toggle. Only call execCommand when the native
+            // handler didn't fire (Firefox).
+            let deferred = wasm_bindgen::closure::Closure::once(move || {
+                if query_cmd_state(cmd) == was_active {
+                    exec_cmd(cmd);
+                }
+                refresh();
+            });
+            web_sys::window().unwrap()
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    deferred.as_ref().unchecked_ref(), 0,
+                ).ok();
+            deferred.forget();
+        }) as Box<dyn FnMut(_)>);
+        doc.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
+        keydown.forget();
     }
 
     rsx! {
