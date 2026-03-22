@@ -430,6 +430,9 @@ const BOOK_WORKSPACE_CSS: &str = r#"
     overflow: hidden;
     text-overflow: ellipsis;
     font-family: 'Macondo Swash Caps', cursive;
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
 .book-sidebar-nav {
@@ -835,6 +838,30 @@ const BOOK_WORKSPACE_CSS: &str = r#"
 
 .feedback-reply-input textarea:focus {
     border-color: var(--rinch-color-teal-6);
+}
+
+/* ── Inline editor title input ────────────────────── */
+
+.editor-title-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.editor-title-input input {
+    border: none !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    font-weight: 600;
+    font-size: 16px;
+    padding: 2px 4px;
+    color: var(--rinch-color-text);
+    border-bottom: 2px solid transparent !important;
+    border-radius: 0 !important;
+    transition: border-color 0.15s;
+}
+
+.editor-title-input input:focus {
+    border-bottom-color: var(--rinch-color-teal-6) !important;
 }
 "#;
 
@@ -2217,6 +2244,19 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let dragging_note_id: Signal<Option<String>> = Signal::new(None);
     let drop_target: Signal<Option<(Option<String>, usize)>> = Signal::new(None);
 
+    // Book settings modal
+    let show_book_settings_modal: Signal<bool> = Signal::new(false);
+    let edit_book_title: Signal<String> = Signal::new(String::new());
+    let edit_book_desc: Signal<String> = Signal::new(String::new());
+
+    // Chapter rename modal
+    let show_rename_chapter_modal: Signal<bool> = Signal::new(false);
+    let rename_chapter_id: Signal<String> = Signal::new(String::new());
+    let rename_chapter_title: Signal<String> = Signal::new(String::new());
+
+    // Inline chapter title save timer
+    let chapter_title_save_timer_id: Signal<i32> = Signal::new(0);
+
     // Trigger font catalog fetch
     fonts::fetch_font_catalog();
 
@@ -2381,6 +2421,111 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 store.chapters.update(|ch| ch.push(chapter));
             }
         });
+    };
+
+    // ── Book settings save ──────────────────────────────────────
+    let save_book_settings = move || {
+        let title = edit_book_title.get();
+        if title.trim().is_empty() {
+            return;
+        }
+        show_book_settings_modal.set(false);
+        let bid = bid_signal.get();
+        let desc = edit_book_desc.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            let req = UpdateBookRequest {
+                title: Some(title.clone()),
+                description: Some(desc.clone()),
+                font_settings: None,
+            };
+            if api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}", bid),
+                &req,
+            ).await.is_ok() {
+                store.current_book.update(|book| {
+                    if let Some(b) = book {
+                        b.title = title;
+                        b.description = desc;
+                    }
+                });
+            }
+        });
+    };
+
+    // ── Chapter rename save ───────────────────────────────────────
+    let save_rename_chapter = move || {
+        let title = rename_chapter_title.get();
+        if title.trim().is_empty() {
+            return;
+        }
+        show_rename_chapter_modal.set(false);
+        let bid = bid_signal.get();
+        let cid = rename_chapter_id.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            let req = UpdateChapterRequest {
+                title: Some(title.clone()),
+                content: None,
+            };
+            if api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/chapters/{}", bid, cid),
+                &req,
+            ).await.is_ok() {
+                store.chapters.update(|chapters| {
+                    if let Some(ch) = chapters.iter_mut().find(|c| c.id == cid) {
+                        ch.title = title.clone();
+                    }
+                });
+                // Update editor title if this chapter is currently open
+                if let BookPane::Editor(ref open_cid) = active_pane.get() {
+                    if *open_cid == cid {
+                        chapter_title.set(title);
+                    }
+                }
+            }
+        });
+    };
+
+    // ── Inline chapter title save (debounced) ─────────────────────
+    let save_chapter_title_inline = move |new_title: String| {
+        chapter_title.set(new_title.clone());
+        let prev = chapter_title_save_timer_id.get();
+        if prev != 0 {
+            if let Some(w) = web_sys::window() {
+                w.clear_timeout_with_handle(prev);
+            }
+        }
+        let bid = bid_signal.get();
+        let save_closure = wasm_bindgen::closure::Closure::once(move || {
+            if let BookPane::Editor(ref cid) = active_pane.get() {
+                let cid = cid.clone();
+                let title = new_title.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let req = UpdateChapterRequest {
+                        title: Some(title.clone()),
+                        content: None,
+                    };
+                    if api::put::<_, serde_json::Value>(
+                        &format!("/api/books/{}/chapters/{}", bid, cid),
+                        &req,
+                    ).await.is_ok() {
+                        store.chapters.update(|chapters| {
+                            if let Some(ch) = chapters.iter_mut().find(|c| c.id == cid) {
+                                ch.title = title;
+                            }
+                        });
+                    }
+                });
+            }
+        });
+        let id = web_sys::window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                save_closure.as_ref().unchecked_ref(),
+                1000,
+            )
+            .unwrap_or(0);
+        save_closure.forget();
+        chapter_title_save_timer_id.set(id);
     };
 
     let move_chapter = move |chapter_id: String, direction: i32| {
@@ -3151,7 +3296,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                          .book-workspace .rinch-title,
                          .book-workspace .book-sidebar-title {{ font-family: '{h1}', cursive; }}
                          .book-workspace .chapter-item .rinch-text,
-                         .book-workspace .editor-topbar .rinch-text {{ font-family: '{h1}', cursive; }}
+                         .book-workspace .editor-topbar .rinch-text,
+                         .book-workspace .editor-topbar .editor-title-input input {{ font-family: '{h1}', cursive; }}
                          .book-workspace .sidebar-chapter-item,
                          .book-workspace .chapter-item {{ font-family: '{body}', serif; }}
                          .editor-content {{ font-family: '{body}', serif; }}
@@ -3179,7 +3325,23 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
                     // Book title
                     div { class: "book-sidebar-title",
-                        {move || store.current_book.get().map(|b| b.title.clone()).unwrap_or_default()}
+                        span {
+                            style: "flex: 1; overflow: hidden; text-overflow: ellipsis;",
+                            {move || store.current_book.get().map(|b| b.title.clone()).unwrap_or_default()}
+                        }
+                        ActionIcon {
+                            variant: "subtle",
+                            size: "xs",
+                            onclick: move || {
+                                let book = store.current_book.get();
+                                if let Some(b) = book {
+                                    edit_book_title.set(b.title.clone());
+                                    edit_book_desc.set(b.description.clone());
+                                    show_book_settings_modal.set(true);
+                                }
+                            },
+                            {render_tabler_icon(__scope, TablerIcon::Pencil, TablerIconStyle::Outline)}
+                        }
                     }
                     Space { h: "sm" }
 
@@ -3411,6 +3573,24 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                                 }
                                                 ActionIcon {
                                                     variant: "subtle",
+                                                    size: "sm",
+                                                    onclick: {
+                                                        let cid = chapter.id.clone();
+                                                        let ctitle = chapter.title.clone();
+                                                        move || {
+                                                            rename_chapter_id.set(cid.clone());
+                                                            rename_chapter_title.set(ctitle.clone());
+                                                            show_rename_chapter_modal.set(true);
+                                                        }
+                                                    },
+                                                    {render_tabler_icon(
+                                                        __scope,
+                                                        TablerIcon::Pencil,
+                                                        TablerIconStyle::Outline,
+                                                    )}
+                                                }
+                                                ActionIcon {
+                                                    variant: "subtle",
                                                     color: "red",
                                                     size: "sm",
                                                     onclick: delete_chapter(chapter.id.clone()),
@@ -3440,7 +3620,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     onclick: go_back_to_chapters,
                                     {render_tabler_icon(__scope, TablerIcon::ArrowLeft, TablerIconStyle::Outline)}
                                 }
-                                Text { weight: "600", {|| chapter_title.get()} }
+                                TextInput {
+                                    class: "editor-title-input",
+                                    value_fn: move || chapter_title.get(),
+                                    oninput: move |v: String| save_chapter_title_inline(v),
+                                }
                             }
                             div {
                                 style: "display: flex; align-items: center; gap: 8px;",
@@ -3823,6 +4007,69 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     Button {
                         onclick: add_chapter,
                         "Add"
+                    }
+                }
+            }
+
+            // Book Settings Modal
+            Modal {
+                opened_fn: move || show_book_settings_modal.get(),
+                onclose: move || show_book_settings_modal.set(false),
+                title: "Book Settings",
+
+                TextInput {
+                    label: "Title",
+                    placeholder: "Book title",
+                    value_fn: move || edit_book_title.get(),
+                    oninput: move |v: String| edit_book_title.set(v),
+                    onsubmit: save_book_settings,
+                }
+                Space { h: "md" }
+                Textarea {
+                    label: "Description",
+                    placeholder: "What's this book about?",
+                    value_fn: move || edit_book_desc.get(),
+                    oninput: move |v: String| edit_book_desc.set(v),
+                }
+                Space { h: "lg" }
+                Group {
+                    justify: "flex-end",
+                    Button {
+                        variant: "subtle",
+                        onclick: move || show_book_settings_modal.set(false),
+                        "Cancel"
+                    }
+                    Button {
+                        onclick: save_book_settings,
+                        "Save"
+                    }
+                }
+            }
+
+            // Rename Chapter Modal
+            Modal {
+                opened_fn: move || show_rename_chapter_modal.get(),
+                onclose: move || show_rename_chapter_modal.set(false),
+                title: "Rename Chapter",
+
+                TextInput {
+                    label: "Chapter Title",
+                    placeholder: "Enter chapter title",
+                    value_fn: move || rename_chapter_title.get(),
+                    oninput: move |v: String| rename_chapter_title.set(v),
+                    onsubmit: save_rename_chapter,
+                }
+                Space { h: "lg" }
+                Group {
+                    justify: "flex-end",
+                    Button {
+                        variant: "subtle",
+                        onclick: move || show_rename_chapter_modal.set(false),
+                        "Cancel"
+                    }
+                    Button {
+                        onclick: save_rename_chapter,
+                        "Rename"
                     }
                 }
             }
