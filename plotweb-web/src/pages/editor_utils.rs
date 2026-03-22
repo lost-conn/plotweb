@@ -1,4 +1,5 @@
 use rinch::prelude::*;
+use rinch_core::Signal;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 
 use wasm_bindgen::prelude::*;
@@ -8,6 +9,20 @@ extern "C" {
     /// Call document.execCommand(command, false, value) via JS.
     #[wasm_bindgen(js_namespace = document, js_name = execCommand, catch)]
     fn exec_command_js(command: &str, show_ui: bool, value: &str) -> Result<bool, JsValue>;
+
+    #[wasm_bindgen(js_namespace = document, js_name = queryCommandState, catch)]
+    fn query_command_state_js(command: &str) -> Result<bool, JsValue>;
+
+    #[wasm_bindgen(js_namespace = document, js_name = queryCommandValue, catch)]
+    fn query_command_value_js(command: &str) -> Result<String, JsValue>;
+}
+
+fn query_cmd_state(cmd: &str) -> bool {
+    query_command_state_js(cmd).unwrap_or(false)
+}
+
+fn query_cmd_value(cmd: &str) -> String {
+    query_command_value_js(cmd).unwrap_or_default()
 }
 
 /// Execute a browser execCommand on the document (for contenteditable formatting).
@@ -194,6 +209,7 @@ pub fn separator() -> NodeHandle {
     rsx! { div { class: "toolbar-separator" } }
 }
 
+/// Toolbar button without active state tracking.
 #[component]
 pub fn toolbar_button(icon: TablerIcon, tooltip: &str, on_click: impl Fn() + 'static) -> NodeHandle {
     let _ = tooltip;
@@ -207,15 +223,80 @@ pub fn toolbar_button(icon: TablerIcon, tooltip: &str, on_click: impl Fn() + 'st
     }
 }
 
+/// Toolbar button with active state — plain function (not #[component]) to avoid
+/// the Fn closure ownership issue with two non-Copy captured values.
+fn fmt_button(
+    __scope: &mut RenderScope,
+    icon: TablerIcon,
+    on_click: impl Fn() + 'static + Copy,
+    active: Signal<bool>,
+) -> NodeHandle {
+    rsx! {
+        ActionIcon {
+            variant: {move || if active.get() { "light".to_string() } else { "subtle".to_string() }},
+            size: "sm",
+            onclick: on_click,
+            {render_tabler_icon(__scope, icon, TablerIconStyle::Outline)}
+        }
+    }
+}
+
 #[component]
 pub fn editor_toolbar() -> NodeHandle {
+    // Active state signals for formatting buttons
+    let s_bold: Signal<bool> = Signal::new(false);
+    let s_italic: Signal<bool> = Signal::new(false);
+    let s_underline: Signal<bool> = Signal::new(false);
+    let s_strike: Signal<bool> = Signal::new(false);
+    let s_h1: Signal<bool> = Signal::new(false);
+    let s_h2: Signal<bool> = Signal::new(false);
+    let s_h3: Signal<bool> = Signal::new(false);
+    let s_bquote: Signal<bool> = Signal::new(false);
+    let s_ul: Signal<bool> = Signal::new(false);
+    let s_ol: Signal<bool> = Signal::new(false);
+    let s_jl: Signal<bool> = Signal::new(false);
+    let s_jc: Signal<bool> = Signal::new(false);
+    let s_jr: Signal<bool> = Signal::new(false);
+    let s_jf: Signal<bool> = Signal::new(false);
+
+    let refresh = move || {
+        s_bold.set(query_cmd_state("bold"));
+        s_italic.set(query_cmd_state("italic"));
+        s_underline.set(query_cmd_state("underline"));
+        s_strike.set(query_cmd_state("strikeThrough"));
+        let block = query_cmd_value("formatBlock");
+        s_h1.set(block.eq_ignore_ascii_case("h1"));
+        s_h2.set(block.eq_ignore_ascii_case("h2"));
+        s_h3.set(block.eq_ignore_ascii_case("h3"));
+        s_bquote.set(block.eq_ignore_ascii_case("blockquote"));
+        s_ul.set(query_cmd_state("insertUnorderedList"));
+        s_ol.set(query_cmd_state("insertOrderedList"));
+        s_jl.set(query_cmd_state("justifyLeft"));
+        s_jc.set(query_cmd_state("justifyCenter"));
+        s_jr.set(query_cmd_state("justifyRight"));
+        s_jf.set(query_cmd_state("justifyFull"));
+    };
+
+    // Update toolbar state on selection changes
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        let listener = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+            refresh();
+        }) as Box<dyn FnMut(_)>);
+        doc.add_event_listener_with_callback("selectionchange", listener.as_ref().unchecked_ref()).ok();
+        listener.forget();
+    }
+
     rsx! {
         div { class: "toolbar",
             // Inline formatting
-            {toolbar_button(__scope, TablerIcon::Bold, "Bold (Ctrl+B)", move || exec_cmd("bold"))}
-            {toolbar_button(__scope, TablerIcon::Italic, "Italic (Ctrl+I)", move || exec_cmd("italic"))}
-            {toolbar_button(__scope, TablerIcon::Underline, "Underline (Ctrl+U)", move || exec_cmd("underline"))}
-            {toolbar_button(__scope, TablerIcon::Strikethrough, "Strikethrough", move || exec_cmd("strikeThrough"))}
+            {fmt_button(__scope, TablerIcon::Bold,
+                move || { exec_cmd("bold"); refresh(); }, s_bold)}
+            {fmt_button(__scope, TablerIcon::Italic,
+                move || { exec_cmd("italic"); refresh(); }, s_italic)}
+            {fmt_button(__scope, TablerIcon::Underline,
+                move || { exec_cmd("underline"); refresh(); }, s_underline)}
+            {fmt_button(__scope, TablerIcon::Strikethrough,
+                move || { exec_cmd("strikeThrough"); refresh(); }, s_strike)}
             {toolbar_button(__scope, TablerIcon::Code, "Code", move || {
                 // Wrap selection in <code> using insertHTML
                 if let Some(win) = web_sys::window() {
@@ -236,16 +317,22 @@ pub fn editor_toolbar() -> NodeHandle {
             {separator(__scope)}
 
             // Block types
-            {toolbar_button(__scope, TablerIcon::H1, "Heading 1", move || exec_cmd_val("formatBlock", "h1"))}
-            {toolbar_button(__scope, TablerIcon::H2, "Heading 2", move || exec_cmd_val("formatBlock", "h2"))}
-            {toolbar_button(__scope, TablerIcon::H3, "Heading 3", move || exec_cmd_val("formatBlock", "h3"))}
+            {fmt_button(__scope, TablerIcon::H1,
+                move || { exec_cmd_val("formatBlock", "h1"); refresh(); }, s_h1)}
+            {fmt_button(__scope, TablerIcon::H2,
+                move || { exec_cmd_val("formatBlock", "h2"); refresh(); }, s_h2)}
+            {fmt_button(__scope, TablerIcon::H3,
+                move || { exec_cmd_val("formatBlock", "h3"); refresh(); }, s_h3)}
 
             {separator(__scope)}
 
             // Block elements
-            {toolbar_button(__scope, TablerIcon::Blockquote, "Blockquote", move || exec_cmd_val("formatBlock", "blockquote"))}
-            {toolbar_button(__scope, TablerIcon::List, "Bullet List", move || exec_cmd("insertUnorderedList"))}
-            {toolbar_button(__scope, TablerIcon::ListNumbers, "Numbered List", move || exec_cmd("insertOrderedList"))}
+            {fmt_button(__scope, TablerIcon::Blockquote,
+                move || { exec_cmd_val("formatBlock", "blockquote"); refresh(); }, s_bquote)}
+            {fmt_button(__scope, TablerIcon::List,
+                move || { exec_cmd("insertUnorderedList"); refresh(); }, s_ul)}
+            {fmt_button(__scope, TablerIcon::ListNumbers,
+                move || { exec_cmd("insertOrderedList"); refresh(); }, s_ol)}
 
             {separator(__scope)}
 
@@ -256,10 +343,14 @@ pub fn editor_toolbar() -> NodeHandle {
             {separator(__scope)}
 
             // Text alignment
-            {toolbar_button(__scope, TablerIcon::AlignLeft, "Align Left", move || exec_cmd("justifyLeft"))}
-            {toolbar_button(__scope, TablerIcon::AlignCenter, "Align Center", move || exec_cmd("justifyCenter"))}
-            {toolbar_button(__scope, TablerIcon::AlignRight, "Align Right", move || exec_cmd("justifyRight"))}
-            {toolbar_button(__scope, TablerIcon::AlignJustified, "Justify", move || exec_cmd("justifyFull"))}
+            {fmt_button(__scope, TablerIcon::AlignLeft,
+                move || { exec_cmd("justifyLeft"); refresh(); }, s_jl)}
+            {fmt_button(__scope, TablerIcon::AlignCenter,
+                move || { exec_cmd("justifyCenter"); refresh(); }, s_jc)}
+            {fmt_button(__scope, TablerIcon::AlignRight,
+                move || { exec_cmd("justifyRight"); refresh(); }, s_jr)}
+            {fmt_button(__scope, TablerIcon::AlignJustified,
+                move || { exec_cmd("justifyFull"); refresh(); }, s_jf)}
 
             {separator(__scope)}
 
