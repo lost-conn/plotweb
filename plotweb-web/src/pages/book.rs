@@ -1648,6 +1648,7 @@ where
 fn do_switch_chapter(
     active_pane: Signal<BookPane>,
     auto_save_timer_id: Signal<i32>,
+    chapter_title_save_timer_id: Signal<i32>,
     save_status: Signal<&'static str>,
     editor_loaded: Signal<bool>,
     chapter_title: Signal<String>,
@@ -1655,16 +1656,20 @@ fn do_switch_chapter(
     bid: &str,
     new_chapter_id: &str,
 ) {
-    do_switch_chapter_inner(active_pane, auto_save_timer_id, save_status, editor_loaded, chapter_title, store, bid, new_chapter_id, None);
+    do_switch_chapter_inner(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_loaded, chapter_title, store, bid, new_chapter_id, None);
 }
 
 thread_local! {
     static SWITCH_GEN: Cell<u32> = Cell::new(0);
+    /// Incremented each time `book_page()` is created so that leaked timer
+    /// closures from a previous page instance can detect they are stale.
+    static PAGE_GEN: Cell<u32> = Cell::new(0);
 }
 
 fn do_switch_chapter_inner(
     active_pane: Signal<BookPane>,
     auto_save_timer_id: Signal<i32>,
+    chapter_title_save_timer_id: Signal<i32>,
     save_status: Signal<&'static str>,
     editor_loaded: Signal<bool>,
     chapter_title: Signal<String>,
@@ -1686,31 +1691,45 @@ fn do_switch_chapter_inner(
         auto_save_timer_id.set(0);
     }
 
-    // Save current chapter if we're editing
+    // Clear any pending chapter-title save timer
+    let prev_title = chapter_title_save_timer_id.get();
+    if prev_title != 0 {
+        if let Some(w) = web_sys::window() {
+            w.clear_timeout_with_handle(prev_title);
+        }
+        chapter_title_save_timer_id.set(0);
+    }
+
+    // Save current chapter if we're editing — read DOM synchronously to avoid
+    // stale content if another switch happens before the async block runs.
     if let BookPane::Editor(ref current_id) = active_pane.get() {
         let current_id = current_id.clone();
         let bid = bid.to_string();
-        save_status.set("saving");
-        wasm_bindgen_futures::spawn_local(async move {
-            let content = match web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.query_selector("#editor-main").ok().flatten())
-            {
-                Some(el) => el.inner_html(),
-                None => {
-                    save_status.set("saved");
-                    return;
-                }
-            };
+        let content = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.query_selector("#editor-main").ok().flatten())
+            .map(|el| el.inner_html());
+        if let Some(content) = content {
             let markdown = editor_utils::html_to_markdown(&content);
-            let req = UpdateChapterRequest { title: None, content: Some(markdown) };
-            if api::put::<_, serde_json::Value>(
-                &format!("/api/books/{}/chapters/{}", bid, current_id),
-                &req,
-            ).await.is_ok() {
-                save_status.set("saved");
-            }
-        });
+            save_status.set("saving");
+            wasm_bindgen_futures::spawn_local(async move {
+                let req = UpdateChapterRequest { title: None, content: Some(markdown) };
+                if api::put::<_, serde_json::Value>(
+                    &format!("/api/books/{}/chapters/{}", bid, current_id),
+                    &req,
+                ).await.is_ok() {
+                    save_status.set("saved");
+                }
+            });
+        }
+    }
+
+    // Disable editor to prevent typing during the transition window
+    if let Some(el) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.query_selector("#editor-main").ok().flatten())
+    {
+        el.set_attribute("contenteditable", "false").ok();
     }
 
     // Switch pane
@@ -1743,6 +1762,8 @@ fn do_switch_chapter_inner(
                         } else {
                             el.set_inner_html(&editor_utils::markdown_to_html(&content));
                         }
+                        // Re-enable editing now that the new content is loaded
+                        el.set_attribute("contenteditable", "true").ok();
                     }
                 }
                 // Execute pending feedback scroll if any
@@ -2205,6 +2226,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let auto_save_timer_id = Signal::new(0_i32);
 
     let bid_signal = Signal::new(book_id.clone());
+    PAGE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
+    let page_gen = PAGE_GEN.with(|g| g.get());
     let font_settings = Signal::new(FontSettings::default());
     let font_save_timer_id = Signal::new(0_i32);
     let listeners_attached = Signal::new(false);
@@ -2327,6 +2350,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
     // ── Save helper for the editor ──────────────────────────────
     let save_content = move |chapter_id_to_save: String| {
+        // Bail if this page instance is no longer current (user navigated away and back)
+        if PAGE_GEN.with(|g| g.get()) != page_gen {
+            return;
+        }
         let bid = bid_signal.get();
         save_status.set("saving");
         wasm_bindgen_futures::spawn_local(async move {
@@ -2394,10 +2421,21 @@ pub fn book_page(book_id: String) -> NodeHandle {
             if prev != 0 {
                 web_sys::window().unwrap().clear_timeout_with_handle(prev);
             }
+            // Capture context now; validate it still matches when the timer fires
+            let captured_cid = if let BookPane::Editor(ref cid) = active_pane.get() {
+                cid.clone()
+            } else {
+                return;
+            };
             let save_fn = save_for_input.clone();
             let closure = wasm_bindgen::closure::Closure::once(move || {
-                if let BookPane::Editor(ref cid) = active_pane.get() {
-                    save_fn(cid.clone());
+                // Bail if this page instance is stale (user navigated away and back)
+                if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+                // Verify we're still on the same chapter
+                if let BookPane::Editor(ref current_cid) = active_pane.get() {
+                    if *current_cid == captured_cid {
+                        save_fn(captured_cid);
+                    }
                 }
             });
             let id = web_sys::window().unwrap()
@@ -2503,28 +2541,37 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 w.clear_timeout_with_handle(prev);
             }
         }
-        let bid = bid_signal.get();
+        // Capture context now, validate when timer fires
+        let captured_bid = bid_signal.get();
+        let captured_cid = if let BookPane::Editor(ref cid) = active_pane.get() {
+            cid.clone()
+        } else {
+            return;
+        };
         let save_closure = wasm_bindgen::closure::Closure::once(move || {
-            if let BookPane::Editor(ref cid) = active_pane.get() {
-                let cid = cid.clone();
-                let title = new_title.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    let req = UpdateChapterRequest {
-                        title: Some(title.clone()),
-                        content: None,
-                    };
-                    if api::put::<_, serde_json::Value>(
-                        &format!("/api/books/{}/chapters/{}", bid, cid),
-                        &req,
-                    ).await.is_ok() {
-                        store.chapters.update(|chapters| {
-                            if let Some(ch) = chapters.iter_mut().find(|c| c.id == cid) {
-                                ch.title = title;
-                            }
-                        });
-                    }
-                });
-            }
+            // Bail if this page instance is stale (user navigated away and back)
+            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            if let BookPane::Editor(ref current_cid) = active_pane.get() {
+                if *current_cid != captured_cid { return; }
+            } else { return; }
+            let cid = captured_cid;
+            let title = new_title.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let req = UpdateChapterRequest {
+                    title: Some(title.clone()),
+                    content: None,
+                };
+                if api::put::<_, serde_json::Value>(
+                    &format!("/api/books/{}/chapters/{}", captured_bid, cid),
+                    &req,
+                ).await.is_ok() {
+                    store.chapters.update(|chapters| {
+                        if let Some(ch) = chapters.iter_mut().find(|c| c.id == cid) {
+                            ch.title = title;
+                        }
+                    });
+                }
+            });
         });
         let id = web_sys::window()
             .unwrap()
@@ -2944,7 +2991,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Factory closures capture only Copy types (Signals) so they are Copy themselves.
     // This lets the rsx macro use them in multiple for-loops without move issues.
     let open_chapter = move |chapter_id: String| {
-        move || do_switch_chapter(active_pane, auto_save_timer_id, save_status, editor_loaded, chapter_title, store, &bid_signal.get(), &chapter_id)
+        move || do_switch_chapter(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_loaded, chapter_title, store, &bid_signal.get(), &chapter_id)
     };
 
     // Navigate to a feedback item: switch to the chapter editor, open the feedback
@@ -2963,7 +3010,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             pending_feedback_scroll.set(Some((selected_text.clone(), context_block.clone())));
             show_feedback_sidebar.set(true);
             do_switch_chapter_inner(
-                active_pane, auto_save_timer_id, save_status, editor_loaded,
+                active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_loaded,
                 chapter_title, store, &bid_signal.get(), &chapter_id,
                 Some(pending_feedback_scroll),
             );
