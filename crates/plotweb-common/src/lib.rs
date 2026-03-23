@@ -119,6 +119,10 @@ pub struct BetaReaderLink {
     pub created_at: String,
     #[serde(default)]
     pub pinned_commit: Option<String>,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,6 +131,8 @@ pub struct CreateBetaLinkRequest {
     pub max_chapter_index: Option<i64>,
     #[serde(default)]
     pub pinned_commit: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +143,8 @@ pub struct UpdateBetaLinkRequest {
     pub active: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub pinned_commit: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub username: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -190,6 +198,17 @@ pub struct BetaChapterSummary {
     pub id: String,
     pub title: String,
     pub sort_order: i64,
+}
+
+// ── Shared Books ──
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedBook {
+    pub book_title: String,
+    pub book_description: String,
+    pub token: String,
+    pub reader_name: String,
+    pub author_username: String,
 }
 
 // ── Import ──

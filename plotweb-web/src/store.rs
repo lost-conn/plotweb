@@ -1,4 +1,4 @@
-use plotweb_common::{Book, Chapter, Note, NoteTree, User};
+use plotweb_common::{Book, Chapter, Note, NoteTree, SharedBook, User};
 use rinch_core::Signal;
 
 #[derive(Clone, Copy)]
@@ -6,6 +6,7 @@ pub struct AppStore {
     pub current_user: Signal<Option<User>>,
     pub current_route: Signal<Route>,
     pub books: Signal<Vec<Book>>,
+    pub shared_books: Signal<Vec<SharedBook>>,
     pub current_book: Signal<Option<Book>>,
     pub chapters: Signal<Vec<Chapter>>,
     pub notes: Signal<Vec<Note>>,
@@ -22,6 +23,7 @@ impl AppStore {
             current_user: Signal::new(None),
             current_route: Signal::new(Route::Login),
             books: Signal::new(Vec::new()),
+            shared_books: Signal::new(Vec::new()),
             current_book: Signal::new(None),
             chapters: Signal::new(Vec::new()),
             notes: Signal::new(Vec::new()),

@@ -1,0 +1,1 @@
+ALTER TABLE beta_reader_links ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE SET NULL;

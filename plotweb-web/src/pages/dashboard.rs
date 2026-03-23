@@ -1,7 +1,7 @@
 use rinch::prelude::*;
 use rinch_core::use_store;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use plotweb_common::{Book, CreateBookRequest};
+use plotweb_common::{Book, CreateBookRequest, SharedBook};
 
 use crate::api;
 use crate::router;
@@ -126,6 +126,16 @@ const DASHBOARD_CSS: &str = r#"
     text-align: center;
 }
 
+.book-card-shared::before {
+    background: var(--rinch-color-violet-6);
+}
+
+.book-card-shared .book-card-author {
+    font-size: 11px;
+    color: var(--rinch-color-dimmed);
+    padding: 0 16px 8px;
+}
+
 @media (max-width: 640px) {
     .dash-body {
         padding: 24px 16px;
@@ -159,6 +169,9 @@ pub fn dashboard_page() -> NodeHandle {
     wasm_bindgen_futures::spawn_local(async move {
         if let Ok(books) = api::get::<Vec<Book>>("/api/books").await {
             store.books.set(books);
+        }
+        if let Ok(shared) = api::get::<Vec<SharedBook>>("/api/shared-books").await {
+            store.shared_books.set(shared);
         }
     });
 
@@ -201,6 +214,12 @@ pub fn dashboard_page() -> NodeHandle {
     let open_book = move |id: String| {
         move || {
             router::navigate(Route::Book(id.clone()));
+        }
+    };
+
+    let open_shared_book = move |token: String| {
+        move || {
+            router::navigate(Route::Reader(token.clone()));
         }
     };
 
@@ -307,6 +326,26 @@ pub fn dashboard_page() -> NodeHandle {
                             onclick: open_modal,
                             {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
                             Text { size: "sm", "New Book" }
+                        }
+                    }
+                }
+
+                if !store.shared_books.get().is_empty() {
+                    Space { h: "xl" }
+                    Title { order: 4, "Shared with me" }
+                    div { class: "book-shelf",
+                        for shared in store.shared_books.get() {
+                            div {
+                                key: shared.token.clone(),
+                                class: "book-card book-card-shared",
+                                onclick: open_shared_book(shared.token.clone()),
+                                div { class: "book-card-title",
+                                    {shared.book_title.clone()}
+                                }
+                                div { class: "book-card-author",
+                                    {format!("by {}", shared.author_username)}
+                                }
+                            }
                         }
                     }
                 }

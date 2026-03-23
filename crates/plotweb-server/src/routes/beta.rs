@@ -6,6 +6,8 @@ use plotweb_common::*;
 use serde_json::json;
 use uuid::Uuid;
 
+use tower_sessions::Session;
+
 use crate::auth::AuthSession;
 use crate::ws::WsMessage;
 use crate::AppState;
@@ -34,9 +36,11 @@ pub async fn list_links(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    let rows = sqlx::query_as::<_, (String, String, String, String, Option<i64>, i64, String, Option<String>)>(
-        "SELECT id, book_id, token, reader_name, max_chapter_index, active, created_at, pinned_commit
-         FROM beta_reader_links WHERE book_id = ? ORDER BY created_at DESC",
+    let rows = sqlx::query_as::<_, (String, String, String, String, Option<i64>, i64, String, Option<String>, Option<String>, Option<String>)>(
+        "SELECT l.id, l.book_id, l.token, l.reader_name, l.max_chapter_index, l.active, l.created_at, l.pinned_commit, l.user_id, u.username
+         FROM beta_reader_links l
+         LEFT JOIN users u ON l.user_id = u.id
+         WHERE l.book_id = ? ORDER BY l.created_at DESC",
     )
     .bind(&book_id)
     .fetch_all(&state.db)
@@ -45,7 +49,7 @@ pub async fn list_links(
 
     let links: Vec<BetaReaderLink> = rows
         .into_iter()
-        .map(|(id, book_id, token, reader_name, max_chapter_index, active, created_at, pinned_commit)| {
+        .map(|(id, book_id, token, reader_name, max_chapter_index, active, created_at, pinned_commit, user_id, username)| {
             BetaReaderLink {
                 id,
                 book_id,
@@ -55,6 +59,8 @@ pub async fn list_links(
                 active: active != 0,
                 created_at,
                 pinned_commit,
+                user_id,
+                username,
             }
         })
         .collect();
@@ -91,9 +97,28 @@ pub async fn create_link(
         None
     };
 
+    // Resolve optional username to user_id
+    let (resolved_user_id, resolved_username) = if let Some(ref username) = req.username {
+        let trimmed = username.trim();
+        if trimmed.is_empty() {
+            (None, None)
+        } else {
+            match sqlx::query_as::<_, (String,)>("SELECT id FROM users WHERE username = ?")
+                .bind(trimmed)
+                .fetch_optional(&state.db)
+                .await
+            {
+                Ok(Some((uid,))) => (Some(uid), Some(trimmed.to_string())),
+                _ => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "user not found" }))),
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     sqlx::query(
-        "INSERT INTO beta_reader_links (id, book_id, token, reader_name, max_chapter_index, pinned_commit, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO beta_reader_links (id, book_id, token, reader_name, max_chapter_index, pinned_commit, user_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&book_id)
@@ -101,6 +126,7 @@ pub async fn create_link(
     .bind(req.reader_name.trim())
     .bind(req.max_chapter_index)
     .bind(&pinned_commit)
+    .bind(&resolved_user_id)
     .bind(&now)
     .execute(&state.db)
     .await
@@ -115,6 +141,8 @@ pub async fn create_link(
         active: true,
         created_at: now,
         pinned_commit,
+        user_id: resolved_user_id,
+        username: resolved_username,
     };
 
     (StatusCode::CREATED, Json(serde_json::to_value(link).unwrap()))
@@ -169,6 +197,32 @@ pub async fn update_link(
         };
         sqlx::query("UPDATE beta_reader_links SET pinned_commit = ? WHERE id = ? AND book_id = ?")
             .bind(&resolved)
+            .bind(&link_id)
+            .bind(&book_id)
+            .execute(&state.db)
+            .await
+            .ok();
+    }
+    if let Some(ref username_opt) = req.username {
+        let resolved_user_id = if let Some(username) = username_opt {
+            let trimmed = username.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                match sqlx::query_as::<_, (String,)>("SELECT id FROM users WHERE username = ?")
+                    .bind(trimmed)
+                    .fetch_optional(&state.db)
+                    .await
+                {
+                    Ok(Some((uid,))) => Some(uid),
+                    _ => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "user not found" }))),
+                }
+            }
+        } else {
+            None // Detach user
+        };
+        sqlx::query("UPDATE beta_reader_links SET user_id = ? WHERE id = ? AND book_id = ?")
+            .bind(&resolved_user_id)
             .bind(&link_id)
             .bind(&book_id)
             .execute(&state.db)
@@ -644,6 +698,72 @@ pub async fn author_reply_to_feedback(
     });
 
     (StatusCode::CREATED, Json(json!({ "ok": true, "id": id })))
+}
+
+// ── Shared Books & Claim ────────────────────────────────────────────────────
+
+/// List books shared with the current user via beta reader links.
+pub async fn list_shared_books(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+) -> impl IntoResponse {
+    let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
+        "SELECT l.token, l.reader_name, b.id, b.title, u.username
+         FROM beta_reader_links l
+         JOIN books b ON l.book_id = b.id
+         JOIN users u ON b.user_id = u.id
+         WHERE l.user_id = ? AND l.active = 1
+         ORDER BY l.created_at DESC",
+    )
+    .bind(&user_id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let mut shared: Vec<SharedBook> = Vec::new();
+    for (token, reader_name, book_id, book_title, author_username) in rows {
+        let description = state
+            .books
+            .get_book(&book_id)
+            .await
+            .map(|b| b.description)
+            .unwrap_or_default();
+        shared.push(SharedBook {
+            book_title,
+            book_description: description,
+            token,
+            reader_name,
+            author_username,
+        });
+    }
+
+    (StatusCode::OK, Json(serde_json::to_value(shared).unwrap()))
+}
+
+/// Claim a beta reader link for the current user (auto-attach).
+/// Uses Session directly instead of AuthSession so it's a no-op (not 401)
+/// when the user isn't logged in.
+pub async fn claim_link(
+    State(state): State<AppState>,
+    session: Session,
+    Path(token): Path<String>,
+) -> impl IntoResponse {
+    let user_id: Option<String> = session.get("user_id").await.ok().flatten();
+
+    if let Some(user_id) = user_id {
+        // Only claim if the link exists, is active, and has no user attached
+        sqlx::query(
+            "UPDATE beta_reader_links SET user_id = ?
+             WHERE token = ? AND active = 1 AND user_id IS NULL",
+        )
+        .bind(&user_id)
+        .bind(&token)
+        .execute(&state.db)
+        .await
+        .ok();
+    }
+
+    (StatusCode::OK, Json(json!({ "ok": true })))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

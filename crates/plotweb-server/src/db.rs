@@ -33,6 +33,9 @@ pub async fn init_db() -> SqlitePool {
     let migration_005 = include_str!("../../../migrations/005_beta_pinned_commit.sql");
     sqlx::raw_sql(migration_005).execute(&pool).await.ok();
 
+    let migration_006 = include_str!("../../../migrations/006_beta_link_user.sql");
+    sqlx::raw_sql(migration_006).execute(&pool).await.ok();
+
     pool
 }
 

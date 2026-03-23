@@ -1778,6 +1778,7 @@ fn render_beta_link_card<CB, TG, DL, CBO, TGO, DLO>(
     edit_beta_reader_name: Signal<String>,
     edit_beta_max_chapter: Signal<Option<i64>>,
     edit_beta_pinned: Signal<bool>,
+    edit_beta_username: Signal<String>,
     editing_beta_link: Signal<Option<BetaReaderLink>>,
     copy_beta_link: CB,
     toggle_beta_link_active: TG,
@@ -1809,6 +1810,7 @@ where
         String::new()
     };
     let is_pinned = link.pinned_commit.is_some();
+    let user_badge: Signal<Option<String>> = Signal::new(link.username.as_ref().map(|u| format!("@{}", u)));
     let edit_link = link;
 
     rsx! {
@@ -1837,6 +1839,7 @@ where
                             edit_beta_reader_name.set(edit_link.reader_name.clone());
                             edit_beta_max_chapter.set(edit_link.max_chapter_index);
                             edit_beta_pinned.set(edit_link.pinned_commit.is_some());
+                            edit_beta_username.set(edit_link.username.clone().unwrap_or_default());
                             editing_beta_link.set(Some(edit_link.clone()));
                         },
                         {render_tabler_icon(__scope, TablerIcon::Pencil, TablerIconStyle::Outline)}
@@ -1868,6 +1871,9 @@ where
             }
             div { class: "beta-link-meta",
                 Text { size: "xs", color: "dimmed", {meta_text} }
+                if let Some(ref ub) = user_badge.get() {
+                    Badge { variant: "light", size: "xs", color: "violet", {ub.clone()} }
+                }
                 if is_pinned {
                     Badge { variant: "light", size: "xs", {pin_badge.clone()} }
                 } else {
@@ -2221,6 +2227,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let edit_beta_max_chapter: Signal<Option<i64>> = Signal::new(None);
     let new_beta_pin_version: Signal<bool> = Signal::new(false);
     let edit_beta_pinned: Signal<bool> = Signal::new(false);
+    let new_beta_username: Signal<String> = Signal::new(String::new());
+    let edit_beta_username: Signal<String> = Signal::new(String::new());
+    let beta_link_error: Signal<Option<String>> = Signal::new(None);
 
     // Import signals
     let show_import_modal: Signal<bool> = Signal::new(false);
@@ -2965,16 +2974,24 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let add_beta_link = move || {
         let name = new_beta_reader_name.get();
         if name.trim().is_empty() { return; }
-        show_beta_link_modal.set(false);
+        beta_link_error.set(None);
         let bid = bid_signal.get();
         let max_ch = new_beta_max_chapter.get();
         let pinned = if new_beta_pin_version.get() { Some("HEAD".to_string()) } else { None };
+        let username_val = new_beta_username.get();
+        let username = if username_val.trim().is_empty() { None } else { Some(username_val) };
         wasm_bindgen_futures::spawn_local(async move {
-            let req = CreateBetaLinkRequest { reader_name: name, max_chapter_index: max_ch, pinned_commit: pinned };
-            if let Ok(link) = api::post::<_, BetaReaderLink>(
+            let req = CreateBetaLinkRequest { reader_name: name, max_chapter_index: max_ch, pinned_commit: pinned, username };
+            match api::post::<_, BetaReaderLink>(
                 &format!("/api/books/{}/beta-links", bid), &req,
             ).await {
-                beta_links.update(|l| l.insert(0, link));
+                Ok(link) => {
+                    show_beta_link_modal.set(false);
+                    beta_links.update(|l| l.insert(0, link));
+                }
+                Err(e) => {
+                    beta_link_error.set(Some(format!("{}", e)));
+                }
             }
         });
     };
@@ -3010,24 +3027,42 @@ pub fn book_page(book_id: String) -> NodeHandle {
         } else {
             None
         };
+        let new_username = edit_beta_username.get();
+        let old_username = link.username.clone().unwrap_or_default();
+        let username = if new_username.trim() != old_username.trim() {
+            if new_username.trim().is_empty() {
+                Some(None) // Detach
+            } else {
+                Some(Some(new_username)) // Attach new user
+            }
+        } else {
+            None // No change
+        };
         let bid = bid_signal.get();
         let lid = link.id.clone();
-        editing_beta_link.set(None);
+        beta_link_error.set(None);
         wasm_bindgen_futures::spawn_local(async move {
             let req = UpdateBetaLinkRequest {
                 reader_name: Some(name.clone()),
                 max_chapter_index: Some(max_ch),
                 active: None,
                 pinned_commit,
+                username,
             };
-            if api::put::<_, serde_json::Value>(
+            match api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/beta-links/{}", bid, lid), &req,
-            ).await.is_ok() {
-                // Refresh links to get resolved pinned_commit hash
-                if let Ok(links) = api::get::<Vec<BetaReaderLink>>(
-                    &format!("/api/books/{}/beta-links", bid),
-                ).await {
-                    beta_links.set(links);
+            ).await {
+                Ok(_) => {
+                    editing_beta_link.set(None);
+                    // Refresh links to get resolved data
+                    if let Ok(links) = api::get::<Vec<BetaReaderLink>>(
+                        &format!("/api/books/{}/beta-links", bid),
+                    ).await {
+                        beta_links.set(links);
+                    }
+                }
+                Err(e) => {
+                    beta_link_error.set(Some(format!("{}", e)));
                 }
             }
         });
@@ -3043,6 +3078,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     max_chapter_index: None,
                     active: Some(!currently_active),
                     pinned_commit: None,
+                    username: None,
                 };
                 if api::put::<_, serde_json::Value>(
                     &format!("/api/books/{}/beta-links/{}", bid, lid), &req,
@@ -3744,6 +3780,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                         new_beta_reader_name.set(String::new());
                                         new_beta_max_chapter.set(None);
                                         new_beta_pin_version.set(false);
+                                        new_beta_username.set(String::new());
+                                        beta_link_error.set(None);
                                         show_beta_link_modal.set(true);
                                     },
                                     "Create Link"
@@ -3771,6 +3809,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                         edit_beta_reader_name,
                                         edit_beta_max_chapter,
                                         edit_beta_pinned,
+                                        edit_beta_username,
                                         editing_beta_link,
                                         copy_beta_link,
                                         toggle_beta_link_active,
@@ -4116,6 +4155,20 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 Text { size: "xs", color: "dimmed",
                     "If pinned, the reader sees a snapshot of the book as it is now. Otherwise, they always see the latest version."
                 }
+                Space { h: "md" }
+                TextInput {
+                    label: "PlotWeb Username (optional)",
+                    placeholder: "Attach to a registered user",
+                    value_fn: move || new_beta_username.get(),
+                    oninput: move |v: String| new_beta_username.set(v),
+                }
+                Text { size: "xs", color: "dimmed",
+                    "If set, this user will see the book on their dashboard."
+                }
+                if let Some(ref err) = beta_link_error.get() {
+                    Space { h: "xs" }
+                    Text { size: "xs", color: "red", {err.clone()} }
+                }
                 Space { h: "lg" }
                 Group {
                     justify: "flex-end",
@@ -4187,6 +4240,20 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 }
                 Text { size: "xs", color: "dimmed",
                     "If pinned, the reader sees a snapshot. Unpin to show the latest version."
+                }
+                Space { h: "md" }
+                TextInput {
+                    label: "PlotWeb Username (optional)",
+                    placeholder: "Attach to a registered user",
+                    value_fn: move || edit_beta_username.get(),
+                    oninput: move |v: String| edit_beta_username.set(v),
+                }
+                Text { size: "xs", color: "dimmed",
+                    "If set, this user will see the book on their dashboard. Clear to detach."
+                }
+                if let Some(ref err) = beta_link_error.get() {
+                    Space { h: "xs" }
+                    Text { size: "xs", color: "red", {err.clone()} }
                 }
                 Space { h: "lg" }
                 Group {

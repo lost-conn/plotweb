@@ -130,6 +130,8 @@ async fn main() {
             "/api/books/{book_id}/import/confirm",
             post(routes::import::confirm),
         )
+        // Shared books (authenticated)
+        .route("/api/shared-books", get(routes::beta::list_shared_books))
         // Beta reader link management (authenticated)
         .route(
             "/api/books/{book_id}/beta-links",
@@ -164,7 +166,8 @@ async fn main() {
             "/api/books/{book_id}/feedback/{id}/replies",
             post(routes::beta::author_reply_to_feedback),
         )
-        // Public beta reader endpoints (no auth)
+        // Public beta reader endpoints (no auth, except claim)
+        .route("/api/beta/{token}/claim", post(routes::beta::claim_link))
         .route("/api/beta/{token}", get(routes::beta::reader_view))
         .route(
             "/api/beta/{token}/chapters/{id}",

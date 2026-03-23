@@ -11,7 +11,8 @@ use plotweb_common::{
 use crate::api;
 use crate::fonts;
 use crate::pages::editor_utils;
-use crate::store::AppStore;
+use crate::router;
+use crate::store::{AppStore, Route};
 
 const READER_CSS: &str = r#"
 .reader-workspace {
@@ -49,6 +50,11 @@ const READER_CSS: &str = r#"
     flex: 1;
     overflow-y: auto;
     padding: 8px 0;
+}
+
+.reader-sidebar-footer {
+    padding: 8px 12px;
+    border-top: 1px solid var(--rinch-color-border);
 }
 
 .reader-chapter-item {
@@ -486,7 +492,7 @@ fn reply_item(
 
 #[component]
 pub fn reader_page(token: String) -> NodeHandle {
-    let _store = use_store::<AppStore>();
+    let store = use_store::<AppStore>();
     let view_data: Signal<Option<BetaReaderView>> = Signal::new(None);
     let current_chapter: Signal<Option<Chapter>> = Signal::new(None);
     let active_chapter_id: Signal<Option<String>> = Signal::new(None);
@@ -529,6 +535,26 @@ pub fn reader_page(token: String) -> NodeHandle {
             feedback_list.set(fb);
         }
     });
+
+    // Check session first, then auto-claim if logged in.
+    // Auth check must come first — the claim endpoint's Session extractor
+    // could create a new empty session that overwrites the valid cookie.
+    {
+        let tok = token.clone();
+        let store = use_store::<AppStore>();
+        wasm_bindgen_futures::spawn_local(async move {
+            // Check if we have a valid session
+            if store.current_user.get().is_none() {
+                if let Ok(user) = api::get::<plotweb_common::User>("/api/auth/me").await {
+                    store.current_user.set(Some(user));
+                }
+            }
+            // Only claim if we're logged in
+            if store.current_user.get().is_some() {
+                api::post::<_, serde_json::Value>(&format!("/api/beta/{}/claim", tok), &serde_json::json!({})).await.ok();
+            }
+        });
+    }
 
     // Connect WebSocket for real-time feedback
     {
@@ -854,6 +880,16 @@ pub fn reader_page(token: String) -> NodeHandle {
                         div { class: "reader-sidebar-chapters",
                             for ch in view_data.get().map(|d| d.chapters.clone()).unwrap_or_default() {
                                 {reader_chapter_item(__scope, ch.id.clone(), ch.title.clone(), ch.sort_order, active_chapter_id, load_chapter)}
+                            }
+                        }
+                        if store.current_user.get().is_some() {
+                            div { class: "reader-sidebar-footer",
+                                Button {
+                                    variant: "subtle",
+                                    size: "xs",
+                                    onclick: move || router::navigate(Route::Dashboard),
+                                    "\u{2190} Dashboard"
+                                }
                             }
                         }
                     }
