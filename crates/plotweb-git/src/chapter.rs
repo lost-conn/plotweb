@@ -5,10 +5,18 @@ use crate::book::{self, BookJson};
 use crate::error::{GitStoreError, Result};
 use crate::repo;
 
-/// On-disk representation of a chapter JSON file.
+/// On-disk representation of a chapter JSON file (metadata only — content is in .md).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChapterJson {
     pub title: String,
+    pub created_at: String,
+}
+
+/// Legacy format that included content in JSON (for backward-compat reads).
+#[derive(Debug, Clone, Deserialize)]
+struct ChapterJsonCompat {
+    pub title: String,
+    #[serde(default)]
     pub content: String,
     pub created_at: String,
 }
@@ -24,8 +32,33 @@ pub struct ChapterData {
     pub updated_at: String,
 }
 
-fn chapter_path(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> PathBuf {
+fn chapter_json_path(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> PathBuf {
     book::chapters_dir(base_dir, book_id).join(format!("{}.json", chapter_id))
+}
+
+fn chapter_md_path(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> PathBuf {
+    book::chapters_dir(base_dir, book_id).join(format!("{}.md", chapter_id))
+}
+
+/// Read chapter content from the .md file, falling back to empty string.
+fn read_content(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> String {
+    let md_path = chapter_md_path(base_dir, book_id, chapter_id);
+    std::fs::read_to_string(&md_path).unwrap_or_default()
+}
+
+/// Read chapter content at a specific commit. Tries .md first, falls back to
+/// legacy JSON content field for commits before the storage migration.
+fn read_content_at_commit(repo: &git2::Repository, oid: git2::Oid, chapter_id: &str) -> String {
+    let md_path = format!("chapters/{}.md", chapter_id);
+    if let Ok(content) = crate::repo::read_text_at_commit(repo, oid, &md_path) {
+        return content;
+    }
+    // Fall back to legacy format (content embedded in JSON)
+    let json_path = format!("chapters/{}.json", chapter_id);
+    if let Ok(ch) = crate::repo::read_json_at_commit::<ChapterJsonCompat>(repo, oid, &json_path) {
+        return ch.content;
+    }
+    String::new()
 }
 
 pub fn list_chapters(base_dir: &PathBuf, book_id: &str) -> Result<Vec<ChapterData>> {
@@ -38,13 +71,14 @@ pub fn list_chapters(base_dir: &PathBuf, book_id: &str) -> Result<Vec<ChapterDat
     let mut chapters = Vec::new();
 
     for (i, chapter_id) in book_json.chapter_order.iter().enumerate() {
-        let path = chapter_path(base_dir, book_id, chapter_id);
+        let path = chapter_json_path(base_dir, book_id, chapter_id);
         if let Ok(ch) = repo::read_json::<ChapterJson>(&path) {
-            let updated_at = file_mtime_str(&path);
+            let content = read_content(base_dir, book_id, chapter_id);
+            let updated_at = book::file_mtime_str(&chapter_md_path(base_dir, book_id, chapter_id));
             chapters.push(ChapterData {
                 id: chapter_id.clone(),
                 title: ch.title,
-                content: ch.content,
+                content,
                 sort_order: i as i64,
                 created_at: ch.created_at,
                 updated_at,
@@ -61,8 +95,8 @@ pub fn get_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Resul
         return Err(GitStoreError::BookNotFound(book_id.to_string()));
     }
 
-    let path = chapter_path(base_dir, book_id, chapter_id);
-    if !path.exists() {
+    let json_path = chapter_json_path(base_dir, book_id, chapter_id);
+    if !json_path.exists() {
         return Err(GitStoreError::ChapterNotFound(chapter_id.to_string()));
     }
 
@@ -73,13 +107,14 @@ pub fn get_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Resul
         .position(|id| id == chapter_id)
         .unwrap_or(0) as i64;
 
-    let ch: ChapterJson = repo::read_json(&path)?;
-    let updated_at = file_mtime_str(&path);
+    let ch: ChapterJson = repo::read_json(&json_path)?;
+    let content = read_content(base_dir, book_id, chapter_id);
+    let updated_at = book::file_mtime_str(&chapter_md_path(base_dir, book_id, chapter_id));
 
     Ok(ChapterData {
         id: chapter_id.to_string(),
         title: ch.title,
-        content: ch.content,
+        content,
         sort_order,
         created_at: ch.created_at,
         updated_at,
@@ -98,14 +133,17 @@ pub fn create_chapter(
         return Err(GitStoreError::BookNotFound(book_id.to_string()));
     }
 
-    // Write chapter file
+    // Write metadata JSON
     let ch = ChapterJson {
         title: title.to_string(),
-        content: String::new(),
         created_at: created_at.to_string(),
     };
-    let path = chapter_path(base_dir, book_id, chapter_id);
-    repo::write_json(&path, &ch)?;
+    let json_path = chapter_json_path(base_dir, book_id, chapter_id);
+    repo::write_json(&json_path, &ch)?;
+
+    // Write empty .md content file
+    let md_path = chapter_md_path(base_dir, book_id, chapter_id);
+    std::fs::write(&md_path, "")?;
 
     // Update book.json chapter_order
     let mut book_json: BookJson = repo::read_json(&book_path)?;
@@ -114,11 +152,11 @@ pub fn create_chapter(
     repo::write_json(&book_path, &book_json)?;
 
     // Commit
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = book::manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     repo::commit_all(&git_repo, &format!("Add chapter: {}", title))?;
 
-    let updated_at = file_mtime_str(&path);
+    let updated_at = book::file_mtime_str(&md_path);
 
     Ok(ChapterData {
         id: chapter_id.to_string(),
@@ -137,33 +175,37 @@ pub fn update_chapter(
     title: Option<&str>,
     content: Option<&str>,
 ) -> Result<()> {
-    let path = chapter_path(base_dir, book_id, chapter_id);
-    if !path.exists() {
+    let json_path = chapter_json_path(base_dir, book_id, chapter_id);
+    if !json_path.exists() {
         return Err(GitStoreError::ChapterNotFound(chapter_id.to_string()));
     }
 
-    let mut ch: ChapterJson = repo::read_json(&path)?;
+    let mut ch: ChapterJson = repo::read_json(&json_path)?;
 
     if let Some(t) = title {
         ch.title = t.to_string();
+        repo::write_json(&json_path, &ch)?;
     }
     if let Some(c) = content {
-        ch.content = c.to_string();
+        let md_path = chapter_md_path(base_dir, book_id, chapter_id);
+        std::fs::write(&md_path, c)?;
     }
 
-    repo::write_json(&path, &ch)?;
-
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = book::manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     repo::commit_all(&git_repo, &format!("Update chapter: {}", ch.title))?;
 
     Ok(())
 }
 
 pub fn delete_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Result<()> {
-    let path = chapter_path(base_dir, book_id, chapter_id);
-    if path.exists() {
-        std::fs::remove_file(&path)?;
+    let json_path = chapter_json_path(base_dir, book_id, chapter_id);
+    if json_path.exists() {
+        std::fs::remove_file(&json_path)?;
+    }
+    let md_path = chapter_md_path(base_dir, book_id, chapter_id);
+    if md_path.exists() {
+        std::fs::remove_file(&md_path)?;
     }
 
     // Remove from chapter_order
@@ -174,8 +216,8 @@ pub fn delete_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Re
         repo::write_json(&book_path, &book_json)?;
     }
 
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = book::manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     repo::commit_all(&git_repo, &format!("Delete chapter {}", chapter_id))?;
 
     Ok(())
@@ -202,11 +244,13 @@ pub fn import_chapters(
 
         let chapter_json = ChapterJson {
             title: ch.title.clone(),
-            content: ch.content.clone(),
             created_at: now.clone(),
         };
-        let path = chapter_path(base_dir, book_id, &id);
-        repo::write_json(&path, &chapter_json)?;
+        let json_path = chapter_json_path(base_dir, book_id, &id);
+        repo::write_json(&json_path, &chapter_json)?;
+
+        let md_path = chapter_md_path(base_dir, book_id, &id);
+        std::fs::write(&md_path, &ch.content)?;
 
         book_json.chapter_order.push(id.clone());
 
@@ -222,8 +266,8 @@ pub fn import_chapters(
 
     repo::write_json(&book_path, &book_json)?;
 
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = book::manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     repo::commit_all(
         &git_repo,
         &format!("Import {} chapters", chapters.len()),
@@ -242,8 +286,8 @@ pub fn reorder_chapters(base_dir: &PathBuf, book_id: &str, chapter_ids: &[String
     book_json.chapter_order = chapter_ids.to_vec();
     repo::write_json(&book_path, &book_json)?;
 
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = book::manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     repo::commit_all(&git_repo, "Reorder chapters")?;
 
     Ok(())
@@ -255,8 +299,8 @@ pub fn get_chapter_at_commit(
     chapter_id: &str,
     commit_hex: &str,
 ) -> Result<ChapterData> {
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = book::manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     let oid = git2::Oid::from_str(commit_hex)?;
 
     let book_json: BookJson = crate::repo::read_json_at_commit(&git_repo, oid, "book.json")?;
@@ -266,13 +310,17 @@ pub fn get_chapter_at_commit(
         .position(|id| id == chapter_id)
         .unwrap_or(0) as i64;
 
+    // Read metadata from JSON (compat struct handles both old and new format)
     let ch_path = format!("chapters/{}.json", chapter_id);
-    let ch: ChapterJson = crate::repo::read_json_at_commit(&git_repo, oid, &ch_path)?;
+    let ch: ChapterJsonCompat = crate::repo::read_json_at_commit(&git_repo, oid, &ch_path)?;
+
+    // Read content: try .md first, fall back to legacy JSON content
+    let content = read_content_at_commit(&git_repo, oid, chapter_id);
 
     Ok(ChapterData {
         id: chapter_id.to_string(),
         title: ch.title,
-        content: ch.content,
+        content,
         sort_order,
         created_at: ch.created_at,
         updated_at: String::new(),
@@ -284,8 +332,8 @@ pub fn list_chapters_at_commit(
     book_id: &str,
     commit_hex: &str,
 ) -> Result<Vec<ChapterData>> {
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = book::manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     let oid = git2::Oid::from_str(commit_hex)?;
 
     let book_json: BookJson = crate::repo::read_json_at_commit(&git_repo, oid, "book.json")?;
@@ -293,11 +341,12 @@ pub fn list_chapters_at_commit(
 
     for (i, chapter_id) in book_json.chapter_order.iter().enumerate() {
         let ch_path = format!("chapters/{}.json", chapter_id);
-        if let Ok(ch) = crate::repo::read_json_at_commit::<ChapterJson>(&git_repo, oid, &ch_path) {
+        if let Ok(ch) = crate::repo::read_json_at_commit::<ChapterJsonCompat>(&git_repo, oid, &ch_path) {
+            let content = read_content_at_commit(&git_repo, oid, chapter_id);
             chapters.push(ChapterData {
                 id: chapter_id.clone(),
                 title: ch.title,
-                content: ch.content,
+                content,
                 sort_order: i as i64,
                 created_at: ch.created_at,
                 updated_at: String::new(),
@@ -306,15 +355,4 @@ pub fn list_chapters_at_commit(
     }
 
     Ok(chapters)
-}
-
-fn file_mtime_str(path: &std::path::Path) -> String {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| {
-            let dt: chrono::DateTime<chrono::Utc> = t.into();
-            Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
-        })
-        .unwrap_or_default()
 }

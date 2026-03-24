@@ -28,16 +28,22 @@ pub struct BookData {
     pub updated_at: String,
 }
 
+/// Parent directory for a book (contains manuscript/ and notes/ subdirs).
 pub fn book_dir(base_dir: &PathBuf, book_id: &str) -> PathBuf {
     base_dir.join(book_id)
 }
 
+/// Git repo directory for the manuscript (book metadata + chapters).
+pub fn manuscript_dir(base_dir: &PathBuf, book_id: &str) -> PathBuf {
+    book_dir(base_dir, book_id).join("manuscript")
+}
+
 pub fn book_json_path(base_dir: &PathBuf, book_id: &str) -> PathBuf {
-    book_dir(base_dir, book_id).join("book.json")
+    manuscript_dir(base_dir, book_id).join("book.json")
 }
 
 pub fn chapters_dir(base_dir: &PathBuf, book_id: &str) -> PathBuf {
-    book_dir(base_dir, book_id).join("chapters")
+    manuscript_dir(base_dir, book_id).join("chapters")
 }
 
 pub fn create_book(
@@ -47,7 +53,7 @@ pub fn create_book(
     description: &str,
     created_at: &str,
 ) -> Result<()> {
-    let dir = book_dir(base_dir, book_id);
+    let ms_dir = manuscript_dir(base_dir, book_id);
     let chapters = chapters_dir(base_dir, book_id);
     std::fs::create_dir_all(&chapters)?;
 
@@ -59,9 +65,17 @@ pub fn create_book(
         created_at: created_at.to_string(),
     };
 
-    repo::write_json(&dir.join("book.json"), &book)?;
-    let git_repo = repo::init_repo(&dir)?;
+    repo::write_json(&ms_dir.join("book.json"), &book)?;
+    let git_repo = repo::init_repo(&ms_dir)?;
     repo::commit_all(&git_repo, "Create book")?;
+
+    // Initialize separate notes repo
+    let notes_dir = crate::note::notes_repo_dir(base_dir, book_id);
+    std::fs::create_dir_all(&notes_dir)?;
+    let default_tree = crate::note::NotesTreeJson::default();
+    repo::write_json(&notes_dir.join("notes.json"), &default_tree)?;
+    let notes_repo = repo::init_repo(&notes_dir)?;
+    repo::commit_all(&notes_repo, "Initialize notes")?;
 
     Ok(())
 }
@@ -111,8 +125,8 @@ pub fn update_book(
 
     repo::write_json(&path, &book)?;
 
-    let dir = book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     repo::commit_all(&git_repo, "Update book")?;
 
     Ok(())
@@ -127,8 +141,8 @@ pub fn delete_book(base_dir: &PathBuf, book_id: &str) -> Result<()> {
 }
 
 pub fn get_book_at_commit(base_dir: &PathBuf, book_id: &str, commit_hex: &str) -> Result<BookData> {
-    let dir = book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     let oid = git2::Oid::from_str(commit_hex)?;
     let book: BookJson = repo::read_json_at_commit(&git_repo, oid, "book.json")?;
 
@@ -143,13 +157,13 @@ pub fn get_book_at_commit(base_dir: &PathBuf, book_id: &str, commit_hex: &str) -
 }
 
 pub fn get_head_oid(base_dir: &PathBuf, book_id: &str) -> Result<String> {
-    let dir = book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let ms_dir = manuscript_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&ms_dir)?;
     let oid = repo::head_oid(&git_repo)?;
     Ok(oid.to_string())
 }
 
-fn file_mtime_str(path: &std::path::Path) -> String {
+pub fn file_mtime_str(path: &std::path::Path) -> String {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()

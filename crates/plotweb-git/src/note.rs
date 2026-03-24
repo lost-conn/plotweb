@@ -48,16 +48,17 @@ pub struct NoteData {
     pub updated_at: String,
 }
 
-pub fn notes_dir(base_dir: &PathBuf, book_id: &str) -> PathBuf {
+/// Git repo directory for notes (separate from manuscript).
+pub fn notes_repo_dir(base_dir: &PathBuf, book_id: &str) -> PathBuf {
     book::book_dir(base_dir, book_id).join("notes")
 }
 
 fn notes_tree_path(base_dir: &PathBuf, book_id: &str) -> PathBuf {
-    book::book_dir(base_dir, book_id).join("notes.json")
+    notes_repo_dir(base_dir, book_id).join("notes.json")
 }
 
 fn note_path(base_dir: &PathBuf, book_id: &str, note_id: &str) -> PathBuf {
-    notes_dir(base_dir, book_id).join(format!("{}.json", note_id))
+    notes_repo_dir(base_dir, book_id).join(format!("{}.json", note_id))
 }
 
 fn read_tree(base_dir: &PathBuf, book_id: &str) -> NotesTreeJson {
@@ -70,19 +71,8 @@ fn read_tree(base_dir: &PathBuf, book_id: &str) -> NotesTreeJson {
 }
 
 fn ensure_notes_dir(base_dir: &PathBuf, book_id: &str) {
-    let dir = notes_dir(base_dir, book_id);
+    let dir = notes_repo_dir(base_dir, book_id);
     std::fs::create_dir_all(&dir).ok();
-}
-
-fn file_mtime_str(path: &std::path::Path) -> String {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| {
-            let dt: chrono::DateTime<chrono::Utc> = t.into();
-            Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
-        })
-        .unwrap_or_default()
 }
 
 /// Collect all descendant IDs of a note (for recursive delete or circular ref check).
@@ -111,6 +101,7 @@ fn remove_from_tree(tree: &mut NotesTreeJson, note_id: &str) {
 }
 
 pub fn list_notes(base_dir: &PathBuf, book_id: &str) -> Result<(Vec<NoteData>, NotesTreeJson)> {
+    // Check book exists via manuscript
     let book_path = book::book_json_path(base_dir, book_id);
     if !book_path.exists() {
         return Err(GitStoreError::BookNotFound(book_id.to_string()));
@@ -128,7 +119,7 @@ pub fn list_notes(base_dir: &PathBuf, book_id: &str) -> Result<(Vec<NoteData>, N
     for note_id in &all_ids {
         let path = note_path(base_dir, book_id, note_id);
         if let Ok(n) = repo::read_json::<NoteJson>(&path) {
-            let updated_at = file_mtime_str(&path);
+            let updated_at = book::file_mtime_str(&path);
             notes.push(NoteData {
                 id: note_id.clone(),
                 title: n.title,
@@ -150,7 +141,7 @@ pub fn get_note(base_dir: &PathBuf, book_id: &str, note_id: &str) -> Result<Note
     }
 
     let n: NoteJson = repo::read_json(&path)?;
-    let updated_at = file_mtime_str(&path);
+    let updated_at = book::file_mtime_str(&path);
 
     Ok(NoteData {
         id: note_id.to_string(),
@@ -203,12 +194,12 @@ pub fn create_note(
     }
     repo::write_json(&notes_tree_path(base_dir, book_id), &tree)?;
 
-    // Commit
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    // Commit to notes repo
+    let nr_dir = notes_repo_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&nr_dir)?;
     repo::commit_all(&git_repo, &format!("Add note: {}", title))?;
 
-    let updated_at = file_mtime_str(&path);
+    let updated_at = book::file_mtime_str(&path);
 
     Ok(NoteData {
         id: note_id.to_string(),
@@ -247,8 +238,8 @@ pub fn update_note(
 
     repo::write_json(&path, &n)?;
 
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let nr_dir = notes_repo_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&nr_dir)?;
     repo::commit_all(&git_repo, &format!("Update note: {}", n.title))?;
 
     Ok(())
@@ -287,8 +278,8 @@ pub fn delete_note(base_dir: &PathBuf, book_id: &str, note_id: &str) -> Result<(
 
     repo::write_json(&notes_tree_path(base_dir, book_id), &tree)?;
 
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let nr_dir = notes_repo_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&nr_dir)?;
     repo::commit_all(&git_repo, &format!("Delete note {}", note_id))?;
 
     Ok(())
@@ -332,8 +323,8 @@ pub fn move_note(
 
     repo::write_json(&notes_tree_path(base_dir, book_id), &tree)?;
 
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let nr_dir = notes_repo_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&nr_dir)?;
     repo::commit_all(&git_repo, "Move note")?;
 
     Ok(())
@@ -345,8 +336,8 @@ pub fn update_note_tree(base_dir: &PathBuf, book_id: &str, tree: &NotesTreeJson)
     ensure_notes_dir(base_dir, book_id);
     repo::write_json(&tree_path, tree)?;
 
-    let dir = book::book_dir(base_dir, book_id);
-    let git_repo = git2::Repository::open(&dir)?;
+    let nr_dir = notes_repo_dir(base_dir, book_id);
+    let git_repo = git2::Repository::open(&nr_dir)?;
     repo::commit_all(&git_repo, "Update note tree")?;
 
     Ok(())

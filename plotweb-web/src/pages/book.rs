@@ -4,7 +4,7 @@ use rinch::prelude::*;
 use rinch_core::use_store;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{
-    BetaFeedback, BetaReaderLink, Book, Chapter, CreateBetaLinkRequest,
+    BetaFeedback, BetaReaderLink, Book, Chapter, CommitDiff, CommitInfo, CreateBetaLinkRequest,
     CreateBetaReplyRequest, CreateChapterRequest, CreateNoteRequest, FontSettings,
     ImportChapter, ImportPreviewChapter, ImportPreviewResponse, MoveNoteRequest,
     Note, NoteTree, NotesResponse, ReorderChaptersRequest, UpdateBetaLinkRequest,
@@ -28,6 +28,7 @@ enum BookPane {
     BetaReaders,
     Notes,
     NoteEditor(String),
+    History,
 }
 
 /// CSS for the typography settings section.
@@ -1643,6 +1644,251 @@ where
     rsx! { {nodes} }
 }
 
+fn render_history_commit(
+    __scope: &mut RenderScope,
+    commit: CommitInfo,
+    preview_commit: Signal<Option<String>>,
+    preview_chapters: Signal<Vec<Chapter>>,
+    preview_content: Signal<Option<Chapter>>,
+    show_restore_confirm: Signal<Option<String>>,
+    bid_signal: Signal<String>,
+    history_diff: Signal<Option<CommitDiff>>,
+) -> NodeHandle {
+    let oid_signal = Signal::new(commit.oid.clone());
+    let short_oid = commit.oid[..7.min(commit.oid.len())].to_string();
+    let is_expanded = move || preview_commit.get().as_deref() == Some(&oid_signal.get());
+
+    rsx! {
+        div {
+            style: "border: 1px solid var(--rinch-color-border); border-radius: var(--rinch-radius-sm); padding: 12px; margin-bottom: 8px;",
+
+            div {
+                style: "display: flex; justify-content: space-between; align-items: flex-start;",
+                div {
+                    Text { size: "sm", weight: "500", {commit.message.clone()} }
+                    div {
+                        style: "display: flex; gap: 8px; margin-top: 4px;",
+                        Text { size: "xs", color: "dimmed", {commit.created_at.clone()} }
+                        Text { size: "xs", color: "dimmed", {short_oid} }
+                    }
+                }
+                div {
+                    style: "display: flex; gap: 4px; flex-shrink: 0;",
+                    Button {
+                        variant: "subtle",
+                        size: "xs",
+                        onclick: move || {
+                            if is_expanded() {
+                                preview_commit.set(None);
+                                preview_chapters.set(Vec::new());
+                                preview_content.set(None);
+                                history_diff.set(None);
+                            } else {
+                                let bid = bid_signal.get();
+                                let oid = oid_signal.get();
+                                preview_commit.set(Some(oid.clone()));
+                                preview_content.set(None);
+                                history_diff.set(None);
+                                let oid2 = oid.clone();
+                                let bid2 = bid.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(chapters) = api::get::<Vec<Chapter>>(
+                                        &format!("/api/books/{}/history/{}/chapters", bid, oid),
+                                    ).await {
+                                        preview_chapters.set(chapters);
+                                    }
+                                });
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(diff) = api::get::<CommitDiff>(
+                                        &format!("/api/books/{}/history/{}/diff", bid2, oid2),
+                                    ).await {
+                                        history_diff.set(Some(diff));
+                                    }
+                                });
+                            }
+                        },
+                        {move || if is_expanded() { "Hide" } else { "Preview" }}
+                    }
+                    Button {
+                        variant: "light",
+                        size: "xs",
+                        color: "blue",
+                        onclick: move || {
+                            show_restore_confirm.set(Some(oid_signal.get()));
+                        },
+                        "Restore"
+                    }
+                }
+            }
+
+            if is_expanded() {
+                div {
+                    style: "margin-top: 12px; border-top: 1px solid var(--rinch-color-border); padding-top: 12px;",
+
+                    // Show diff hunks for each changed chapter
+                    for ch_diff in history_diff.get().map(|d| d.changed_chapters).unwrap_or_default() {
+                        {render_chapter_diff(__scope, ch_diff)}
+                    }
+
+                    if preview_chapters.get().is_empty() && history_diff.get().is_none() {
+                        Text { size: "sm", color: "dimmed", "Loading..." }
+                    }
+
+                    // Chapter preview list
+                    for ch in preview_chapters.get() {
+                        {render_history_chapter_preview(
+                            __scope,
+                            ch.clone(),
+                            preview_content,
+                            bid_signal,
+                            preview_commit,
+                        )}
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn render_chapter_diff(
+    __scope: &mut RenderScope,
+    ch_diff: plotweb_common::ChapterDiff,
+) -> NodeHandle {
+    // Pre-render all diff lines as HTML
+    let mut diff_html = String::new();
+    for hunk in &ch_diff.hunks {
+        for line in &hunk.lines {
+            let bg = match line.origin.as_str() {
+                "+" => "background: rgba(40, 167, 69, 0.15);",
+                "-" => "background: rgba(220, 53, 69, 0.15); text-decoration: line-through;",
+                _ => "",
+            };
+            let prefix = match line.origin.as_str() {
+                "+" => "+ ",
+                "-" => "- ",
+                _ => "  ",
+            };
+            let escaped = line.content.trim_end_matches('\n')
+                .replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;");
+            diff_html.push_str(&format!(
+                "<div style=\"padding: 1px 8px; white-space: pre-wrap; {}\">{}{}</div>",
+                bg, prefix, escaped
+            ));
+        }
+    }
+
+    let header = format!("{} ({})", ch_diff.chapter_title, ch_diff.change_type);
+    let diff_el_id = Signal::new(format!("diff-{}", ch_diff.chapter_id));
+    let diff_el_id_copy = diff_el_id.get();
+
+    // Set inner HTML imperatively after render
+    let html_clone = diff_html.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let closure = wasm_bindgen::closure::Closure::once(move || {
+            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                if let Ok(Some(el)) = doc.query_selector(&format!("#{}", diff_el_id_copy)) {
+                    el.set_inner_html(&html_clone);
+                }
+            }
+        });
+        if let Some(w) = web_sys::window() {
+            w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                50,
+            ).ok();
+        }
+        closure.forget();
+    });
+
+    rsx! {
+        div {
+            style: "margin-bottom: 12px;",
+            Text { size: "sm", weight: "600", {header} }
+            div {
+                id: {move || diff_el_id.get()},
+                style: "font-family: monospace; font-size: 13px; line-height: 1.6; margin-top: 4px; border: 1px solid var(--rinch-color-border); border-radius: var(--rinch-radius-sm); overflow: hidden;",
+            }
+        }
+    }
+}
+
+fn render_history_chapter_preview(
+    __scope: &mut RenderScope,
+    chapter: Chapter,
+    preview_content: Signal<Option<Chapter>>,
+    bid_signal: Signal<String>,
+    preview_commit: Signal<Option<String>>,
+) -> NodeHandle {
+    let cid_signal = Signal::new(chapter.id.clone());
+    let preview_el_id = format!("history-preview-{}", chapter.id);
+    let preview_el_id_signal = Signal::new(preview_el_id);
+    let is_selected = move || {
+        preview_content
+            .get()
+            .as_ref()
+            .map(|c| c.id == cid_signal.get())
+            .unwrap_or(false)
+    };
+
+    rsx! {
+        div {
+            style: "margin-bottom: 4px;",
+
+            div {
+                style: {move || if is_selected() {
+                    "cursor: pointer; padding: 6px 8px; border-radius: var(--rinch-radius-sm); background: var(--rinch-color-blue-light);"
+                } else {
+                    "cursor: pointer; padding: 6px 8px; border-radius: var(--rinch-radius-sm);"
+                }},
+                onclick: move || {
+                    if is_selected() {
+                        preview_content.set(None);
+                    } else {
+                        let bid = bid_signal.get();
+                        let ch_id = cid_signal.get();
+                        let el_id = preview_el_id_signal.get();
+                        if let Some(commit) = preview_commit.get() {
+                            wasm_bindgen_futures::spawn_local(async move {
+                                if let Ok(full_ch) = api::get::<Chapter>(
+                                    &format!("/api/books/{}/history/{}/chapters/{}", bid, commit, ch_id),
+                                ).await {
+                                    let html = super::editor_utils::markdown_to_html(&full_ch.content);
+                                    preview_content.set(Some(full_ch));
+                                    // Set inner HTML imperatively after a tick
+                                    let closure = wasm_bindgen::closure::Closure::once(move || {
+                                        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                            if let Ok(Some(el)) = doc.query_selector(&format!("#{}", el_id)) {
+                                                el.set_inner_html(&html);
+                                            }
+                                        }
+                                    });
+                                    if let Some(w) = web_sys::window() {
+                                        w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                            closure.as_ref().unchecked_ref(),
+                                            50,
+                                        ).ok();
+                                    }
+                                    closure.forget();
+                                }
+                            });
+                        }
+                    }
+                },
+                Text { size: "sm", {chapter.title.clone()} }
+            }
+
+            if is_selected() {
+                div {
+                    id: {move || preview_el_id_signal.get()},
+                    style: "padding: 8px 12px; margin: 4px 0; background: var(--rinch-color-body); border-radius: var(--rinch-radius-sm); border: 1px solid var(--rinch-color-border); max-height: 400px; overflow-y: auto; font-size: 14px; line-height: 1.6;",
+                }
+            }
+        }
+    }
+}
+
 /// Switch to editing a chapter. Saves current chapter if editing, clears timers, loads new chapter.
 /// All parameters are Copy or Clone so this can be called from rsx! closures without ownership issues.
 fn do_switch_chapter(
@@ -2275,6 +2521,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let note_editor_color: Signal<Option<String>> = Signal::new(None);
     let dragging_note_id: Signal<Option<String>> = Signal::new(None);
     let drop_target: Signal<Option<(Option<String>, usize)>> = Signal::new(None);
+
+    // History signals
+    let history_commits: Signal<Vec<CommitInfo>> = Signal::new(Vec::new());
+    let history_preview_commit: Signal<Option<String>> = Signal::new(None);
+    let history_preview_chapters: Signal<Vec<Chapter>> = Signal::new(Vec::new());
+    let history_preview_content: Signal<Option<Chapter>> = Signal::new(None);
+    let history_diff: Signal<Option<CommitDiff>> = Signal::new(None);
+    let show_restore_confirm: Signal<Option<String>> = Signal::new(None);
 
     // Book settings modal
     let show_book_settings_modal: Signal<bool> = Signal::new(false);
@@ -3236,6 +3490,19 @@ pub fn book_page(book_id: String) -> NodeHandle {
         store.sidebar_open.set(false);
     };
 
+    let open_history_pane = move || {
+        active_pane.set(BookPane::History);
+        store.sidebar_open.set(false);
+        let bid = bid_signal.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(commits) = api::get::<Vec<CommitInfo>>(
+                &format!("/api/books/{}/history", bid),
+            ).await {
+                history_commits.set(commits);
+            }
+        });
+    };
+
     let open_notes_pane = move || {
         active_pane.set(BookPane::Notes);
         store.sidebar_open.set(false);
@@ -3517,6 +3784,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     }
                                 }
                             }
+                        }
+
+                        // History section header
+                        div {
+                            class: {move || if matches!(active_pane.get(), BookPane::History) { "sidebar-section-header active" } else { "sidebar-section-header" }},
+                            onclick: open_history_pane,
+                            "History"
                         }
                     }
 
@@ -4016,6 +4290,117 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 oninput: move |_: String| schedule_note_save(),
                             }
                         }
+                    }
+
+                    // History pane (CSS toggle)
+                    div {
+                        class: "book-main-scroll",
+                        style: {move || if matches!(active_pane.get(), BookPane::History) { "" } else { "display:none;" }},
+
+                        div { class: "chapters-pane",
+                            div { class: "chapters-pane-header",
+                                Title { order: 3, "Version History" }
+                            }
+
+                            Space { h: "sm" }
+                            Text { size: "sm", color: "dimmed",
+                                "Browse previous versions of your book. You can preview any version and restore it if needed."
+                            }
+                            Space { h: "md" }
+
+                            if history_commits.get().is_empty() {
+                                Text { color: "dimmed", "No history available." }
+                            }
+
+                            for commit in history_commits.get() {
+                                {render_history_commit(
+                                    __scope,
+                                    commit.clone(),
+                                    history_preview_commit,
+                                    history_preview_chapters,
+                                    history_preview_content,
+                                    show_restore_confirm,
+                                    bid_signal,
+                                    history_diff,
+                                )}
+                            }
+
+                            if !history_commits.get().is_empty() {
+                                Space { h: "md" }
+                                Button {
+                                    variant: "subtle",
+                                    size: "sm",
+                                    onclick: {
+                                        let bid = bid_signal.get();
+                                        move || {
+                                            let offset = history_commits.get().len();
+                                            let bid = bid.clone();
+                                            wasm_bindgen_futures::spawn_local(async move {
+                                                if let Ok(more) = api::get::<Vec<CommitInfo>>(
+                                                    &format!("/api/books/{}/history?offset={}", bid, offset),
+                                                ).await {
+                                                    if !more.is_empty() {
+                                                        history_commits.update(|list| list.extend(more));
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    },
+                                    "Load more"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Restore confirmation modal
+            Modal {
+                opened_fn: move || show_restore_confirm.get().is_some(),
+                onclose: move || show_restore_confirm.set(None),
+                title: "Restore Version",
+
+                Text { "Are you sure you want to restore to this version? Your current version will be preserved in history." }
+                Space { h: "md" }
+                Group {
+                    justify: "flex-end",
+                    Button {
+                        variant: "default",
+                        onclick: move || show_restore_confirm.set(None),
+                        "Cancel"
+                    }
+                    Button {
+                        color: "blue",
+                        onclick: move || {
+                            if let Some(oid) = show_restore_confirm.get() {
+                                let bid = bid_signal.get();
+                                show_restore_confirm.set(None);
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if api::post::<_, serde_json::Value>(
+                                        &format!("/api/books/{}/history/{}/restore", bid, oid),
+                                        &serde_json::json!({}),
+                                    ).await.is_ok() {
+                                        // Refresh book data
+                                        if let Ok(book) = api::get::<Book>(&format!("/api/books/{}", bid)).await {
+                                            store.current_book.set(Some(book));
+                                        }
+                                        if let Ok(chapters) = api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid)).await {
+                                            store.chapters.set(chapters);
+                                        }
+                                        // Refresh history
+                                        if let Ok(commits) = api::get::<Vec<CommitInfo>>(&format!("/api/books/{}/history", bid)).await {
+                                            history_commits.set(commits);
+                                        }
+                                        history_preview_commit.set(None);
+                                        history_preview_chapters.set(Vec::new());
+                                        history_preview_content.set(None);
+                                        history_diff.set(None);
+                                        active_pane.set(BookPane::Chapters);
+                                    }
+                                });
+                            }
+                        },
+                        "Restore"
                     }
                 }
             }

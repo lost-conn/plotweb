@@ -40,6 +40,11 @@ async fn main() {
         eprintln!("Warning: data migration failed: {}", e);
     }
 
+    // Migrate old single-repo layout to split repos (manuscript + notes)
+    if let Err(e) = plotweb_git::migrate::migrate_to_split_repos(&base_dir) {
+        eprintln!("Warning: split repos migration failed: {}", e);
+    }
+
     // Now slim down the SQLite schema
     db::run_migration_003(&pool).await;
 
@@ -120,6 +125,27 @@ async fn main() {
         .route(
             "/api/books/{book_id}/notes/{id}",
             delete(routes::notes::delete),
+        )
+        // History endpoints
+        .route(
+            "/api/books/{book_id}/history",
+            get(routes::history::list),
+        )
+        .route(
+            "/api/books/{book_id}/history/{commit}/chapters",
+            get(routes::history::list_chapters),
+        )
+        .route(
+            "/api/books/{book_id}/history/{commit}/chapters/{id}",
+            get(routes::history::get_chapter),
+        )
+        .route(
+            "/api/books/{book_id}/history/{commit}/restore",
+            post(routes::history::restore),
+        )
+        .route(
+            "/api/books/{book_id}/history/{commit}/diff",
+            get(routes::history::diff),
         )
         // Import endpoints
         .route(

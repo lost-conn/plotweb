@@ -31,13 +31,23 @@ impl BookStore {
         }
     }
 
-    /// Get or create a per-book lock.
-    fn book_lock(&self, book_id: &str) -> Arc<Mutex<()>> {
+    /// Get or create a lock by key.
+    fn lock_for(&self, key: &str) -> Arc<Mutex<()>> {
         let mut locks = self.locks.lock().unwrap();
         locks
-            .entry(book_id.to_string())
+            .entry(key.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    /// Lock for manuscript (book metadata + chapters) operations.
+    fn manuscript_lock(&self, book_id: &str) -> Arc<Mutex<()>> {
+        self.lock_for(&format!("m:{}", book_id))
+    }
+
+    /// Lock for notes operations.
+    fn notes_lock(&self, book_id: &str) -> Arc<Mutex<()>> {
+        self.lock_for(&format!("n:{}", book_id))
     }
 
     // ── Books ──
@@ -49,7 +59,7 @@ impl BookStore {
         description: &str,
         created_at: &str,
     ) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -72,7 +82,7 @@ impl BookStore {
     }
 
     pub async fn update_book(&self, book_id: &str, update: &UpdateBookRequest) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -93,7 +103,7 @@ impl BookStore {
     }
 
     pub async fn delete_book(&self, book_id: &str) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -128,7 +138,7 @@ impl BookStore {
         title: &str,
         created_at: &str,
     ) -> Result<ChapterData> {
-        let lock = self.book_lock(book_id);
+        let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -148,7 +158,7 @@ impl BookStore {
         chapter_id: &str,
         update: &UpdateChapterRequest,
     ) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -163,7 +173,7 @@ impl BookStore {
     }
 
     pub async fn delete_chapter(&self, book_id: &str, chapter_id: &str) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -224,13 +234,119 @@ impl BookStore {
         .unwrap()
     }
 
+    // ── History ──
+
+    pub async fn list_commits(
+        &self,
+        book_id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<plotweb_common::CommitInfo>> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let ms_dir = book::manuscript_dir(&base, &book_id);
+            let git_repo = git2::Repository::open(&ms_dir)?;
+            let raw = repo::list_commits(&git_repo, limit, offset)?;
+            Ok(raw
+                .into_iter()
+                .map(|(oid, message, timestamp)| {
+                    let dt = chrono::DateTime::from_timestamp(timestamp, 0)
+                        .unwrap_or_default();
+                    plotweb_common::CommitInfo {
+                        oid,
+                        message,
+                        created_at: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    }
+                })
+                .collect())
+        })
+        .await
+        .unwrap()
+    }
+
+    pub async fn restore_to_commit(&self, book_id: &str, commit_hex: &str) -> Result<()> {
+        let lock = self.manuscript_lock(book_id);
+        let _guard = lock.lock().await;
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let commit_hex = commit_hex.to_string();
+        tokio::task::spawn_blocking(move || {
+            let ms_dir = book::manuscript_dir(&base, &book_id);
+            let git_repo = git2::Repository::open(&ms_dir)?;
+            let oid = git2::Oid::from_str(&commit_hex)?;
+            repo::restore_to_commit(&git_repo, oid)
+        })
+        .await
+        .unwrap()
+    }
+
+    pub async fn diff_commit(
+        &self,
+        book_id: &str,
+        commit_hex: &str,
+    ) -> Result<plotweb_common::CommitDiff> {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        let commit_hex = commit_hex.to_string();
+        tokio::task::spawn_blocking(move || {
+            let ms_dir = book::manuscript_dir(&base, &book_id);
+            let git_repo = git2::Repository::open(&ms_dir)?;
+            let oid = git2::Oid::from_str(&commit_hex)?;
+
+            let raw = repo::diff_commit(&git_repo, oid)?;
+
+            // Read book.json at this commit to resolve chapter titles
+            let book_json: Option<book::BookJson> =
+                repo::read_json_at_commit(&git_repo, oid, "book.json").ok();
+
+            let changed_chapters = raw
+                .into_iter()
+                .map(|(chapter_id, change_type, hunks)| {
+                    // Try to get chapter title from the JSON at this commit
+                    let chapter_title = book_json
+                        .as_ref()
+                        .and_then(|_| {
+                            let ch_path = format!("chapters/{}.json", chapter_id);
+                            repo::read_json_at_commit::<serde_json::Value>(&git_repo, oid, &ch_path)
+                                .ok()
+                                .and_then(|v| v.get("title")?.as_str().map(|s| s.to_string()))
+                        })
+                        .unwrap_or_else(|| chapter_id.clone());
+
+                    plotweb_common::ChapterDiff {
+                        chapter_id,
+                        chapter_title,
+                        change_type,
+                        hunks: hunks
+                            .into_iter()
+                            .map(|(lines,)| plotweb_common::DiffHunk {
+                                lines: lines
+                                    .into_iter()
+                                    .map(|(origin, content)| plotweb_common::DiffLine {
+                                        origin: origin.to_string(),
+                                        content,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    }
+                })
+                .collect();
+
+            Ok(plotweb_common::CommitDiff { changed_chapters })
+        })
+        .await
+        .unwrap()
+    }
+
     /// Import multiple chapters at once (bulk create with content).
     pub async fn import_chapters(
         &self,
         book_id: &str,
         chapters: &[ImportChapter],
     ) -> Result<Vec<ChapterData>> {
-        let lock = self.book_lock(book_id);
+        let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -243,7 +359,7 @@ impl BookStore {
     }
 
     pub async fn reorder_chapters(&self, book_id: &str, chapter_ids: &[String]) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -284,7 +400,7 @@ impl BookStore {
         color: Option<&str>,
         created_at: &str,
     ) -> Result<note::NoteData> {
-        let lock = self.book_lock(book_id);
+        let lock = self.notes_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -316,7 +432,7 @@ impl BookStore {
         content: Option<&str>,
         color: Option<Option<&str>>,
     ) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.notes_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -339,7 +455,7 @@ impl BookStore {
     }
 
     pub async fn delete_note(&self, book_id: &str, note_id: &str) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.notes_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -356,7 +472,7 @@ impl BookStore {
         new_parent_id: Option<&str>,
         index: usize,
     ) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.notes_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
@@ -375,7 +491,7 @@ impl BookStore {
         book_id: &str,
         tree: &note::NotesTreeJson,
     ) -> Result<()> {
-        let lock = self.book_lock(book_id);
+        let lock = self.notes_lock(book_id);
         let _guard = lock.lock().await;
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();

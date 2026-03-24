@@ -290,6 +290,39 @@ pub struct UpdateNoteTreeRequest {
     pub tree: NoteTree,
 }
 
+// ── History ──
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommitInfo {
+    pub oid: String,
+    pub message: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CommitDiff {
+    pub changed_chapters: Vec<ChapterDiff>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChapterDiff {
+    pub chapter_id: String,
+    pub chapter_title: String,
+    pub change_type: String,
+    pub hunks: Vec<DiffHunk>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiffHunk {
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiffLine {
+    pub origin: String,
+    pub content: String,
+}
+
 // ── Error ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
