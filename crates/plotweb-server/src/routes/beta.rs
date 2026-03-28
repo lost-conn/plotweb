@@ -372,6 +372,7 @@ pub async fn reader_chapter(
                 title: ch.title,
                 content: ch.content,
                 sort_order: ch.sort_order,
+                word_count: ch.word_count,
                 created_at: ch.created_at,
                 updated_at: ch.updated_at,
             };

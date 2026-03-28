@@ -73,6 +73,14 @@ impl BookStore {
         .unwrap()
     }
 
+    pub async fn book_word_count(&self, book_id: &str) -> u64 {
+        let base = self.base_dir.clone();
+        let book_id = book_id.to_string();
+        tokio::task::spawn_blocking(move || chapter::book_word_count(&base, &book_id))
+            .await
+            .unwrap_or(0)
+    }
+
     pub async fn get_book(&self, book_id: &str) -> Result<BookData> {
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();

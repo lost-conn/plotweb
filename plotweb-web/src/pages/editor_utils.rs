@@ -174,6 +174,12 @@ pub const EDITOR_CSS: &str = r#"
     border-radius: 2px;
 }
 
+.editor-word-count {
+    font-size: 12px;
+    color: var(--rinch-color-dimmed);
+    padding: 2px 6px;
+}
+
 .save-indicator {
     font-size: 12px;
     padding: 2px 10px;

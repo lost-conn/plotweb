@@ -1896,13 +1896,14 @@ fn do_switch_chapter(
     auto_save_timer_id: Signal<i32>,
     chapter_title_save_timer_id: Signal<i32>,
     save_status: Signal<&'static str>,
+    editor_word_count: Signal<u64>,
     editor_loaded: Signal<bool>,
     chapter_title: Signal<String>,
     store: AppStore,
     bid: &str,
     new_chapter_id: &str,
 ) {
-    do_switch_chapter_inner(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_loaded, chapter_title, store, bid, new_chapter_id, None);
+    do_switch_chapter_inner(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, editor_loaded, chapter_title, store, bid, new_chapter_id, None);
 }
 
 thread_local! {
@@ -1917,6 +1918,7 @@ fn do_switch_chapter_inner(
     auto_save_timer_id: Signal<i32>,
     chapter_title_save_timer_id: Signal<i32>,
     save_status: Signal<&'static str>,
+    editor_word_count: Signal<u64>,
     editor_loaded: Signal<bool>,
     chapter_title: Signal<String>,
     store: AppStore,
@@ -1992,6 +1994,7 @@ fn do_switch_chapter_inner(
             &format!("/api/books/{}/chapters/{}", bid, new_cid),
         ).await {
             chapter_title.set(chapter.title.clone());
+            editor_word_count.set(chapter.word_count);
             editor_loaded.set(true);
 
             let content = chapter.content.clone();
@@ -2468,6 +2471,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let chapters_collapsed = Signal::new(false);
     let chapter_title = Signal::new(String::new());
     let save_status = Signal::new("saved");
+    let editor_word_count: Signal<u64> = Signal::new(0);
     let editor_loaded = Signal::new(false);
     let auto_save_timer_id = Signal::new(0_i32);
 
@@ -2671,6 +2675,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
             }
 
             save_status.set("unsaved");
+            // Update word count from editor DOM
+            if let Some(el) = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.query_selector("#editor-main").ok().flatten())
+            {
+                let text = el.text_content().unwrap_or_default();
+                editor_word_count.set(text.split_whitespace().count() as u64);
+            }
             let prev = auto_save_timer_id.get();
             if prev != 0 {
                 web_sys::window().unwrap().clear_timeout_with_handle(prev);
@@ -3245,7 +3257,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Factory closures capture only Copy types (Signals) so they are Copy themselves.
     // This lets the rsx macro use them in multiple for-loops without move issues.
     let open_chapter = move |chapter_id: String| {
-        move || do_switch_chapter(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_loaded, chapter_title, store, &bid_signal.get(), &chapter_id)
+        move || do_switch_chapter(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, editor_loaded, chapter_title, store, &bid_signal.get(), &chapter_id)
     };
 
     // Navigate to a feedback item: switch to the chapter editor, open the feedback
@@ -3264,7 +3276,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             pending_feedback_scroll.set(Some((selected_text.clone(), context_block.clone())));
             show_feedback_sidebar.set(true);
             do_switch_chapter_inner(
-                active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_loaded,
+                active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, editor_loaded,
                 chapter_title, store, &bid_signal.get(), &chapter_id,
                 Some(pending_feedback_scroll),
             );
@@ -3903,6 +3915,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                                     {format!("{}", i + 1)}
                                                 }
                                                 Text { weight: "500", {chapter.title.clone()} }
+                                                Text { size: "xs", color: "dimmed",
+                                                    {format!("{} words", chapter.word_count)}
+                                                }
                                             }
                                             div {
                                                 class: "chapter-item-actions",
@@ -3985,6 +4000,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             }
                             div {
                                 style: "display: flex; align-items: center; gap: 8px;",
+                                div {
+                                    class: "editor-word-count",
+                                    {move || format!("{} words", editor_word_count.get())}
+                                }
                                 div {
                                     class: {|| format!("save-indicator {}", save_status.get())},
                                     {|| match save_status.get() {

@@ -27,6 +27,7 @@ pub async fn list(
         match state.books.get_book(&id).await {
             Ok(data) => {
                 let chapter_count = data.chapter_order.len() as i64;
+                let word_count = state.books.book_word_count(&id).await;
                 books.push(Book {
                     id,
                     title: data.title,
@@ -34,6 +35,7 @@ pub async fn list(
                     created_at: data.created_at,
                     updated_at: data.updated_at,
                     chapter_count: Some(chapter_count),
+                    word_count: Some(word_count),
                     font_settings: data.font_settings,
                 });
             }
@@ -46,6 +48,7 @@ pub async fn list(
                     created_at: created_at.clone(),
                     updated_at: created_at,
                     chapter_count: Some(0),
+                    word_count: Some(0),
                     font_settings: None,
                 });
             }
@@ -96,6 +99,7 @@ pub async fn create(
         created_at: now.clone(),
         updated_at: now,
         chapter_count: Some(0),
+        word_count: Some(0),
         font_settings: None,
     };
     (StatusCode::CREATED, Json(serde_json::to_value(book).unwrap()))
@@ -120,6 +124,7 @@ pub async fn get(
             match state.books.get_book(&id).await {
                 Ok(data) => {
                     let chapter_count = data.chapter_order.len() as i64;
+                    let word_count = state.books.book_word_count(&id).await;
                     let book = Book {
                         id,
                         title: data.title,
@@ -127,6 +132,7 @@ pub async fn get(
                         created_at: data.created_at,
                         updated_at: data.updated_at,
                         chapter_count: Some(chapter_count),
+                        word_count: Some(word_count),
                         font_settings: data.font_settings,
                     };
                     (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))

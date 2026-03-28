@@ -28,8 +28,30 @@ pub struct ChapterData {
     pub title: String,
     pub content: String,
     pub sort_order: i64,
+    pub word_count: u64,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Count words in text content, stripping HTML tags first.
+fn count_words(content: &str) -> u64 {
+    // Strip HTML tags for word counting
+    let mut in_tag = false;
+    let text: String = content
+        .chars()
+        .filter(|&c| {
+            if c == '<' {
+                in_tag = true;
+                false
+            } else if c == '>' {
+                in_tag = false;
+                false
+            } else {
+                !in_tag
+            }
+        })
+        .collect();
+    text.split_whitespace().count() as u64
 }
 
 fn chapter_json_path(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> PathBuf {
@@ -61,6 +83,20 @@ fn read_content_at_commit(repo: &git2::Repository, oid: git2::Oid, chapter_id: &
     String::new()
 }
 
+/// Sum word counts for all chapters in a book without loading full chapter data.
+pub fn book_word_count(base_dir: &PathBuf, book_id: &str) -> u64 {
+    let book_path = book::book_json_path(base_dir, book_id);
+    let book_json: BookJson = match repo::read_json(&book_path) {
+        Ok(b) => b,
+        Err(_) => return 0,
+    };
+    book_json
+        .chapter_order
+        .iter()
+        .map(|cid| count_words(&read_content(base_dir, book_id, cid)))
+        .sum()
+}
+
 pub fn list_chapters(base_dir: &PathBuf, book_id: &str) -> Result<Vec<ChapterData>> {
     let book_path = book::book_json_path(base_dir, book_id);
     if !book_path.exists() {
@@ -74,12 +110,14 @@ pub fn list_chapters(base_dir: &PathBuf, book_id: &str) -> Result<Vec<ChapterDat
         let path = chapter_json_path(base_dir, book_id, chapter_id);
         if let Ok(ch) = repo::read_json::<ChapterJson>(&path) {
             let content = read_content(base_dir, book_id, chapter_id);
+            let word_count = count_words(&content);
             let updated_at = book::file_mtime_str(&chapter_md_path(base_dir, book_id, chapter_id));
             chapters.push(ChapterData {
                 id: chapter_id.clone(),
                 title: ch.title,
                 content,
                 sort_order: i as i64,
+                word_count,
                 created_at: ch.created_at,
                 updated_at,
             });
@@ -109,6 +147,7 @@ pub fn get_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Resul
 
     let ch: ChapterJson = repo::read_json(&json_path)?;
     let content = read_content(base_dir, book_id, chapter_id);
+    let word_count = count_words(&content);
     let updated_at = book::file_mtime_str(&chapter_md_path(base_dir, book_id, chapter_id));
 
     Ok(ChapterData {
@@ -116,6 +155,7 @@ pub fn get_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Resul
         title: ch.title,
         content,
         sort_order,
+        word_count,
         created_at: ch.created_at,
         updated_at,
     })
@@ -163,6 +203,7 @@ pub fn create_chapter(
         title: title.to_string(),
         content: String::new(),
         sort_order,
+        word_count: 0,
         created_at: created_at.to_string(),
         updated_at,
     })
@@ -259,6 +300,7 @@ pub fn import_chapters(
             title: ch.title.clone(),
             content: ch.content.clone(),
             sort_order,
+            word_count: count_words(&ch.content),
             created_at: now.clone(),
             updated_at: now.clone(),
         });
@@ -316,12 +358,14 @@ pub fn get_chapter_at_commit(
 
     // Read content: try .md first, fall back to legacy JSON content
     let content = read_content_at_commit(&git_repo, oid, chapter_id);
+    let word_count = count_words(&content);
 
     Ok(ChapterData {
         id: chapter_id.to_string(),
         title: ch.title,
         content,
         sort_order,
+        word_count,
         created_at: ch.created_at,
         updated_at: String::new(),
     })
@@ -343,11 +387,13 @@ pub fn list_chapters_at_commit(
         let ch_path = format!("chapters/{}.json", chapter_id);
         if let Ok(ch) = crate::repo::read_json_at_commit::<ChapterJsonCompat>(&git_repo, oid, &ch_path) {
             let content = read_content_at_commit(&git_repo, oid, chapter_id);
+            let word_count = count_words(&content);
             chapters.push(ChapterData {
                 id: chapter_id.clone(),
                 title: ch.title,
                 content,
                 sort_order: i as i64,
+                word_count,
                 created_at: ch.created_at,
                 updated_at: String::new(),
             });

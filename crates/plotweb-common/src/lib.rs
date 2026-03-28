@@ -61,6 +61,8 @@ pub struct Book {
     pub created_at: String,
     pub updated_at: String,
     pub chapter_count: Option<i64>,
+    #[serde(default)]
+    pub word_count: Option<u64>,
     pub font_settings: Option<FontSettings>,
 }
 
@@ -86,6 +88,8 @@ pub struct Chapter {
     pub title: String,
     pub content: String,
     pub sort_order: i64,
+    #[serde(default)]
+    pub word_count: u64,
     pub created_at: String,
     pub updated_at: String,
 }

@@ -72,8 +72,12 @@ const DASHBOARD_CSS: &str = r#"
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
 
+.book-card-meta {
+    padding: 0 16px;
+}
+
 .book-card-title {
-    padding: 12px 16px 12px 16px;
+    padding: 4px 16px 12px 16px;
     font-weight: 600;
     font-size: 14px;
     line-height: 1.3;
@@ -157,6 +161,16 @@ const DASHBOARD_CSS: &str = r#"
     }
 }
 "#;
+
+fn format_word_count(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}k", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
+}
 
 #[component]
 pub fn dashboard_page() -> NodeHandle {
@@ -313,6 +327,11 @@ pub fn dashboard_page() -> NodeHandle {
                                             TablerIcon::Trash,
                                             TablerIconStyle::Outline,
                                         )}
+                                    }
+                                }
+                                div { class: "book-card-meta",
+                                    Text { size: "xs", color: "dimmed",
+                                        {book.word_count.map(|w| format!("{} words", format_word_count(w))).unwrap_or_default()}
                                     }
                                 }
                                 div { class: "book-card-title",
