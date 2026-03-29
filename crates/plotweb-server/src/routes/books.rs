@@ -37,6 +37,7 @@ pub async fn list(
                     chapter_count: Some(chapter_count),
                     word_count: Some(word_count),
                     font_settings: data.font_settings,
+                    cover_image: data.cover_image,
                 });
             }
             Err(_) => {
@@ -50,6 +51,7 @@ pub async fn list(
                     chapter_count: Some(0),
                     word_count: Some(0),
                     font_settings: None,
+                    cover_image: None,
                 });
             }
         }
@@ -101,6 +103,7 @@ pub async fn create(
         chapter_count: Some(0),
         word_count: Some(0),
         font_settings: None,
+        cover_image: None,
     };
     (StatusCode::CREATED, Json(serde_json::to_value(book).unwrap()))
 }
@@ -134,6 +137,7 @@ pub async fn get(
                         chapter_count: Some(chapter_count),
                         word_count: Some(word_count),
                         font_settings: data.font_settings,
+                        cover_image: data.cover_image,
                     };
                     (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))
                 }

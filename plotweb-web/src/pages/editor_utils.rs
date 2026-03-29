@@ -108,6 +108,14 @@ pub const EDITOR_CSS: &str = r#"
 .editor-content h5 { font-size: 1em; font-weight: 600; margin: 12px 0 4px 0; color: var(--rinch-color-dimmed); }
 .editor-content h6 { font-size: 0.9em; font-weight: 600; margin: 12px 0 4px 0; color: var(--rinch-color-dimmed); }
 
+.editor-content img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--rinch-radius-sm);
+    margin: 16px 0;
+    display: block;
+}
+
 .editor-content blockquote {
     border-left: 3px solid var(--rinch-color-teal-8);
     padding-left: 16px;
@@ -248,7 +256,7 @@ fn fmt_button(
 }
 
 #[component]
-pub fn editor_toolbar() -> NodeHandle {
+pub fn editor_toolbar(book_id: String) -> NodeHandle {
     // Active state signals for formatting buttons
     let s_bold: Signal<bool> = Signal::new(false);
     let s_italic: Signal<bool> = Signal::new(false);
@@ -401,8 +409,59 @@ pub fn editor_toolbar() -> NodeHandle {
             // Undo / Redo
             {toolbar_button(__scope, TablerIcon::ArrowBackUp, "Undo (Ctrl+Z)", move || exec_cmd("undo"))}
             {toolbar_button(__scope, TablerIcon::ArrowForwardUp, "Redo (Ctrl+Shift+Z)", move || exec_cmd("redo"))}
+
+            {separator(__scope)}
+
+            // Image insert
+            {toolbar_button(__scope, TablerIcon::Photo, "Insert Image", {
+                let book_id = book_id.clone();
+                move || {
+                    insert_image_via_picker(&book_id);
+                }
+            })}
         }
     }
+}
+
+/// Opens a file picker and uploads the selected image, inserting it at the cursor.
+fn insert_image_via_picker(book_id: &str) {
+    let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return; };
+    let Ok(input) = doc.create_element("input") else { return; };
+    let input: web_sys::HtmlInputElement = input.unchecked_into();
+    input.set_type("file");
+    input.set_accept("image/*");
+
+    let book_id = book_id.to_string();
+    let onchange = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+        let input: web_sys::HtmlInputElement = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("__pw_image_input"))
+            .map(|e| e.unchecked_into())
+            .unwrap();
+        let Some(files) = input.files() else { return; };
+        let Some(file) = files.get(0) else { return; };
+        let bid = book_id.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match crate::api::upload_image(&bid, &file).await {
+                Ok(resp) => {
+                    exec_cmd_val(
+                        "insertHTML",
+                        &format!("<img src=\"{}\" alt=\"\">", resp.url),
+                    );
+                }
+                Err(e) => {
+                    web_sys::console::error_1(&format!("Image upload failed: {}", e.message).into());
+                }
+            }
+        });
+        // Clean up
+        input.remove();
+    }) as Box<dyn FnMut(_)>);
+    input.set_id("__pw_image_input");
+    input.set_onchange(Some(onchange.as_ref().unchecked_ref()));
+    onchange.forget();
+    doc.body().unwrap().append_child(&input).ok();
+    input.click();
 }
 
 /// Simple markdown to HTML converter for loading content.
@@ -472,6 +531,14 @@ pub fn markdown_to_html(md: &str) -> String {
                 list_type = "ol";
             }
             html.push_str(&format!("<li>{}</li>", inline_md(rest)));
+        } else if trimmed.starts_with("![") {
+            // Image: ![alt](url)
+            if in_list { html.push_str(&format!("</{}>", list_type)); in_list = false; }
+            if let Some(img_html) = parse_md_image(trimmed) {
+                html.push_str(&img_html);
+            } else {
+                html.push_str(&format!("<p{}>{}</p>", style_attr, inline_md(trimmed)));
+            }
         } else if trimmed == "---" || trimmed == "***" {
             if in_list { html.push_str(&format!("</{}>", list_type)); in_list = false; }
             html.push_str("<hr>");
@@ -552,6 +619,37 @@ pub fn inline_md(text: &str) -> String {
         }
     }
     result
+}
+
+/// Parse a markdown image `![alt](url)` and return an HTML `<img>` tag.
+fn parse_md_image(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("![")?;
+    let alt_end = rest.find("](")?;
+    let alt = &rest[..alt_end];
+    let after = &rest[alt_end + 2..];
+    let url_end = after.find(')')?;
+    let url = &after[..url_end];
+    Some(format!("<img src=\"{}\" alt=\"{}\">", url, alt))
+}
+
+/// Extract an HTML attribute value from a tag's attribute string.
+fn extract_attr(tag_attrs: &str, attr_name: &str) -> Option<String> {
+    // Look for attr_name="value" or attr_name='value'
+    let pattern = format!("{}=\"", attr_name);
+    if let Some(start) = tag_attrs.find(&pattern) {
+        let rest = &tag_attrs[start + pattern.len()..];
+        if let Some(end) = rest.find('"') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    let pattern = format!("{}='", attr_name);
+    if let Some(start) = tag_attrs.find(&pattern) {
+        let rest = &tag_attrs[start + pattern.len()..];
+        if let Some(end) = rest.find('\'') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
 }
 
 /// Extract text-align value from a tag's attributes string.
@@ -640,6 +738,11 @@ pub fn html_to_markdown(html: &str) -> String {
                     "ol" => list_stack.push("ol"),
                     "hr" => md.push_str("---\n"),
                     "br" => md.push('\n'),
+                    "img" => {
+                        let src = extract_attr(&tag_name, "src").unwrap_or_default();
+                        let alt = extract_attr(&tag_name, "alt").unwrap_or_default();
+                        md.push_str(&format!("![{}]({})\n", alt, src));
+                    }
                     _ => {}
                 }
             } else {

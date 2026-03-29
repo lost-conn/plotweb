@@ -30,6 +30,7 @@ web-sys = { version = "0.3", features = [
     "WebSocket", "MessageEvent", "CloseEvent", "ErrorEvent", "BinaryType",
     "TouchEvent", "TouchList", "Touch",
     "File", "FileList", "FileReader", "Blob", "FormData",
+    "ClipboardEvent", "DataTransfer", "DragEvent",
 ] }
 
 serde = { version = "1", features = ["derive"] }

@@ -2538,6 +2538,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let show_book_settings_modal: Signal<bool> = Signal::new(false);
     let edit_book_title: Signal<String> = Signal::new(String::new());
     let edit_book_desc: Signal<String> = Signal::new(String::new());
+    let edit_book_cover: Signal<Option<String>> = Signal::new(None);
 
     // Chapter rename modal
     let show_rename_chapter_modal: Signal<bool> = Signal::new(false);
@@ -2717,6 +2718,74 @@ pub fn book_page(book_id: String) -> NodeHandle {
         input_closure.forget();
     }
 
+    // ── Paste/drop image upload ────────────────────────────────
+    {
+        let bid = book_id.clone();
+        let doc = web_sys::window().unwrap().document().unwrap();
+
+        // Paste handler — intercept image paste in contenteditable areas
+        let bid_paste = bid.clone();
+        let paste_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
+            let in_editor = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .and_then(|el| el.closest("[contenteditable=\"true\"]").ok().flatten())
+                .is_some();
+            if !in_editor { return; }
+
+            let Some(dt) = event.clipboard_data() else { return; };
+            let Some(items) = dt.files() else { return; };
+            for i in 0..items.length() {
+                let Some(file) = items.get(i) else { continue; };
+                if !file.type_().starts_with("image/") { continue; }
+                event.prevent_default();
+                let bid = bid_paste.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(resp) = crate::api::upload_image(&bid, &file).await {
+                        editor_utils::exec_cmd_val(
+                            "insertHTML",
+                            &format!("<img src=\"{}\" alt=\"\">", resp.url),
+                        );
+                    }
+                });
+                return;
+            }
+        }) as Box<dyn FnMut(_)>);
+        doc.add_event_listener_with_callback("paste", paste_handler.as_ref().unchecked_ref()).ok();
+        paste_handler.forget();
+
+        // Drop handler — intercept image drop in contenteditable areas
+        let bid_drop = bid;
+        let drop_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::DragEvent| {
+            let in_editor = event
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .and_then(|el| el.closest("[contenteditable=\"true\"]").ok().flatten())
+                .is_some();
+            if !in_editor { return; }
+
+            let Some(dt) = event.data_transfer() else { return; };
+            let Some(files) = dt.files() else { return; };
+            for i in 0..files.length() {
+                let Some(file) = files.get(i) else { continue; };
+                if !file.type_().starts_with("image/") { continue; }
+                event.prevent_default();
+                let bid = bid_drop.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if let Ok(resp) = crate::api::upload_image(&bid, &file).await {
+                        editor_utils::exec_cmd_val(
+                            "insertHTML",
+                            &format!("<img src=\"{}\" alt=\"\">", resp.url),
+                        );
+                    }
+                });
+                return;
+            }
+        }) as Box<dyn FnMut(_)>);
+        doc.add_event_listener_with_callback("drop", drop_handler.as_ref().unchecked_ref()).ok();
+        drop_handler.forget();
+    }
+
     // ── Chapter actions ─────────────────────────────────────────
     let add_chapter = move || {
         let title = new_chapter_title.get();
@@ -2745,11 +2814,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
         show_book_settings_modal.set(false);
         let bid = bid_signal.get();
         let desc = edit_book_desc.get();
+        let cover = edit_book_cover.get();
         wasm_bindgen_futures::spawn_local(async move {
             let req = UpdateBookRequest {
                 title: Some(title.clone()),
                 description: Some(desc.clone()),
                 font_settings: None,
+                cover_image: Some(cover.clone()),
             };
             if api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}", bid),
@@ -2759,6 +2830,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     if let Some(b) = book {
                         b.title = title;
                         b.description = desc;
+                        b.cover_image = cover;
                     }
                 });
             }
@@ -2989,6 +3061,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     title: None,
                                     description: None,
                                     font_settings: Some(fs),
+                                    cover_image: None,
                                 };
                                 api::put::<_, serde_json::Value>(
                                     &format!("/api/books/{}", bid),
@@ -3177,6 +3250,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 title: None,
                                 description: None,
                                 font_settings: Some(fs),
+                                cover_image: None,
                             };
                             api::put::<_, serde_json::Value>(
                                 &format!("/api/books/{}", bid),
@@ -3699,6 +3773,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 if let Some(b) = book {
                                     edit_book_title.set(b.title.clone());
                                     edit_book_desc.set(b.description.clone());
+                                    edit_book_cover.set(b.cover_image.clone());
                                     show_book_settings_modal.set(true);
                                 }
                             },
@@ -4023,7 +4098,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             }
                         }
 
-                        {editor_utils::editor_toolbar(__scope)}
+                        {editor_utils::editor_toolbar(__scope, book_id.clone())}
 
                         div {
                             style: "display: flex; flex: 1; overflow: hidden;",
@@ -4299,7 +4374,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             Text { size: "sm", weight: "500", "Content" }
                             Space { h: "xs" }
 
-                            {editor_utils::editor_toolbar(__scope)}
+                            {editor_utils::editor_toolbar(__scope, book_id.clone())}
 
                             div {
                                 contenteditable: "true",
@@ -4520,6 +4595,62 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     placeholder: "What's this book about?",
                     value_fn: move || edit_book_desc.get(),
                     oninput: move |v: String| edit_book_desc.set(v),
+                }
+                Space { h: "md" }
+                Text { size: "sm", weight: "500", "Cover Image" }
+                Space { h: "xs" }
+                if edit_book_cover.get().is_some() {
+                    div {
+                        style: "display: flex; align-items: flex-start; gap: 12px;",
+                        img {
+                            src: {move || edit_book_cover.get().unwrap_or_default()},
+                            style: "max-width: 120px; max-height: 160px; border-radius: var(--rinch-radius-sm); object-fit: cover; border: 1px solid var(--rinch-color-border);",
+                        }
+                        Button {
+                            variant: "subtle",
+                            size: "xs",
+                            onclick: move || edit_book_cover.set(None),
+                            "Remove"
+                        }
+                    }
+                }
+                Space { h: "xs" }
+                Button {
+                    variant: "light",
+                    size: "sm",
+                    onclick: {
+                        let bid_for_cover = book_id.clone();
+                        move || {
+                            let bid = bid_for_cover.clone();
+                            let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return; };
+                            let Ok(input) = doc.create_element("input") else { return; };
+                            let input: web_sys::HtmlInputElement = input.unchecked_into();
+                            input.set_type("file");
+                            input.set_accept("image/*");
+                            input.set_id("__pw_cover_input");
+                            let onchange = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
+                                let input: web_sys::HtmlInputElement = web_sys::window()
+                                    .and_then(|w| w.document())
+                                    .and_then(|d| d.get_element_by_id("__pw_cover_input"))
+                                    .map(|e| e.unchecked_into())
+                                    .unwrap();
+                                let Some(files) = input.files() else { return; };
+                                let Some(file) = files.get(0) else { return; };
+                                let bid = bid.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    if let Ok(resp) = crate::api::upload_image(&bid, &file).await {
+                                        edit_book_cover.set(Some(resp.url));
+                                    }
+                                });
+                                input.remove();
+                            }) as Box<dyn FnMut(_)>);
+                            input.set_onchange(Some(onchange.as_ref().unchecked_ref()));
+                            onchange.forget();
+                            doc.body().unwrap().append_child(&input).ok();
+                            input.click();
+                        }
+                    },
+                    {move || if edit_book_cover.get().is_some() { "Change Cover" } else { "Upload Cover" }}
                 }
                 Space { h: "lg" }
                 Group {

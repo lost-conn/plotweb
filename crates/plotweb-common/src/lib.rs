@@ -64,6 +64,8 @@ pub struct Book {
     #[serde(default)]
     pub word_count: Option<u64>,
     pub font_settings: Option<FontSettings>,
+    #[serde(default)]
+    pub cover_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +79,8 @@ pub struct UpdateBookRequest {
     pub title: Option<String>,
     pub description: Option<String>,
     pub font_settings: Option<FontSettings>,
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub cover_image: Option<Option<String>>,
 }
 
 // ── Chapter ──
@@ -195,6 +199,8 @@ pub struct BetaReaderView {
     pub reader_name: String,
     pub chapters: Vec<BetaChapterSummary>,
     pub font_settings: Option<FontSettings>,
+    #[serde(default)]
+    pub cover_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -325,6 +331,14 @@ pub struct DiffHunk {
 pub struct DiffLine {
     pub origin: String,
     pub content: String,
+}
+
+// ── Images ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUploadResponse {
+    pub url: String,
+    pub filename: String,
 }
 
 // ── Error ──

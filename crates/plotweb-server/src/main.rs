@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Path, State, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Path, State, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -146,6 +146,24 @@ async fn main() {
         .route(
             "/api/books/{book_id}/history/{commit}/diff",
             get(routes::history::diff),
+        )
+        // Image endpoints
+        .route(
+            "/api/books/{book_id}/images",
+            post(routes::images::upload)
+                .layer(DefaultBodyLimit::max(10 * 1024 * 1024)), // 10MB
+        )
+        .route(
+            "/api/books/{book_id}/images/{filename}",
+            get(routes::images::serve),
+        )
+        .route(
+            "/api/books/{book_id}/images/{filename}",
+            delete(routes::images::delete),
+        )
+        .route(
+            "/api/beta/{token}/images/{filename}",
+            get(routes::images::serve_beta),
         )
         // Import endpoints
         .route(

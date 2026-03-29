@@ -23,6 +23,10 @@ pub struct BookStore {
 }
 
 impl BookStore {
+    pub fn base_dir(&self) -> &PathBuf {
+        &self.base_dir
+    }
+
     pub fn new(base_dir: PathBuf) -> Self {
         std::fs::create_dir_all(&base_dir).ok();
         Self {
@@ -97,6 +101,7 @@ impl BookStore {
         let title = update.title.clone();
         let description = update.description.clone();
         let font_settings = update.font_settings.clone();
+        let cover_image = update.cover_image.clone();
         tokio::task::spawn_blocking(move || {
             book::update_book(
                 &base,
@@ -104,6 +109,7 @@ impl BookStore {
                 title.as_deref(),
                 description.as_deref(),
                 font_settings.as_ref(),
+                cover_image,
             )
         })
         .await

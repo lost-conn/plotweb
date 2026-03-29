@@ -33,6 +33,7 @@ const DASHBOARD_CSS: &str = r#"
 .book-shelf {
     display: flex;
     flex-direction: row;
+    align-items: flex-end;
     gap: 24px;
     padding: 16px 0;
     overflow-x: auto;
@@ -56,6 +57,26 @@ const DASHBOARD_CSS: &str = r#"
     overflow: hidden;
 }
 
+.book-card-has-cover {
+    height: auto;
+    min-height: 0;
+    background: none;
+    border: none;
+    overflow: visible;
+    align-self: flex-end;
+}
+
+.book-card-has-cover .book-card-delete {
+    z-index: 2;
+}
+
+.book-card-cover-img {
+    width: 180px;
+    display: block;
+    border-radius: 6px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+}
+
 .book-card::before {
     content: '';
     position: absolute;
@@ -67,13 +88,30 @@ const DASHBOARD_CSS: &str = r#"
     border-radius: 12px 0 0 4px;
 }
 
+.book-card-has-cover::before {
+    display: none;
+}
+
 .book-card:hover {
     transform: translateY(-6px);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
 
+.book-card-has-cover:hover {
+    box-shadow: none;
+}
+
+.book-card-has-cover:hover .book-card-cover-img {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
 .book-card-meta {
     padding: 0 16px;
+    position: relative;
+}
+
+.book-card-has-cover .book-card-meta {
+    padding: 0;
 }
 
 .book-card-title {
@@ -83,6 +121,22 @@ const DASHBOARD_CSS: &str = r#"
     line-height: 1.3;
     color: var(--rinch-color-text);
     word-break: break-word;
+    position: relative;
+}
+
+.book-card-has-cover .book-card-title {
+    padding: 4px 0 0 0;
+}
+
+.book-card-info {
+    position: relative;
+    background: var(--rinch-color-surface);
+    border-radius: 0 0 4px 4px;
+}
+
+.book-card-has-cover .book-card-info {
+    background: none;
+    padding-top: 6px;
 }
 
 .book-card-delete {
@@ -154,6 +208,12 @@ const DASHBOARD_CSS: &str = r#"
         width: 140px;
         min-width: 140px;
         height: 200px;
+    }
+    .book-card-has-cover {
+        height: auto;
+    }
+    .book-card-cover-img {
+        width: 140px;
     }
     .book-card-title {
         font-size: 13px;
@@ -311,11 +371,17 @@ pub fn dashboard_page() -> NodeHandle {
                 if !store.books.get().is_empty() {
                     div { class: "book-shelf",
                         for book in store.books.get() {
+                            let has_cover = book.cover_image.is_some();
+                            let cover_url = book.cover_image.clone().unwrap_or_default();
                             div {
                                 key: book.id.clone(),
-                                class: "book-card",
+                                class: {if has_cover { "book-card book-card-has-cover" } else { "book-card" }},
                                 onclick: open_book(book.id.clone()),
-
+                                img {
+                                    class: "book-card-cover-img",
+                                    style: {if !has_cover { "display:none;" } else { "" }},
+                                    src: cover_url,
+                                }
                                 div { class: "book-card-delete",
                                     ActionIcon {
                                         variant: "subtle",
@@ -329,13 +395,15 @@ pub fn dashboard_page() -> NodeHandle {
                                         )}
                                     }
                                 }
-                                div { class: "book-card-meta",
-                                    Text { size: "xs", color: "dimmed",
-                                        {book.word_count.map(|w| format!("{} words", format_word_count(w))).unwrap_or_default()}
+                                div { class: "book-card-info",
+                                    div { class: "book-card-meta",
+                                        Text { size: "xs", color: "dimmed",
+                                            {book.word_count.map(|w| format!("{} words", format_word_count(w))).unwrap_or_default()}
+                                        }
                                     }
-                                }
-                                div { class: "book-card-title",
-                                    {book.title.clone()}
+                                    div { class: "book-card-title",
+                                        {book.title.clone()}
+                                    }
                                 }
                             }
                         }

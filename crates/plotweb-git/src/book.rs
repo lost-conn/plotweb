@@ -13,6 +13,8 @@ pub struct BookJson {
     #[serde(default)]
     pub font_settings: Option<FontSettings>,
     #[serde(default)]
+    pub cover_image: Option<String>,
+    #[serde(default)]
     pub chapter_order: Vec<String>,
     pub created_at: String,
 }
@@ -23,6 +25,7 @@ pub struct BookData {
     pub title: String,
     pub description: String,
     pub font_settings: Option<FontSettings>,
+    pub cover_image: Option<String>,
     pub chapter_order: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -61,6 +64,7 @@ pub fn create_book(
         title: title.to_string(),
         description: description.to_string(),
         font_settings: None,
+        cover_image: None,
         chapter_order: Vec::new(),
         created_at: created_at.to_string(),
     };
@@ -93,6 +97,7 @@ pub fn get_book(base_dir: &PathBuf, book_id: &str) -> Result<BookData> {
         title: book.title,
         description: book.description,
         font_settings: book.font_settings,
+        cover_image: book.cover_image,
         chapter_order: book.chapter_order,
         created_at: book.created_at,
         updated_at,
@@ -105,6 +110,7 @@ pub fn update_book(
     title: Option<&str>,
     description: Option<&str>,
     font_settings: Option<&FontSettings>,
+    cover_image: Option<Option<String>>,
 ) -> Result<()> {
     let path = book_json_path(base_dir, book_id);
     if !path.exists() {
@@ -121,6 +127,9 @@ pub fn update_book(
     }
     if let Some(fs) = font_settings {
         book.font_settings = Some(fs.clone());
+    }
+    if let Some(ci) = cover_image {
+        book.cover_image = ci;
     }
 
     repo::write_json(&path, &book)?;
@@ -150,6 +159,7 @@ pub fn get_book_at_commit(base_dir: &PathBuf, book_id: &str, commit_hex: &str) -
         title: book.title,
         description: book.description,
         font_settings: book.font_settings,
+        cover_image: book.cover_image,
         chapter_order: book.chapter_order,
         created_at: book.created_at,
         updated_at: String::new(),

@@ -130,6 +130,13 @@ const READER_CSS: &str = r#"
     margin: 16px 0;
     color: var(--rinch-color-dimmed);
 }
+.reader-content img {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--rinch-radius-sm);
+    margin: 16px 0;
+    display: block;
+}
 .reader-content strong { font-weight: 700; }
 .reader-content em { font-style: italic; }
 

@@ -4,5 +4,6 @@ pub mod books;
 pub mod chapters;
 pub mod fonts;
 pub mod history;
+pub mod images;
 pub mod import;
 pub mod notes;

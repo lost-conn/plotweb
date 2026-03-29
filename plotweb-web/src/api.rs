@@ -92,6 +92,14 @@ pub async fn delete_req<T: DeserializeOwned>(url: &str) -> Result<T, ApiError> {
     parse_response(resp).await
 }
 
+/// Upload an image for a book via multipart form data.
+pub async fn upload_image(
+    book_id: &str,
+    file: &web_sys::File,
+) -> Result<plotweb_common::ImageUploadResponse, ApiError> {
+    upload_file(&format!("/api/books/{}/images", book_id), file).await
+}
+
 /// Upload a file via multipart form data. Does NOT set Content-Type header
 /// (the browser sets it with the boundary automatically for FormData).
 pub async fn upload_file<T: DeserializeOwned>(

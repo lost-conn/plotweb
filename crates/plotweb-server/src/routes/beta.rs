@@ -324,6 +324,7 @@ pub async fn reader_view(
         reader_name,
         chapters: summaries,
         font_settings: book_data.font_settings,
+        cover_image: book_data.cover_image,
     };
 
     (StatusCode::OK, Json(serde_json::to_value(view).unwrap()))
@@ -366,11 +367,16 @@ pub async fn reader_chapter(
                 }
             }
 
+            // Rewrite image URLs so beta readers can access them via their token
+            let content = ch.content.replace(
+                &format!("/api/books/{}/images/", book_id),
+                &format!("/api/beta/{}/images/", token),
+            );
             let chapter = Chapter {
                 id: ch.id,
                 book_id,
                 title: ch.title,
-                content: ch.content,
+                content,
                 sort_order: ch.sort_order,
                 word_count: ch.word_count,
                 created_at: ch.created_at,

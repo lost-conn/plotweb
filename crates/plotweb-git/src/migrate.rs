@@ -74,6 +74,7 @@ pub async fn migrate_sqlite_to_git(pool: &SqlitePool, base_dir: &PathBuf) -> any
             title: title.clone(),
             description: description.clone(),
             font_settings,
+            cover_image: None,
             chapter_order,
             created_at: created_at.clone(),
         };
