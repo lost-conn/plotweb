@@ -2676,14 +2676,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
             }
 
             save_status.set("unsaved");
-            // Update word count from editor DOM
-            if let Some(el) = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.query_selector("#editor-main").ok().flatten())
-            {
-                let text = el.text_content().unwrap_or_default();
-                editor_word_count.set(text.split_whitespace().count() as u64);
-            }
             let prev = auto_save_timer_id.get();
             if prev != 0 {
                 web_sys::window().unwrap().clear_timeout_with_handle(prev);
@@ -2698,6 +2690,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
             let closure = wasm_bindgen::closure::Closure::once(move || {
                 // Bail if this page instance is stale (user navigated away and back)
                 if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+                // Update word count (debounced here instead of every keystroke)
+                if let Some(el) = web_sys::window()
+                    .and_then(|w| w.document())
+                    .and_then(|d| d.query_selector("#editor-main").ok().flatten())
+                {
+                    let text = el.text_content().unwrap_or_default();
+                    editor_word_count.set(text.split_whitespace().count() as u64);
+                }
                 // Verify we're still on the same chapter
                 if let BookPane::Editor(ref current_cid) = active_pane.get() {
                     if *current_cid == captured_cid {
