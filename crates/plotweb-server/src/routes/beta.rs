@@ -433,6 +433,8 @@ pub async fn reader_create_feedback(
     .await
     .ok();
 
+    let comment = req.comment.trim().to_string();
+
     // Broadcast new feedback
     state.broadcaster.broadcast(&book_id, &WsMessage::NewFeedback(BetaFeedback {
         id: id.clone(),
@@ -440,12 +442,51 @@ pub async fn reader_create_feedback(
         chapter_id: req.chapter_id.clone(),
         selected_text: req.selected_text.clone(),
         context_block: req.context_block.clone(),
-        comment: req.comment.trim().to_string(),
-        reader_name,
+        comment: comment.clone(),
+        reader_name: reader_name.clone(),
         resolved: false,
         created_at: now,
         replies: Vec::new(),
     }));
+
+    // Email notification to the book author
+    if let Some(ref email_service) = state.email {
+        let email_service = email_service.clone();
+        let db = state.db.clone();
+        let books = state.books.clone();
+        let book_id = book_id.clone();
+        let chapter_id = req.chapter_id.clone();
+        tokio::spawn(async move {
+            let author_email = sqlx::query_as::<_, (String,)>(
+                "SELECT u.email FROM users u JOIN books b ON b.user_id = u.id WHERE b.id = ?",
+            )
+            .bind(&book_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            if let Some((email,)) = author_email {
+                let book_title = sqlx::query_as::<_, (String,)>(
+                    "SELECT title FROM books WHERE id = ?",
+                )
+                .bind(&book_id)
+                .fetch_optional(&db)
+                .await
+                .ok()
+                .flatten()
+                .map(|r| r.0)
+                .unwrap_or_default();
+                let chapter_title = books
+                    .get_chapter(&book_id, &chapter_id)
+                    .await
+                    .map(|ch| ch.title)
+                    .unwrap_or_default();
+                email_service
+                    .notify_new_feedback(&email, &book_title, &chapter_title, &reader_name, &comment, &book_id)
+                    .await;
+            }
+        });
+    }
 
     (StatusCode::CREATED, Json(json!({ "ok": true, "id": id })))
 }
@@ -528,17 +569,41 @@ pub async fn reader_reply_to_feedback(
     .await
     .ok();
 
+    let reply_content = req.content.trim().to_string();
+
     state.broadcaster.broadcast(&book_id, &WsMessage::NewReply {
         feedback_id: feedback_id.clone(),
         reply: BetaFeedbackReply {
             id: id.clone(),
             feedback_id,
             author_type: "reader".to_string(),
-            author_name: reader_name,
-            content: req.content.trim().to_string(),
+            author_name: reader_name.clone(),
+            content: reply_content.clone(),
             created_at: now,
         },
     });
+
+    // Email notification to the book author
+    if let Some(ref email_service) = state.email {
+        let email_service = email_service.clone();
+        let db = state.db.clone();
+        let book_id = book_id.clone();
+        tokio::spawn(async move {
+            let author_row = sqlx::query_as::<_, (String, String)>(
+                "SELECT u.email, b.title FROM users u JOIN books b ON b.user_id = u.id WHERE b.id = ?",
+            )
+            .bind(&book_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            if let Some((email, book_title)) = author_row {
+                email_service
+                    .notify_reader_reply(&email, &book_title, &reader_name, &reply_content, &book_id)
+                    .await;
+            }
+        });
+    }
 
     (StatusCode::CREATED, Json(json!({ "ok": true, "id": id })))
 }
@@ -692,17 +757,75 @@ pub async fn author_reply_to_feedback(
     .await
     .ok();
 
+    let reply_content = req.content.trim().to_string();
+
     state.broadcaster.broadcast(&book_id, &WsMessage::NewReply {
         feedback_id: feedback_id.clone(),
         reply: BetaFeedbackReply {
             id: id.clone(),
-            feedback_id,
+            feedback_id: feedback_id.clone(),
             author_type: "owner".to_string(),
-            author_name: username,
-            content: req.content.trim().to_string(),
+            author_name: username.clone(),
+            content: reply_content.clone(),
             created_at: now,
         },
     });
+
+    // Email notification to the beta reader (if they have an account)
+    if let Some(ref email_service) = state.email {
+        let email_service = email_service.clone();
+        let db = state.db.clone();
+        let book_id = book_id.clone();
+        tokio::spawn(async move {
+            // Get the link_id and token from the feedback
+            let link_info = sqlx::query_as::<_, (String,)>(
+                "SELECT link_id FROM beta_reader_feedback WHERE id = ?",
+            )
+            .bind(&feedback_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            let Some((link_id,)) = link_info else { return };
+
+            // Get the reader's user_id and token from the link
+            let reader_info = sqlx::query_as::<_, (Option<String>, String)>(
+                "SELECT user_id, token FROM beta_reader_links WHERE id = ?",
+            )
+            .bind(&link_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            let Some((Some(reader_user_id), token)) = reader_info else { return };
+
+            // Get the reader's email
+            let reader_email = sqlx::query_as::<_, (String,)>(
+                "SELECT email FROM users WHERE id = ?",
+            )
+            .bind(&reader_user_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten();
+            let Some((email,)) = reader_email else { return };
+
+            let book_title = sqlx::query_as::<_, (String,)>(
+                "SELECT title FROM books WHERE id = ?",
+            )
+            .bind(&book_id)
+            .fetch_optional(&db)
+            .await
+            .ok()
+            .flatten()
+            .map(|r| r.0)
+            .unwrap_or_default();
+
+            email_service
+                .notify_author_reply(&email, &book_title, &username, &reply_content, &token)
+                .await;
+        });
+    }
 
     (StatusCode::CREATED, Json(json!({ "ok": true, "id": id })))
 }

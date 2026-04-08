@@ -1,5 +1,6 @@
 mod auth;
 mod db;
+mod email;
 mod routes;
 mod ws;
 
@@ -17,6 +18,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_sessions::cookie::SameSite;
 use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
 
+use crate::email::EmailService;
 use crate::ws::FeedbackBroadcaster;
 
 #[derive(Clone)]
@@ -24,6 +26,7 @@ pub struct AppState {
     pub db: SqlitePool,
     pub books: Arc<BookStore>,
     pub broadcaster: Arc<FeedbackBroadcaster>,
+    pub email: Option<Arc<EmailService>>,
 }
 
 #[tokio::main]
@@ -52,6 +55,7 @@ async fn main() {
         db: pool,
         books: book_store,
         broadcaster: Arc::new(FeedbackBroadcaster::new()),
+        email: EmailService::from_env(),
     };
 
     // Session store (in-memory — sessions lost on restart, fine for dev)

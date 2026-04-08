@@ -11,6 +11,9 @@ services:
       - DIST_DIR=/home/plotweb/dist
       - DATA_DIR=/home/plotweb/data/books
       - DATABASE_URL=sqlite:/home/plotweb/data/plotweb.db
+      - RESEND_API_KEY=re_Yn2z2YSQ_WmwGxTwKbZjPw6myR6dePXcd
+      - APP_URL=https://pw.lostconnection.dev
+      - RESEND_FROM=PlotWeb <plotweb@noreply.lostconnection.dev>
 
 volumes:
   plotweb-data:
