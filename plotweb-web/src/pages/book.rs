@@ -407,7 +407,7 @@ const NOTES_CSS: &str = r#"
 const BOOK_WORKSPACE_CSS: &str = r#"
 .book-workspace {
     display: flex;
-    height: 100vh;
+    height: 100dvh;
 }
 
 .book-sidebar {

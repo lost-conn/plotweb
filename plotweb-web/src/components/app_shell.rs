@@ -42,7 +42,7 @@ const APP_SHELL_CSS: &str = r#"
 }
 
 html, body {
-    height: 100vh;
+    height: 100dvh;
     font-family: var(--rinch-font-family);
     background: var(--rinch-color-body);
     color: var(--rinch-color-text);
@@ -61,7 +61,7 @@ h1, h2, h3, h4, h5, h6, .rinch-title {
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100vh;
+    height: 100dvh;
     background: linear-gradient(
         160deg,
         var(--pw-color-deepest) 0%,
@@ -132,19 +132,19 @@ pub fn app_shell() -> NodeHandle {
                     {crate::pages::register::register_page(__scope)}
                 },
                 Route::ThemePreview => div {
-                    style: "height: 100vh; overflow-y: auto; padding: 40px 48px; background: var(--rinch-color-body);",
+                    style: "height: 100dvh; overflow-y: auto; padding: 40px 48px; background: var(--rinch-color-body);",
                     {crate::pages::theme_preview::theme_preview_page(__scope)}
                 },
                 Route::Dashboard => div {
-                    style: "height: 100vh; display: flex; flex-direction: column; overflow: hidden;",
+                    style: "height: 100dvh; display: flex; flex-direction: column; overflow: hidden;",
                     {crate::pages::dashboard::dashboard_page(__scope)}
                 },
                 Route::Book(_id) => div {
-                    style: "height: 100vh; overflow: hidden;",
+                    style: "height: 100dvh; overflow: hidden;",
                     {crate::pages::book::book_page(__scope, _id)}
                 },
                 Route::Reader(_token) => div {
-                    style: "height: 100vh; overflow: hidden;",
+                    style: "height: 100dvh; overflow: hidden;",
                     {crate::pages::reader::reader_page(__scope, _token)}
                 },
             }

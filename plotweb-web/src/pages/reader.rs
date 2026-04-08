@@ -17,7 +17,7 @@ use crate::store::{AppStore, Route};
 const READER_CSS: &str = r#"
 .reader-workspace {
     display: flex;
-    height: 100vh;
+    height: 100dvh;
     overflow: hidden;
 }
 
@@ -318,7 +318,7 @@ const READER_CSS: &str = r#"
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100vh;
+    height: 100dvh;
     text-align: center;
     padding: 40px;
 }
