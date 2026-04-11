@@ -12,6 +12,22 @@ use crate::auth::AuthSession;
 use crate::ws::WsMessage;
 use crate::AppState;
 
+/// Rewrite a stored cover URL (`/api/books/{id}/images/{file}`) to the
+/// token-scoped path (`/api/beta/{token}/images/{file}`) so beta readers and
+/// non-owner viewers can fetch it without the owner-only ACL rejecting them.
+fn rewrite_cover_for_beta(cover: Option<String>, token: &str) -> Option<String> {
+    let url = cover?;
+    if let Some(rest) = url.strip_prefix("/api/books/") {
+        if let Some(idx) = rest.find("/images/") {
+            let filename = &rest[idx + "/images/".len()..];
+            if !filename.is_empty() && !filename.contains('/') {
+                return Some(format!("/api/beta/{}/images/{}", token, filename));
+            }
+        }
+    }
+    Some(url)
+}
+
 /// Verify the book belongs to the user.
 async fn verify_book_ownership(state: &AppState, book_id: &str, user_id: &str) -> bool {
     sqlx::query_as::<_, (i64,)>(
@@ -324,7 +340,7 @@ pub async fn reader_view(
         reader_name,
         chapters: summaries,
         font_settings: book_data.font_settings,
-        cover_image: book_data.cover_image,
+        cover_image: rewrite_cover_for_beta(book_data.cover_image, &token),
     };
 
     (StatusCode::OK, Json(serde_json::to_value(view).unwrap()))
@@ -858,6 +874,7 @@ pub async fn list_shared_books(
             .await
             .map(|b| (b.description, b.cover_image))
             .unwrap_or_default();
+        let cover_image = rewrite_cover_for_beta(cover_image, &token);
         shared.push(SharedBook {
             book_title,
             book_description: description,
