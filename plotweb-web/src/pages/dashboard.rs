@@ -422,15 +422,24 @@ pub fn dashboard_page() -> NodeHandle {
                     Title { order: 4, "Shared with me" }
                     div { class: "book-shelf",
                         for shared in store.shared_books.get() {
+                            let has_cover = shared.cover_image.is_some();
+                            let cover_url = shared.cover_image.clone().unwrap_or_default();
                             div {
                                 key: shared.token.clone(),
-                                class: "book-card book-card-shared",
+                                class: {if has_cover { "book-card book-card-shared book-card-has-cover" } else { "book-card book-card-shared" }},
                                 onclick: open_shared_book(shared.token.clone()),
-                                div { class: "book-card-title",
-                                    {shared.book_title.clone()}
+                                img {
+                                    class: "book-card-cover-img",
+                                    style: {if !has_cover { "display:none;" } else { "" }},
+                                    src: cover_url,
                                 }
-                                div { class: "book-card-author",
-                                    {format!("by {}", shared.author_username)}
+                                div { class: "book-card-info",
+                                    div { class: "book-card-title",
+                                        {shared.book_title.clone()}
+                                    }
+                                    div { class: "book-card-author",
+                                        {format!("by {}", shared.author_username)}
+                                    }
                                 }
                             }
                         }

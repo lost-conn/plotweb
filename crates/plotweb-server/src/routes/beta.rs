@@ -852,11 +852,11 @@ pub async fn list_shared_books(
 
     let mut shared: Vec<SharedBook> = Vec::new();
     for (token, reader_name, book_id, book_title, author_username) in rows {
-        let description = state
+        let (description, cover_image) = state
             .books
             .get_book(&book_id)
             .await
-            .map(|b| b.description)
+            .map(|b| (b.description, b.cover_image))
             .unwrap_or_default();
         shared.push(SharedBook {
             book_title,
@@ -864,6 +864,7 @@ pub async fn list_shared_books(
             token,
             reader_name,
             author_username,
+            cover_image,
         });
     }
 

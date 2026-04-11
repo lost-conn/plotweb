@@ -219,6 +219,8 @@ pub struct SharedBook {
     pub token: String,
     pub reader_name: String,
     pub author_username: String,
+    #[serde(default)]
+    pub cover_image: Option<String>,
 }
 
 // ── Import ──

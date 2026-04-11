@@ -31,6 +31,14 @@ const READER_CSS: &str = r#"
     overflow: hidden;
 }
 
+.reader-sidebar-cover {
+    width: 100%;
+    aspect-ratio: 2 / 3;
+    object-fit: cover;
+    display: block;
+    border-bottom: 1px solid var(--rinch-color-border);
+}
+
 .reader-sidebar-title {
     padding: 20px 16px 8px;
     font-family: 'Macondo Swash Caps', cursive;
@@ -875,6 +883,12 @@ pub fn reader_page(token: String) -> NodeHandle {
                     // Sidebar
                     div {
                         class: {move || if sidebar_open.get() { "reader-sidebar open" } else { "reader-sidebar" }},
+                        img {
+                            class: "reader-sidebar-cover",
+                            style: {move || if view_data.get().and_then(|d| d.cover_image.clone()).is_some() { String::new() } else { "display:none;".to_string() }},
+                            src: {move || view_data.get().and_then(|d| d.cover_image.clone()).unwrap_or_default()},
+                            alt: "Book cover",
+                        }
                         div { class: "reader-sidebar-title",
                             {move || view_data.get().map(|d| d.book_title.clone()).unwrap_or_default()}
                         }
