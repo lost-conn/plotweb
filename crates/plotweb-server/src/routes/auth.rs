@@ -8,6 +8,7 @@ use tower_sessions::{Expiry, Session};
 use uuid::Uuid;
 
 use crate::auth::{self, AuthSession};
+use crate::rhype::{quote, Fields};
 use crate::AppState;
 
 pub async fn register(
@@ -33,37 +34,39 @@ pub async fn register(
     };
 
     let id = Uuid::new_v4().to_string();
-    let result = sqlx::query(
-        "INSERT INTO users (id, username, email, password_hash) VALUES (?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&req.username)
-    .bind(&req.email)
-    .bind(&password_hash)
-    .execute(&state.db)
-    .await;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let fields = Fields::new()
+        .str("uuid", &id)
+        .str("username", &req.username)
+        .str("email", &req.email)
+        .str("password_hash", &password_hash)
+        .str("created_at", &now)
+        .render();
 
-    match result {
+    match state.rhype.create(format!("User.create({fields})")).await {
         Ok(_) => {
             auth::set_session_user(&session, &id).await;
             let user = User {
                 id,
                 username: req.username,
                 email: req.email,
-                created_at: String::new(),
+                created_at: now,
             };
             (StatusCode::CREATED, Json(serde_json::to_value(user).unwrap()))
         }
         Err(e) => {
-            let msg = if e.to_string().contains("UNIQUE") {
-                "username or email already taken"
+            if e.to_string().to_lowercase().contains("unique") {
+                (
+                    StatusCode::CONFLICT,
+                    Json(json!({ "error": "username or email already taken" })),
+                )
             } else {
-                "registration failed"
-            };
-            (
-                StatusCode::CONFLICT,
-                Json(json!({ "error": msg })),
-            )
+                eprintln!("register failed: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "registration failed" })),
+                )
+            }
         }
     }
 }
@@ -73,15 +76,17 @@ pub async fn login(
     session: Session,
     Json(req): Json<LoginRequest>,
 ) -> impl IntoResponse {
-    let row = sqlx::query_as::<_, (String, String, String, String, String)>(
-        "SELECT id, username, email, password_hash, created_at FROM users WHERE username = ?",
-    )
-    .bind(&req.username)
-    .fetch_optional(&state.db)
-    .await;
+    let found = state
+        .rhype
+        .find_one(format!(
+            "User.filter(.username == {}).limit(1)",
+            quote(&req.username)
+        ))
+        .await;
 
-    match row {
-        Ok(Some((id, username, email, password_hash, created_at))) => {
+    match found {
+        Ok(Some(o)) => {
+            let password_hash = o.string("password_hash").unwrap_or_default();
             if !auth::verify_password(&req.password, &password_hash) {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -91,12 +96,13 @@ pub async fn login(
             if !req.remember_me {
                 session.set_expiry(Some(Expiry::OnSessionEnd));
             }
+            let id = o.string("uuid").unwrap_or_default();
             auth::set_session_user(&session, &id).await;
             let user = User {
                 id,
-                username,
-                email,
-                created_at,
+                username: o.string("username").unwrap_or_default(),
+                email: o.string("email").unwrap_or_default(),
+                created_at: o.string("created_at").unwrap_or_default(),
             };
             (StatusCode::OK, Json(serde_json::to_value(user).unwrap()))
         }
@@ -116,20 +122,18 @@ pub async fn me(
     State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
 ) -> impl IntoResponse {
-    let row = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT id, username, email, created_at FROM users WHERE id = ?",
-    )
-    .bind(&user_id)
-    .fetch_optional(&state.db)
-    .await;
+    let found = state
+        .rhype
+        .find_one(format!("User.filter(.uuid == {}).limit(1)", quote(&user_id)))
+        .await;
 
-    match row {
-        Ok(Some((id, username, email, created_at))) => {
+    match found {
+        Ok(Some(o)) => {
             let user = User {
-                id,
-                username,
-                email,
-                created_at,
+                id: o.string("uuid").unwrap_or_default(),
+                username: o.string("username").unwrap_or_default(),
+                email: o.string("email").unwrap_or_default(),
+                created_at: o.string("created_at").unwrap_or_default(),
             };
             (StatusCode::OK, Json(serde_json::to_value(user).unwrap()))
         }

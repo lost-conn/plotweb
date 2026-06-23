@@ -226,6 +226,13 @@ impl Fields {
             None => self,
         }
     }
+    /// Set a field to `null` — used by updates that clear a column (e.g.
+    /// detaching a beta link's user, unpinning a commit). Reads of a null field
+    /// come back as absent (`None`).
+    pub fn null(mut self, key: &str) -> Self {
+        self.parts.push(format!("{key}: null"));
+        self
+    }
     /// Render the `{ ... }` literal.
     pub fn render(&self) -> String {
         format!("{{ {} }}", self.parts.join(", "))

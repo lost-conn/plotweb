@@ -2,6 +2,7 @@ mod auth;
 mod db;
 mod email;
 mod rhype;
+mod rhype_migrate;
 mod routes;
 mod ws;
 
@@ -58,6 +59,9 @@ async fn main() {
 
     // Embedded rhypedb metadata store (opens/creates its own data dir).
     let rhype = rhype::RhypeStore::from_env().expect("failed to open rhypedb store");
+
+    // One-time idempotent import of existing metadata from SQLite into rhypedb.
+    rhype_migrate::migrate_sqlite_to_rhype(&pool, &rhype).await;
 
     let state = AppState {
         db: pool,
@@ -284,17 +288,18 @@ async fn ws_reader_feedback(
     Path(token): Path<String>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    // Look up book_id from token
-    let book_id = sqlx::query_as::<_, (String,)>(
-        "SELECT book_id FROM beta_reader_links WHERE token = ? AND active = 1",
-    )
-    .bind(&token)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
-    .map(|r| r.0)
-    .unwrap_or_default();
+    // Look up book_id from token (active links only)
+    let book_id = state
+        .rhype
+        .find_one(format!(
+            "BetaLink.filter(.token == {} && .active == true).limit(1)",
+            rhype::quote(&token)
+        ))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|o| o.string("book_id"))
+        .unwrap_or_default();
 
     ws.on_upgrade(move |socket| handle_feedback_ws(socket, state, book_id))
 }

@@ -7,19 +7,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::AuthSession;
+use crate::routes::verify_book_ownership;
 use crate::AppState;
-
-async fn verify_book_ownership(state: &AppState, book_id: &str, user_id: &str) -> bool {
-    sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM books WHERE id = ? AND user_id = ?",
-    )
-    .bind(book_id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .map(|r| r.0 > 0)
-    .unwrap_or(false)
-}
 
 #[derive(Deserialize)]
 pub struct HistoryQuery {

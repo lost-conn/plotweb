@@ -9,6 +9,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::auth::AuthSession;
+use crate::rhype::quote;
+use crate::routes::verify_book_ownership;
 use crate::AppState;
 
 const MAX_IMAGE_SIZE: usize = 10 * 1024 * 1024; // 10MB
@@ -33,18 +35,6 @@ fn images_dir(state: &AppState, book_id: &str) -> std::path::PathBuf {
 
 fn validate_filename(filename: &str) -> bool {
     !filename.contains('/') && !filename.contains('\\') && !filename.contains("..")
-}
-
-async fn verify_book_ownership(state: &AppState, book_id: &str, user_id: &str) -> bool {
-    sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM books WHERE id = ? AND user_id = ?",
-    )
-    .bind(book_id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .map(|r| r.0 > 0)
-    .unwrap_or(false)
 }
 
 /// POST /api/books/{book_id}/images
@@ -173,19 +163,22 @@ pub async fn serve_beta(
     }
 
     // Look up book_id from token
-    let row = sqlx::query_as::<_, (String, i64)>(
-        "SELECT book_id, active FROM beta_reader_links WHERE token = ?",
-    )
-    .bind(&token)
-    .fetch_optional(&state.db)
-    .await;
+    let link = state
+        .rhype
+        .find_one(format!("BetaLink.filter(.token == {}).limit(1)", quote(&token)))
+        .await
+        .ok()
+        .flatten();
 
-    let (book_id, active) = match row {
-        Ok(Some(r)) => r,
-        _ => return StatusCode::NOT_FOUND.into_response(),
+    let (book_id, active) = match link {
+        Some(o) => (
+            o.string("book_id").unwrap_or_default(),
+            o.bool("active").unwrap_or(false),
+        ),
+        None => return StatusCode::NOT_FOUND.into_response(),
     };
 
-    if active == 0 {
+    if !active {
         return StatusCode::FORBIDDEN.into_response();
     }
 
