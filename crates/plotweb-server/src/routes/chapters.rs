@@ -150,6 +150,10 @@ pub async fn update(
 
     if let Err(e) = state.books.update_chapter(&book_id, &chapter_id, &req).await {
         eprintln!("Failed to update chapter: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to save chapter" })),
+        );
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
@@ -169,6 +173,10 @@ pub async fn delete(
 
     if let Err(e) = state.books.delete_chapter(&book_id, &chapter_id).await {
         eprintln!("Failed to delete chapter: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to delete chapter" })),
+        );
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
@@ -189,6 +197,10 @@ pub async fn reorder(
 
     if let Err(e) = state.books.reorder_chapters(&book_id, &req.chapter_ids).await {
         eprintln!("Failed to reorder chapters: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to reorder chapters" })),
+        );
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))

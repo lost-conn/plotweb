@@ -63,7 +63,7 @@ pub async fn migrate_sqlite_to_git(pool: &SqlitePool, base_dir: &PathBuf) -> any
 
             // Write content to .md file
             let md_path = chapters_dir.join(format!("{}.md", ch_id));
-            std::fs::write(&md_path, content)?;
+            repo::write_text(&md_path, content)?;
         }
 
         let font_settings = font_settings_str
@@ -164,7 +164,7 @@ pub fn migrate_to_split_repos(base_dir: &PathBuf) -> anyhow::Result<()> {
 
                     // Write content to .md
                     let md_path = ms_chapters.join(format!("{}.md", chapter_id));
-                    std::fs::write(&md_path, &legacy.content)?;
+                    repo::write_text(&md_path, &legacy.content)?;
                 }
             }
 

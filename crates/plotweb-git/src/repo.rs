@@ -13,6 +13,10 @@ pub fn init_repo(path: &Path) -> Result<Repository> {
     // creates refs/heads/main (not the default "master").
     repo.set_head("refs/heads/main")?;
 
+    // Ignore the sibling temp files used by atomic_write so a `*.tmp` left by a
+    // crash mid-write is never picked up by commit_all's add_all(".").
+    std::fs::write(path.join(".gitignore"), "*.tmp\n")?;
+
     // Create initial empty commit on the (unborn) main branch
     let sig = default_signature();
     let tree_id = repo.index()?.write_tree()?;
@@ -54,16 +58,106 @@ fn default_signature() -> Signature<'static> {
     Signature::now("PlotWeb", "plotweb@local").unwrap()
 }
 
+/// Stage exactly `rel_paths` (repo-relative) and commit `message`.
+///
+/// Unlike [`commit_all`] this does not scan the whole working tree, so cost is
+/// independent of book size. It also coalesces consecutive saves of the same
+/// file: if the current HEAD commit changed *exactly* this same set of paths
+/// (i.e. you're still editing the same chapter — autosave fires every few
+/// seconds), it amends that commit instead of appending a new one. That keeps
+/// the manuscript history readable and the repo from growing without bound
+/// during a long writing session, while edits to a *different* file, or any
+/// multi-file change, still start a fresh commit.
+pub fn commit_paths(repo: &Repository, rel_paths: &[String], message: &str) -> Result<()> {
+    let mut index = repo.index()?;
+    for p in rel_paths {
+        index.add_path(Path::new(p))?;
+    }
+    index.write()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let sig = default_signature();
+
+    match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+        Some(head_commit) => {
+            if can_amend(repo, &head_commit, rel_paths) {
+                head_commit.amend(Some("HEAD"), Some(&sig), Some(&sig), None, Some(message), Some(&tree))?;
+            } else {
+                repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head_commit])?;
+            }
+        }
+        None => {
+            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])?;
+        }
+    }
+    Ok(())
+}
+
+/// True when `head` is a normal (single-parent) commit whose change set is
+/// exactly `rel_paths` — meaning the previous save touched the same file(s), so
+/// the upcoming save is a continuation and should amend rather than append.
+fn can_amend(repo: &Repository, head: &git2::Commit, rel_paths: &[String]) -> bool {
+    // Never amend the root/initial commit or a merge.
+    if head.parent_count() != 1 {
+        return false;
+    }
+    let Ok(parent) = head.parent(0) else { return false };
+    let (Ok(head_tree), Ok(parent_tree)) = (head.tree(), parent.tree()) else {
+        return false;
+    };
+    let Ok(diff) = repo.diff_tree_to_tree(Some(&parent_tree), Some(&head_tree), None) else {
+        return false;
+    };
+    let mut changed: Vec<String> = diff
+        .deltas()
+        .filter_map(|d| d.new_file().path().and_then(|p| p.to_str()).map(str::to_string))
+        .collect();
+    changed.sort();
+    let mut want: Vec<String> = rel_paths.to_vec();
+    want.sort();
+    changed == want
+}
+
 /// Read and deserialize JSON from a file.
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let data = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&data)?)
 }
 
-/// Serialize and write JSON to a file.
+/// Atomically write `data` to `path`: write a sibling temp file, fsync it, then
+/// rename over the target. Rename within a directory is atomic on POSIX, so a
+/// crash can leave a stray `*.tmp` but never a truncated/half-written target —
+/// which for `book.json` would make the entire book unreadable.
+fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    // Sibling temp keyed off the full filename (e.g. `book.json.tmp`,
+    // `chapter.md.tmp`) so distinct targets never collide on a shared temp name.
+    let mut tmp_os = path.as_os_str().to_os_string();
+    tmp_os.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp_os);
+
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Atomically write a UTF-8 string to a file. See [`atomic_write`].
+pub fn write_text(path: &Path, contents: &str) -> Result<()> {
+    atomic_write(path, contents.as_bytes())?;
+    Ok(())
+}
+
+/// Serialize and atomically write JSON to a file.
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let data = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, data)?;
+    atomic_write(path, data.as_bytes())?;
     Ok(())
 }
 

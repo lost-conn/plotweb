@@ -206,6 +206,8 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                     text_hit,
                     viewport_width: 0.0,
                     viewport_height: 0.0,
+                    button: Default::default(),
+                    modifiers: Default::default(),
                 });
 
                 // Don't prevent default on native form elements so they can
@@ -298,6 +300,8 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                                     text_hit: Default::default(),
                                     viewport_width: 0.0,
                                     viewport_height: 0.0,
+                                    button: Default::default(),
+                                    modifiers: Default::default(),
                                 });
                                 events::dispatch_event(events::EventHandlerId(handler_id));
                             }
@@ -315,7 +319,7 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
         *drag_phase_move.borrow_mut() = new_phase;
 
         // Also handle Drag builder system (sliders, panels)
-        if rinch_core::update_drag(mx, my) {
+        if rinch_core::update_drag(mx, my).0 {
             event.prevent_default();
         }
     }) as Box<dyn FnMut(_)>);
@@ -351,6 +355,8 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                     text_hit,
                     viewport_width: 0.0,
                     viewport_height: 0.0,
+                    button: Default::default(),
+                    modifiers: Default::default(),
                 });
                 events::dispatch_event(events::EventHandlerId(click_rid));
             }

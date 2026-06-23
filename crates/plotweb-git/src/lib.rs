@@ -74,7 +74,7 @@ impl BookStore {
             book::create_book(&base, &book_id, &title, &desc, &created)
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn book_word_count(&self, book_id: &str) -> u64 {
@@ -113,7 +113,7 @@ impl BookStore {
             )
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn delete_book(&self, book_id: &str) -> Result<()> {
@@ -163,7 +163,7 @@ impl BookStore {
             chapter::create_chapter(&base, &book_id, &chapter_id, &title, &created)
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn update_chapter(
@@ -183,7 +183,7 @@ impl BookStore {
             chapter::update_chapter(&base, &book_id, &chapter_id, title.as_deref(), content.as_deref())
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn delete_chapter(&self, book_id: &str, chapter_id: &str) -> Result<()> {
@@ -230,7 +230,7 @@ impl BookStore {
             chapter::get_chapter_at_commit(&base, &book_id, &chapter_id, &commit_hex)
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn list_chapters_at_commit(
@@ -245,7 +245,7 @@ impl BookStore {
             chapter::list_chapters_at_commit(&base, &book_id, &commit_hex)
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     // ── History ──
@@ -276,7 +276,7 @@ impl BookStore {
                 .collect())
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn restore_to_commit(&self, book_id: &str, commit_hex: &str) -> Result<()> {
@@ -292,7 +292,7 @@ impl BookStore {
             repo::restore_to_commit(&git_repo, oid)
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn diff_commit(
@@ -351,7 +351,7 @@ impl BookStore {
             Ok(plotweb_common::CommitDiff { changed_chapters })
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     /// Import multiple chapters at once (bulk create with content).
@@ -369,7 +369,7 @@ impl BookStore {
             chapter::import_chapters(&base, &book_id, &chapters)
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn reorder_chapters(&self, book_id: &str, chapter_ids: &[String]) -> Result<()> {
@@ -435,7 +435,7 @@ impl BookStore {
             )
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn update_note(
@@ -465,7 +465,7 @@ impl BookStore {
             )
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn delete_note(&self, book_id: &str, note_id: &str) -> Result<()> {
@@ -497,7 +497,7 @@ impl BookStore {
             note::move_note(&base, &book_id, &note_id, new_parent_id.as_deref(), index)
         })
         .await
-        .unwrap()
+        .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn update_note_tree(
