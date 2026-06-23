@@ -183,7 +183,7 @@ pub fn create_chapter(
 
     // Write empty .md content file
     let md_path = chapter_md_path(base_dir, book_id, chapter_id);
-    std::fs::write(&md_path, "")?;
+    repo::write_text(&md_path, "")?;
 
     // Update book.json chapter_order
     let mut book_json: BookJson = repo::read_json(&book_path)?;
@@ -229,7 +229,7 @@ pub fn update_chapter(
     }
     if let Some(c) = content {
         let md_path = chapter_md_path(base_dir, book_id, chapter_id);
-        std::fs::write(&md_path, c)?;
+        repo::write_text(&md_path, c)?;
     }
 
     let ms_dir = book::manuscript_dir(base_dir, book_id);
@@ -291,7 +291,7 @@ pub fn import_chapters(
         repo::write_json(&json_path, &chapter_json)?;
 
         let md_path = chapter_md_path(base_dir, book_id, &id);
-        std::fs::write(&md_path, &ch.content)?;
+        repo::write_text(&md_path, &ch.content)?;
 
         book_json.chapter_order.push(id.clone());
 

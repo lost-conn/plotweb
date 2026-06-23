@@ -13,6 +13,10 @@ pub fn init_repo(path: &Path) -> Result<Repository> {
     // creates refs/heads/main (not the default "master").
     repo.set_head("refs/heads/main")?;
 
+    // Ignore the sibling temp files used by atomic_write so a `*.tmp` left by a
+    // crash mid-write is never picked up by commit_all's add_all(".").
+    std::fs::write(path.join(".gitignore"), "*.tmp\n")?;
+
     // Create initial empty commit on the (unborn) main branch
     let sig = default_signature();
     let tree_id = repo.index()?.write_tree()?;
@@ -60,10 +64,40 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     Ok(serde_json::from_str(&data)?)
 }
 
-/// Serialize and write JSON to a file.
+/// Atomically write `data` to `path`: write a sibling temp file, fsync it, then
+/// rename over the target. Rename within a directory is atomic on POSIX, so a
+/// crash can leave a stray `*.tmp` but never a truncated/half-written target —
+/// which for `book.json` would make the entire book unreadable.
+fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    // Sibling temp keyed off the full filename (e.g. `book.json.tmp`,
+    // `chapter.md.tmp`) so distinct targets never collide on a shared temp name.
+    let mut tmp_os = path.as_os_str().to_os_string();
+    tmp_os.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp_os);
+
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Atomically write a UTF-8 string to a file. See [`atomic_write`].
+pub fn write_text(path: &Path, contents: &str) -> Result<()> {
+    atomic_write(path, contents.as_bytes())?;
+    Ok(())
+}
+
+/// Serialize and atomically write JSON to a file.
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let data = serde_json::to_string_pretty(value)?;
-    std::fs::write(path, data)?;
+    atomic_write(path, data.as_bytes())?;
     Ok(())
 }
 
