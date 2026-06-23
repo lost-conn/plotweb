@@ -193,6 +193,10 @@ pub async fn update(
         .await
     {
         eprintln!("Failed to update note: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to save note" })),
+        );
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
@@ -212,6 +216,10 @@ pub async fn delete(
 
     if let Err(e) = state.books.delete_note(&book_id, &note_id).await {
         eprintln!("Failed to delete note: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to delete note" })),
+        );
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
@@ -276,6 +284,10 @@ pub async fn update_tree(
 
     if let Err(e) = state.books.update_note_tree(&book_id, &tree).await {
         eprintln!("Failed to update note tree: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to save note tree" })),
+        );
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))

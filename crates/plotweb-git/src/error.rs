@@ -22,6 +22,9 @@ pub enum GitStoreError {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("background task failed: {0}")]
+    Task(String),
 }
 
 pub type Result<T> = std::result::Result<T, GitStoreError>;

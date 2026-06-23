@@ -248,6 +248,11 @@ pub const EDITOR_CSS: &str = r#"
     color: var(--rinch-color-teal-4);
 }
 
+.save-indicator.error {
+    color: var(--rinch-color-red-6, #e03131);
+    font-weight: 600;
+}
+
 @media (max-width: 768px) {
     .editor-content {
         padding: 16px;

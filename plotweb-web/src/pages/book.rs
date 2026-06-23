@@ -1967,6 +1967,10 @@ fn do_switch_chapter_inner(
                     &req,
                 ).await.is_ok() {
                     save_status.set("saved");
+                } else {
+                    // The just-left chapter failed to save — surface it instead of
+                    // the optimistic "saved" set below, so edits aren't lost silently.
+                    save_status.set("error");
                 }
             });
         }
@@ -2631,7 +2635,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
             ).await.is_ok() {
                 save_status.set("saved");
             } else {
-                save_status.set("unsaved");
+                // Distinct from "unsaved" (pending edits): the save was attempted
+                // and the server rejected it, so the edit is NOT persisted.
+                save_status.set("error");
             }
         });
     };
@@ -4077,6 +4083,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     {|| match save_status.get() {
                                         "saving" => "Saving...".to_string(),
                                         "saved" => "Saved".to_string(),
+                                        "error" => "Save failed — retry".to_string(),
                                         _ => "Unsaved".to_string(),
                                     }}
                                 }
