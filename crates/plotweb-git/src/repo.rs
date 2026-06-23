@@ -58,6 +58,66 @@ fn default_signature() -> Signature<'static> {
     Signature::now("PlotWeb", "plotweb@local").unwrap()
 }
 
+/// Stage exactly `rel_paths` (repo-relative) and commit `message`.
+///
+/// Unlike [`commit_all`] this does not scan the whole working tree, so cost is
+/// independent of book size. It also coalesces consecutive saves of the same
+/// file: if the current HEAD commit changed *exactly* this same set of paths
+/// (i.e. you're still editing the same chapter — autosave fires every few
+/// seconds), it amends that commit instead of appending a new one. That keeps
+/// the manuscript history readable and the repo from growing without bound
+/// during a long writing session, while edits to a *different* file, or any
+/// multi-file change, still start a fresh commit.
+pub fn commit_paths(repo: &Repository, rel_paths: &[String], message: &str) -> Result<()> {
+    let mut index = repo.index()?;
+    for p in rel_paths {
+        index.add_path(Path::new(p))?;
+    }
+    index.write()?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let sig = default_signature();
+
+    match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
+        Some(head_commit) => {
+            if can_amend(repo, &head_commit, rel_paths) {
+                head_commit.amend(Some("HEAD"), Some(&sig), Some(&sig), None, Some(message), Some(&tree))?;
+            } else {
+                repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&head_commit])?;
+            }
+        }
+        None => {
+            repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])?;
+        }
+    }
+    Ok(())
+}
+
+/// True when `head` is a normal (single-parent) commit whose change set is
+/// exactly `rel_paths` — meaning the previous save touched the same file(s), so
+/// the upcoming save is a continuation and should amend rather than append.
+fn can_amend(repo: &Repository, head: &git2::Commit, rel_paths: &[String]) -> bool {
+    // Never amend the root/initial commit or a merge.
+    if head.parent_count() != 1 {
+        return false;
+    }
+    let Ok(parent) = head.parent(0) else { return false };
+    let (Ok(head_tree), Ok(parent_tree)) = (head.tree(), parent.tree()) else {
+        return false;
+    };
+    let Ok(diff) = repo.diff_tree_to_tree(Some(&parent_tree), Some(&head_tree), None) else {
+        return false;
+    };
+    let mut changed: Vec<String> = diff
+        .deltas()
+        .filter_map(|d| d.new_file().path().and_then(|p| p.to_str()).map(str::to_string))
+        .collect();
+    changed.sort();
+    let mut want: Vec<String> = rel_paths.to_vec();
+    want.sort();
+    changed == want
+}
+
 /// Read and deserialize JSON from a file.
 pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let data = std::fs::read_to_string(path)?;

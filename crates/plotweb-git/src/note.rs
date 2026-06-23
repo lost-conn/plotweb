@@ -238,9 +238,12 @@ pub fn update_note(
 
     repo::write_json(&path, &n)?;
 
+    // Stage only this note's file so consecutive autosaves of the same note
+    // coalesce into one commit (see commit_paths) instead of one per keystroke-
+    // batch.
     let nr_dir = notes_repo_dir(base_dir, book_id);
     let git_repo = git2::Repository::open(&nr_dir)?;
-    repo::commit_all(&git_repo, &format!("Update note: {}", n.title))?;
+    repo::commit_paths(&git_repo, &[format!("{}.json", note_id)], &format!("Update note: {}", n.title))?;
 
     Ok(())
 }

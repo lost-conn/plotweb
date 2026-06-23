@@ -223,18 +223,27 @@ pub fn update_chapter(
 
     let mut ch: ChapterJson = repo::read_json(&json_path)?;
 
+    // Track exactly which files change so we can stage only those (and so
+    // consecutive autosaves of the same chapter coalesce into one commit).
+    let mut changed_paths: Vec<String> = Vec::new();
     if let Some(t) = title {
         ch.title = t.to_string();
         repo::write_json(&json_path, &ch)?;
+        changed_paths.push(format!("chapters/{}.json", chapter_id));
     }
     if let Some(c) = content {
         let md_path = chapter_md_path(base_dir, book_id, chapter_id);
         repo::write_text(&md_path, c)?;
+        changed_paths.push(format!("chapters/{}.md", chapter_id));
+    }
+
+    if changed_paths.is_empty() {
+        return Ok(());
     }
 
     let ms_dir = book::manuscript_dir(base_dir, book_id);
     let git_repo = git2::Repository::open(&ms_dir)?;
-    repo::commit_all(&git_repo, &format!("Update chapter: {}", ch.title))?;
+    repo::commit_paths(&git_repo, &changed_paths, &format!("Update chapter: {}", ch.title))?;
 
     Ok(())
 }
