@@ -6,7 +6,10 @@
 # ------ Stage 1: Build the WASM frontend with Trunk ---------
 FROM rust:1.88-bookworm AS frontend
 
-ARG RINCH_COMMIT=fd3f7d76ebb671d35c14e9a39cfc9297b6824721
+# Pinned to the tip of rinch PR #64 (fix/rsx-capture-scanner-iflet), which
+# includes the for-loop capture-scanner if-let fix this build depends on.
+# Repin to the squash-merge commit on main once #64 lands.
+ARG RINCH_COMMIT=63370158f408afe69d89cb57335f7e40026ecf77
 ARG RINCH_REPO=https://github.com/joeleaver/rinch.git
 
 RUN apt-get update && apt-get install -y --no-install-recommends git \
