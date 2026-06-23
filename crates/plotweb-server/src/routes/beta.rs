@@ -9,6 +9,8 @@ use uuid::Uuid;
 use tower_sessions::Session;
 
 use crate::auth::AuthSession;
+use crate::rhype::{quote, Fields};
+use crate::routes::{delete_link_cascade, verify_book_ownership};
 use crate::ws::WsMessage;
 use crate::AppState;
 
@@ -28,17 +30,43 @@ fn rewrite_cover_for_beta(cover: Option<String>, token: &str) -> Option<String> 
     Some(url)
 }
 
-/// Verify the book belongs to the user.
-async fn verify_book_ownership(state: &AppState, book_id: &str, user_id: &str) -> bool {
-    sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM books WHERE id = ? AND user_id = ?",
-    )
-    .bind(book_id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .map(|r| r.0 > 0)
-    .unwrap_or(false)
+/// Resolve an optional username to its user UUID. Returns `Ok(None)` for an
+/// absent/blank username, `Ok(Some(uuid))` when found, `Err(())` when a
+/// non-blank username doesn't match a user.
+async fn resolve_username(state: &AppState, username: Option<&str>) -> Result<Option<String>, ()> {
+    let Some(name) = username else { return Ok(None) };
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match state
+        .rhype
+        .find_one(format!("User.filter(.username == {}).limit(1)", quote(trimmed)))
+        .await
+    {
+        Ok(Some(u)) => Ok(u.string("uuid").map(Some).unwrap_or(None)),
+        _ => Err(()),
+    }
+}
+
+/// Look up the author's email (and book title) for a book, for notifications.
+async fn author_email_and_title(state: &AppState, book_id: &str) -> Option<(String, String)> {
+    let book = state
+        .rhype
+        .find_one(format!("Book.filter(.uuid == {}).limit(1)", quote(book_id)))
+        .await
+        .ok()
+        .flatten()?;
+    let title = book.string("title").unwrap_or_default();
+    let owner_id = book.string("user_id")?;
+    let user = state
+        .rhype
+        .find_one(format!("User.filter(.uuid == {}).limit(1)", quote(&owner_id)))
+        .await
+        .ok()
+        .flatten()?;
+    let email = user.string("email")?;
+    Some((email, title))
 }
 
 // ── Beta Link CRUD (authenticated, book owner) ──────────────────────────────
@@ -52,34 +80,40 @@ pub async fn list_links(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    let rows = sqlx::query_as::<_, (String, String, String, String, Option<i64>, i64, String, Option<String>, Option<String>, Option<String>)>(
-        "SELECT l.id, l.book_id, l.token, l.reader_name, l.max_chapter_index, l.active, l.created_at, l.pinned_commit, l.user_id, u.username
-         FROM beta_reader_links l
-         LEFT JOIN users u ON l.user_id = u.id
-         WHERE l.book_id = ? ORDER BY l.created_at DESC",
-    )
-    .bind(&book_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let mut rows = state
+        .rhype
+        .find(format!("BetaLink.filter(.book_id == {})", quote(&book_id)))
+        .await
+        .unwrap_or_default();
+    rows.sort_by(|a, b| b.string("created_at").cmp(&a.string("created_at")));
 
-    let links: Vec<BetaReaderLink> = rows
-        .into_iter()
-        .map(|(id, book_id, token, reader_name, max_chapter_index, active, created_at, pinned_commit, user_id, username)| {
-            BetaReaderLink {
-                id,
-                book_id,
-                token,
-                reader_name,
-                max_chapter_index,
-                active: active != 0,
-                created_at,
-                pinned_commit,
-                user_id,
-                username,
-            }
-        })
-        .collect();
+    let mut links: Vec<BetaReaderLink> = Vec::new();
+    for row in rows {
+        // LEFT JOIN users → username (only if a user is attached).
+        let link_user_id = row.string("user_id");
+        let username = match &link_user_id {
+            Some(uid) => state
+                .rhype
+                .find_one(format!("User.filter(.uuid == {}).limit(1)", quote(uid)))
+                .await
+                .ok()
+                .flatten()
+                .and_then(|u| u.string("username")),
+            None => None,
+        };
+        links.push(BetaReaderLink {
+            id: row.string("uuid").unwrap_or_default(),
+            book_id: row.string("book_id").unwrap_or_default(),
+            token: row.string("token").unwrap_or_default(),
+            reader_name: row.string("reader_name").unwrap_or_default(),
+            max_chapter_index: row.i64("max_chapter_index"),
+            active: row.bool("active").unwrap_or(false),
+            created_at: row.string("created_at").unwrap_or_default(),
+            pinned_commit: row.string("pinned_commit"),
+            user_id: link_user_id,
+            username,
+        });
+    }
 
     (StatusCode::OK, Json(serde_json::to_value(links).unwrap()))
 }
@@ -114,39 +148,35 @@ pub async fn create_link(
     };
 
     // Resolve optional username to user_id
-    let (resolved_user_id, resolved_username) = if let Some(ref username) = req.username {
-        let trimmed = username.trim();
-        if trimmed.is_empty() {
-            (None, None)
-        } else {
-            match sqlx::query_as::<_, (String,)>("SELECT id FROM users WHERE username = ?")
-                .bind(trimmed)
-                .fetch_optional(&state.db)
-                .await
-            {
-                Ok(Some((uid,))) => (Some(uid), Some(trimmed.to_string())),
-                _ => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "user not found" }))),
-            }
-        }
+    let resolved_user_id = match resolve_username(&state, req.username.as_deref()).await {
+        Ok(uid) => uid,
+        Err(()) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "user not found" }))),
+    };
+    let resolved_username = if resolved_user_id.is_some() {
+        req.username.as_ref().map(|u| u.trim().to_string())
     } else {
-        (None, None)
+        None
     };
 
-    sqlx::query(
-        "INSERT INTO beta_reader_links (id, book_id, token, reader_name, max_chapter_index, pinned_commit, user_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&book_id)
-    .bind(&token)
-    .bind(req.reader_name.trim())
-    .bind(req.max_chapter_index)
-    .bind(&pinned_commit)
-    .bind(&resolved_user_id)
-    .bind(&now)
-    .execute(&state.db)
-    .await
-    .ok();
+    let fields = Fields::new()
+        .str("uuid", &id)
+        .str("book_id", &book_id)
+        .str("token", &token)
+        .str("reader_name", req.reader_name.trim())
+        .opt_int("max_chapter_index", req.max_chapter_index)
+        .bool("active", true)
+        .opt_str("pinned_commit", pinned_commit.as_deref())
+        .opt_str("user_id", resolved_user_id.as_deref())
+        .str("created_at", &now)
+        .render();
+
+    if let Err(e) = state.rhype.create(format!("BetaLink.create({fields})")).await {
+        eprintln!("Failed to create beta link: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to create link" })),
+        );
+    }
 
     let link = BetaReaderLink {
         id,
@@ -174,76 +204,58 @@ pub async fn update_link(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
+    let mut fields = Fields::new();
+    let mut any = false;
+
     if let Some(name) = &req.reader_name {
-        sqlx::query("UPDATE beta_reader_links SET reader_name = ? WHERE id = ? AND book_id = ?")
-            .bind(name.trim())
-            .bind(&link_id)
-            .bind(&book_id)
-            .execute(&state.db)
-            .await
-            .ok();
+        fields = fields.str("reader_name", name.trim());
+        any = true;
     }
     if let Some(max_ch) = &req.max_chapter_index {
-        sqlx::query("UPDATE beta_reader_links SET max_chapter_index = ? WHERE id = ? AND book_id = ?")
-            .bind(max_ch)
-            .bind(&link_id)
-            .bind(&book_id)
-            .execute(&state.db)
-            .await
-            .ok();
+        fields = match max_ch {
+            Some(v) => fields.int("max_chapter_index", *v),
+            None => fields.null("max_chapter_index"),
+        };
+        any = true;
     }
     if let Some(active) = req.active {
-        sqlx::query("UPDATE beta_reader_links SET active = ? WHERE id = ? AND book_id = ?")
-            .bind(active as i64)
-            .bind(&link_id)
-            .bind(&book_id)
-            .execute(&state.db)
-            .await
-            .ok();
+        fields = fields.bool("active", active);
+        any = true;
     }
     if let Some(ref pinned) = req.pinned_commit {
-        let resolved = if let Some(pc) = pinned {
-            if pc.eq_ignore_ascii_case("HEAD") {
-                state.books.get_head_oid(&book_id).await.ok()
-            } else {
-                Some(pc.clone())
-            }
-        } else {
-            None
+        let resolved = match pinned {
+            Some(pc) if pc.eq_ignore_ascii_case("HEAD") => state.books.get_head_oid(&book_id).await.ok(),
+            Some(pc) => Some(pc.clone()),
+            None => None,
         };
-        sqlx::query("UPDATE beta_reader_links SET pinned_commit = ? WHERE id = ? AND book_id = ?")
-            .bind(&resolved)
-            .bind(&link_id)
-            .bind(&book_id)
-            .execute(&state.db)
-            .await
-            .ok();
+        fields = match resolved {
+            Some(v) => fields.str("pinned_commit", &v),
+            None => fields.null("pinned_commit"),
+        };
+        any = true;
     }
     if let Some(ref username_opt) = req.username {
-        let resolved_user_id = if let Some(username) = username_opt {
-            let trimmed = username.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                match sqlx::query_as::<_, (String,)>("SELECT id FROM users WHERE username = ?")
-                    .bind(trimmed)
-                    .fetch_optional(&state.db)
-                    .await
-                {
-                    Ok(Some((uid,))) => Some(uid),
-                    _ => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "user not found" }))),
-                }
-            }
-        } else {
-            None // Detach user
+        let resolved_user_id = match resolve_username(&state, username_opt.as_deref()).await {
+            Ok(uid) => uid,
+            Err(()) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": "user not found" }))),
         };
-        sqlx::query("UPDATE beta_reader_links SET user_id = ? WHERE id = ? AND book_id = ?")
-            .bind(&resolved_user_id)
-            .bind(&link_id)
-            .bind(&book_id)
-            .execute(&state.db)
-            .await
-            .ok();
+        fields = match resolved_user_id {
+            Some(uid) => fields.str("user_id", &uid),
+            None => fields.null("user_id"),
+        };
+        any = true;
+    }
+
+    if any {
+        let _ = state
+            .rhype
+            .exec(format!(
+                "BetaLink.filter(.uuid == {} && .book_id == {}).update({})",
+                quote(&link_id),
+                quote(&book_id),
+                fields.render()
+            ))
+            .await;
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
@@ -258,40 +270,54 @@ pub async fn delete_link(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    sqlx::query("DELETE FROM beta_reader_links WHERE id = ? AND book_id = ?")
-        .bind(&link_id)
-        .bind(&book_id)
-        .execute(&state.db)
+    // Only delete a link that actually belongs to this book (the old query
+    // scoped the DELETE by id AND book_id).
+    let belongs = state
+        .rhype
+        .exists(format!(
+            "BetaLink.filter(.uuid == {} && .book_id == {}).limit(1)",
+            quote(&link_id),
+            quote(&book_id)
+        ))
         .await
-        .ok();
+        .unwrap_or(false);
+    if belongs {
+        delete_link_cascade(&state, &link_id).await;
+    }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
 
 // ── Public Reader Endpoints (token-based, no auth) ──────────────────────────
 
+/// Fetch a beta link by token. Returns the row only if it exists.
+async fn link_by_token(state: &AppState, token: &str) -> Option<crate::rhype::RhypeObject> {
+    state
+        .rhype
+        .find_one(format!("BetaLink.filter(.token == {}).limit(1)", quote(token)))
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Get book info + chapter list for a beta reader.
 pub async fn reader_view(
     State(state): State<AppState>,
     Path(token): Path<String>,
 ) -> impl IntoResponse {
-    // Look up the link
-    let link = sqlx::query_as::<_, (String, String, String, Option<i64>, i64, Option<String>)>(
-        "SELECT id, book_id, reader_name, max_chapter_index, active, pinned_commit
-         FROM beta_reader_links WHERE token = ?",
-    )
-    .bind(&token)
-    .fetch_optional(&state.db)
-    .await;
-
-    let (_link_id, book_id, reader_name, max_chapter_index, active, pinned_commit) = match link {
-        Ok(Some(row)) => row,
-        _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
     };
 
-    if active == 0 {
+    if !link.bool("active").unwrap_or(false) {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
     }
+
+    let book_id = link.string("book_id").unwrap_or_default();
+    let reader_name = link.string("reader_name").unwrap_or_default();
+    let max_chapter_index = link.i64("max_chapter_index");
+    let pinned_commit = link.string("pinned_commit");
 
     // Get book data from git (pinned or live)
     let (book_data, chapters) = if let Some(ref commit) = pinned_commit {
@@ -299,33 +325,24 @@ pub async fn reader_view(
             Ok(data) => data,
             Err(_) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" }))),
         };
-        let chapters = match state.books.list_chapters_at_commit(&book_id, commit).await {
-            Ok(chs) => chs,
-            Err(_) => Vec::new(),
-        };
+        let chapters = state
+            .books
+            .list_chapters_at_commit(&book_id, commit)
+            .await
+            .unwrap_or_default();
         (book_data, chapters)
     } else {
         let book_data = match state.books.get_book(&book_id).await {
             Ok(data) => data,
             Err(_) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" }))),
         };
-        let chapters = match state.books.list_chapters(&book_id).await {
-            Ok(chs) => chs,
-            Err(_) => Vec::new(),
-        };
+        let chapters = state.books.list_chapters(&book_id).await.unwrap_or_default();
         (book_data, chapters)
     };
 
-    // Filter by max_chapter_index if set
     let mut summaries: Vec<BetaChapterSummary> = chapters
         .into_iter()
-        .filter(|ch| {
-            if let Some(max) = max_chapter_index {
-                ch.sort_order <= max
-            } else {
-                true
-            }
-        })
+        .filter(|ch| max_chapter_index.map(|max| ch.sort_order <= max).unwrap_or(true))
         .map(|ch| BetaChapterSummary {
             id: ch.id,
             title: ch.title,
@@ -351,22 +368,18 @@ pub async fn reader_chapter(
     State(state): State<AppState>,
     Path((token, chapter_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let link = sqlx::query_as::<_, (String, String, Option<i64>, i64, Option<String>)>(
-        "SELECT id, book_id, max_chapter_index, active, pinned_commit
-         FROM beta_reader_links WHERE token = ?",
-    )
-    .bind(&token)
-    .fetch_optional(&state.db)
-    .await;
-
-    let (_link_id, book_id, max_chapter_index, active, pinned_commit) = match link {
-        Ok(Some(row)) => row,
-        _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
     };
 
-    if active == 0 {
+    if !link.bool("active").unwrap_or(false) {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
     }
+
+    let book_id = link.string("book_id").unwrap_or_default();
+    let max_chapter_index = link.i64("max_chapter_index");
+    let pinned_commit = link.string("pinned_commit");
 
     let ch_result = if let Some(ref commit) = pinned_commit {
         state.books.get_chapter_at_commit(&book_id, &chapter_id, commit).await
@@ -376,7 +389,6 @@ pub async fn reader_chapter(
 
     match ch_result {
         Ok(ch) => {
-            // Check chapter is within allowed range
             if let Some(max) = max_chapter_index {
                 if ch.sort_order > max {
                     return (StatusCode::FORBIDDEN, Json(json!({ "error": "chapter not accessible" })));
@@ -410,22 +422,18 @@ pub async fn reader_create_feedback(
     Path(token): Path<String>,
     Json(req): Json<CreateBetaFeedbackRequest>,
 ) -> impl IntoResponse {
-    let link = sqlx::query_as::<_, (String, String, String, i64)>(
-        "SELECT id, book_id, reader_name, active
-         FROM beta_reader_links WHERE token = ?",
-    )
-    .bind(&token)
-    .fetch_optional(&state.db)
-    .await;
-
-    let (link_id, book_id, reader_name, active) = match link {
-        Ok(Some(row)) => row,
-        _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
     };
 
-    if active == 0 {
+    if !link.bool("active").unwrap_or(false) {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
     }
+
+    let link_id = link.string("uuid").unwrap_or_default();
+    let book_id = link.string("book_id").unwrap_or_default();
+    let reader_name = link.string("reader_name").unwrap_or_default();
 
     if req.comment.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "comment is required" })));
@@ -434,24 +442,20 @@ pub async fn reader_create_feedback(
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    sqlx::query(
-        "INSERT INTO beta_reader_feedback (id, link_id, chapter_id, selected_text, context_block, comment, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&link_id)
-    .bind(&req.chapter_id)
-    .bind(&req.selected_text)
-    .bind(&req.context_block)
-    .bind(req.comment.trim())
-    .bind(&now)
-    .execute(&state.db)
-    .await
-    .ok();
+    let fields = Fields::new()
+        .str("uuid", &id)
+        .str("link_id", &link_id)
+        .str("chapter_id", &req.chapter_id)
+        .str("selected_text", &req.selected_text)
+        .str("context_block", &req.context_block)
+        .str("comment", req.comment.trim())
+        .bool("resolved", false)
+        .str("created_at", &now)
+        .render();
+    let _ = state.rhype.create(format!("BetaFeedback.create({fields})")).await;
 
     let comment = req.comment.trim().to_string();
 
-    // Broadcast new feedback
     state.broadcaster.broadcast(&book_id, &WsMessage::NewFeedback(BetaFeedback {
         id: id.clone(),
         link_id: link_id.clone(),
@@ -468,31 +472,13 @@ pub async fn reader_create_feedback(
     // Email notification to the book author
     if let Some(ref email_service) = state.email {
         let email_service = email_service.clone();
-        let db = state.db.clone();
-        let books = state.books.clone();
+        let state2 = state.clone();
         let book_id = book_id.clone();
         let chapter_id = req.chapter_id.clone();
         tokio::spawn(async move {
-            let author_email = sqlx::query_as::<_, (String,)>(
-                "SELECT u.email FROM users u JOIN books b ON b.user_id = u.id WHERE b.id = ?",
-            )
-            .bind(&book_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
-            if let Some((email,)) = author_email {
-                let book_title = sqlx::query_as::<_, (String,)>(
-                    "SELECT title FROM books WHERE id = ?",
-                )
-                .bind(&book_id)
-                .fetch_optional(&db)
-                .await
-                .ok()
-                .flatten()
-                .map(|r| r.0)
-                .unwrap_or_default();
-                let chapter_title = books
+            if let Some((email, book_title)) = author_email_and_title(&state2, &book_id).await {
+                let chapter_title = state2
+                    .books
                     .get_chapter(&book_id, &chapter_id)
                     .await
                     .map(|ch| ch.title)
@@ -512,21 +498,17 @@ pub async fn reader_list_feedback(
     State(state): State<AppState>,
     Path(token): Path<String>,
 ) -> impl IntoResponse {
-    let link = sqlx::query_as::<_, (String, String, i64)>(
-        "SELECT id, reader_name, active FROM beta_reader_links WHERE token = ?",
-    )
-    .bind(&token)
-    .fetch_optional(&state.db)
-    .await;
-
-    let (link_id, reader_name, active) = match link {
-        Ok(Some(row)) => row,
-        _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
     };
 
-    if active == 0 {
+    if !link.bool("active").unwrap_or(false) {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
     }
+
+    let link_id = link.string("uuid").unwrap_or_default();
+    let reader_name = link.string("reader_name").unwrap_or_default();
 
     let feedback = fetch_feedback_for_link(&state, &link_id, &reader_name).await;
     (StatusCode::OK, Json(serde_json::to_value(feedback).unwrap()))
@@ -538,33 +520,29 @@ pub async fn reader_reply_to_feedback(
     Path((token, feedback_id)): Path<(String, String)>,
     Json(req): Json<CreateBetaReplyRequest>,
 ) -> impl IntoResponse {
-    let link = sqlx::query_as::<_, (String, String, String, i64)>(
-        "SELECT id, book_id, reader_name, active FROM beta_reader_links WHERE token = ?",
-    )
-    .bind(&token)
-    .fetch_optional(&state.db)
-    .await;
-
-    let (link_id, book_id, reader_name, active) = match link {
-        Ok(Some(row)) => row,
-        _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
     };
 
-    if active == 0 {
+    if !link.bool("active").unwrap_or(false) {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
     }
 
-    // Verify the feedback belongs to this link
-    let owns = sqlx::query_as::<_, (i64,)>(
-        "SELECT COUNT(*) FROM beta_reader_feedback WHERE id = ? AND link_id = ?",
-    )
-    .bind(&feedback_id)
-    .bind(&link_id)
-    .fetch_one(&state.db)
-    .await
-    .map(|r| r.0 > 0)
-    .unwrap_or(false);
+    let link_id = link.string("uuid").unwrap_or_default();
+    let book_id = link.string("book_id").unwrap_or_default();
+    let reader_name = link.string("reader_name").unwrap_or_default();
 
+    // Verify the feedback belongs to this link
+    let owns = state
+        .rhype
+        .exists(format!(
+            "BetaFeedback.filter(.uuid == {} && .link_id == {}).limit(1)",
+            quote(&feedback_id),
+            quote(&link_id)
+        ))
+        .await
+        .unwrap_or(false);
     if !owns {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "feedback not found" })));
     }
@@ -572,18 +550,15 @@ pub async fn reader_reply_to_feedback(
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    sqlx::query(
-        "INSERT INTO beta_reader_replies (id, feedback_id, author_type, author_name, content, created_at)
-         VALUES (?, ?, 'reader', ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&feedback_id)
-    .bind(&reader_name)
-    .bind(req.content.trim())
-    .bind(&now)
-    .execute(&state.db)
-    .await
-    .ok();
+    let fields = Fields::new()
+        .str("uuid", &id)
+        .str("feedback_id", &feedback_id)
+        .str("author_type", "reader")
+        .str("author_name", &reader_name)
+        .str("content", req.content.trim())
+        .str("created_at", &now)
+        .render();
+    let _ = state.rhype.create(format!("BetaReply.create({fields})")).await;
 
     let reply_content = req.content.trim().to_string();
 
@@ -602,18 +577,10 @@ pub async fn reader_reply_to_feedback(
     // Email notification to the book author
     if let Some(ref email_service) = state.email {
         let email_service = email_service.clone();
-        let db = state.db.clone();
+        let state2 = state.clone();
         let book_id = book_id.clone();
         tokio::spawn(async move {
-            let author_row = sqlx::query_as::<_, (String, String)>(
-                "SELECT u.email, b.title FROM users u JOIN books b ON b.user_id = u.id WHERE b.id = ?",
-            )
-            .bind(&book_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
-            if let Some((email, book_title)) = author_row {
+            if let Some((email, book_title)) = author_email_and_title(&state2, &book_id).await {
                 email_service
                     .notify_reader_reply(&email, &book_title, &reader_name, &reply_content, &book_id)
                     .await;
@@ -636,34 +603,20 @@ pub async fn list_book_feedback(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, i64, String, String)>(
-        "SELECT f.id, f.link_id, f.chapter_id, f.selected_text, f.context_block, f.comment, f.resolved, f.created_at, l.reader_name
-         FROM beta_reader_feedback f
-         JOIN beta_reader_links l ON f.link_id = l.id
-         WHERE l.book_id = ?
-         ORDER BY f.created_at DESC",
-    )
-    .bind(&book_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    // No JOIN: gather feedback per link of the book, then sort newest-first.
+    let links = state
+        .rhype
+        .find(format!("BetaLink.filter(.book_id == {})", quote(&book_id)))
+        .await
+        .unwrap_or_default();
 
     let mut feedback: Vec<BetaFeedback> = Vec::new();
-    for (id, link_id, chapter_id, selected_text, context_block, comment, resolved, created_at, reader_name) in rows {
-        let replies = fetch_replies(&state, &id).await;
-        feedback.push(BetaFeedback {
-            id,
-            link_id,
-            chapter_id,
-            selected_text,
-            context_block,
-            comment,
-            reader_name,
-            resolved: resolved != 0,
-            created_at,
-            replies,
-        });
+    for link in links {
+        let link_id = link.string("uuid").unwrap_or_default();
+        let reader_name = link.string("reader_name").unwrap_or_default();
+        feedback.extend(fetch_feedback_for_link(&state, &link_id, &reader_name).await);
     }
+    feedback.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     (StatusCode::OK, Json(serde_json::to_value(feedback).unwrap()))
 }
@@ -678,28 +631,39 @@ pub async fn resolve_feedback(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    // Toggle resolved status
-    sqlx::query(
-        "UPDATE beta_reader_feedback SET resolved = 1 - resolved
-         WHERE id = ? AND link_id IN (SELECT id FROM beta_reader_links WHERE book_id = ?)",
-    )
-    .bind(&feedback_id)
-    .bind(&book_id)
-    .execute(&state.db)
-    .await
-    .ok();
+    // Load the feedback and confirm its link belongs to this book.
+    let fb = state
+        .rhype
+        .find_one(format!("BetaFeedback.filter(.uuid == {}).limit(1)", quote(&feedback_id)))
+        .await
+        .ok()
+        .flatten();
+    let Some(fb) = fb else {
+        return (StatusCode::OK, Json(json!({ "ok": true })));
+    };
+    let link_id = fb.string("link_id").unwrap_or_default();
+    let in_book = state
+        .rhype
+        .exists(format!(
+            "BetaLink.filter(.uuid == {} && .book_id == {}).limit(1)",
+            quote(&link_id),
+            quote(&book_id)
+        ))
+        .await
+        .unwrap_or(false);
+    if !in_book {
+        return (StatusCode::OK, Json(json!({ "ok": true })));
+    }
 
-    // Get the new resolved state
-    let resolved = sqlx::query_as::<_, (i64,)>(
-        "SELECT resolved FROM beta_reader_feedback WHERE id = ?",
-    )
-    .bind(&feedback_id)
-    .fetch_optional(&state.db)
-    .await
-    .ok()
-    .flatten()
-    .map(|r| r.0 != 0)
-    .unwrap_or(false);
+    let resolved = !fb.bool("resolved").unwrap_or(false);
+    let _ = state
+        .rhype
+        .exec(format!(
+            "BetaFeedback.filter(.uuid == {}).update({})",
+            quote(&feedback_id),
+            Fields::new().bool("resolved", resolved).render()
+        ))
+        .await;
 
     state.broadcaster.broadcast(&book_id, &WsMessage::FeedbackResolved {
         feedback_id: feedback_id.clone(),
@@ -719,15 +683,38 @@ pub async fn delete_feedback(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    sqlx::query(
-        "DELETE FROM beta_reader_feedback
-         WHERE id = ? AND link_id IN (SELECT id FROM beta_reader_links WHERE book_id = ?)",
-    )
-    .bind(&feedback_id)
-    .bind(&book_id)
-    .execute(&state.db)
-    .await
-    .ok();
+    // Confirm the feedback's link belongs to this book, then delete it + replies.
+    let fb = state
+        .rhype
+        .find_one(format!("BetaFeedback.filter(.uuid == {}).limit(1)", quote(&feedback_id)))
+        .await
+        .ok()
+        .flatten();
+    if let Some(fb) = fb {
+        let link_id = fb.string("link_id").unwrap_or_default();
+        let in_book = state
+            .rhype
+            .exists(format!(
+                "BetaLink.filter(.uuid == {} && .book_id == {}).limit(1)",
+                quote(&link_id),
+                quote(&book_id)
+            ))
+            .await
+            .unwrap_or(false);
+        if in_book {
+            let _ = state
+                .rhype
+                .exec(format!(
+                    "BetaReply.filter(.feedback_id == {}).delete()",
+                    quote(&feedback_id)
+                ))
+                .await;
+            let _ = state
+                .rhype
+                .exec(format!("BetaFeedback.filter(.uuid == {}).delete()", quote(&feedback_id)))
+                .await;
+        }
+    }
 
     state.broadcaster.broadcast(&book_id, &WsMessage::FeedbackDeleted {
         feedback_id: feedback_id.clone(),
@@ -748,30 +735,27 @@ pub async fn author_reply_to_feedback(
     }
 
     // Get author username
-    let username = sqlx::query_as::<_, (String,)>("SELECT username FROM users WHERE id = ?")
-        .bind(&user_id)
-        .fetch_optional(&state.db)
+    let username = state
+        .rhype
+        .find_one(format!("User.filter(.uuid == {}).limit(1)", quote(&user_id)))
         .await
         .ok()
         .flatten()
-        .map(|r| r.0)
+        .and_then(|u| u.string("username"))
         .unwrap_or_else(|| "Author".to_string());
 
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
 
-    sqlx::query(
-        "INSERT INTO beta_reader_replies (id, feedback_id, author_type, author_name, content, created_at)
-         VALUES (?, ?, 'owner', ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&feedback_id)
-    .bind(&username)
-    .bind(req.content.trim())
-    .bind(&now)
-    .execute(&state.db)
-    .await
-    .ok();
+    let fields = Fields::new()
+        .str("uuid", &id)
+        .str("feedback_id", &feedback_id)
+        .str("author_type", "owner")
+        .str("author_name", &username)
+        .str("content", req.content.trim())
+        .str("created_at", &now)
+        .render();
+    let _ = state.rhype.create(format!("BetaReply.create({fields})")).await;
 
     let reply_content = req.content.trim().to_string();
 
@@ -790,52 +774,56 @@ pub async fn author_reply_to_feedback(
     // Email notification to the beta reader (if they have an account)
     if let Some(ref email_service) = state.email {
         let email_service = email_service.clone();
-        let db = state.db.clone();
+        let state2 = state.clone();
         let book_id = book_id.clone();
         tokio::spawn(async move {
-            // Get the link_id and token from the feedback
-            let link_info = sqlx::query_as::<_, (String,)>(
-                "SELECT link_id FROM beta_reader_feedback WHERE id = ?",
-            )
-            .bind(&feedback_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
-            let Some((link_id,)) = link_info else { return };
+            // feedback → link_id
+            let Some(fb) = state2
+                .rhype
+                .find_one(format!("BetaFeedback.filter(.uuid == {}).limit(1)", quote(&feedback_id)))
+                .await
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
+            let Some(link_id) = fb.string("link_id") else { return };
 
-            // Get the reader's user_id and token from the link
-            let reader_info = sqlx::query_as::<_, (Option<String>, String)>(
-                "SELECT user_id, token FROM beta_reader_links WHERE id = ?",
-            )
-            .bind(&link_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
-            let Some((Some(reader_user_id), token)) = reader_info else { return };
+            // link → reader user_id + token
+            let Some(link) = state2
+                .rhype
+                .find_one(format!("BetaLink.filter(.uuid == {}).limit(1)", quote(&link_id)))
+                .await
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
+            let (Some(reader_user_id), Some(token)) = (link.string("user_id"), link.string("token"))
+            else {
+                return;
+            };
 
-            // Get the reader's email
-            let reader_email = sqlx::query_as::<_, (String,)>(
-                "SELECT email FROM users WHERE id = ?",
-            )
-            .bind(&reader_user_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten();
-            let Some((email,)) = reader_email else { return };
+            // reader user → email
+            let Some(reader) = state2
+                .rhype
+                .find_one(format!("User.filter(.uuid == {}).limit(1)", quote(&reader_user_id)))
+                .await
+                .ok()
+                .flatten()
+            else {
+                return;
+            };
+            let Some(email) = reader.string("email") else { return };
 
-            let book_title = sqlx::query_as::<_, (String,)>(
-                "SELECT title FROM books WHERE id = ?",
-            )
-            .bind(&book_id)
-            .fetch_optional(&db)
-            .await
-            .ok()
-            .flatten()
-            .map(|r| r.0)
-            .unwrap_or_default();
+            let book_title = state2
+                .rhype
+                .find_one(format!("Book.filter(.uuid == {}).limit(1)", quote(&book_id)))
+                .await
+                .ok()
+                .flatten()
+                .and_then(|b| b.string("title"))
+                .unwrap_or_default();
 
             email_service
                 .notify_author_reply(&email, &book_title, &username, &reply_content, &token)
@@ -853,21 +841,45 @@ pub async fn list_shared_books(
     State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
 ) -> impl IntoResponse {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String)>(
-        "SELECT l.token, l.reader_name, b.id, b.title, u.username
-         FROM beta_reader_links l
-         JOIN books b ON l.book_id = b.id
-         JOIN users u ON b.user_id = u.id
-         WHERE l.user_id = ? AND l.active = 1
-         ORDER BY l.created_at DESC",
-    )
-    .bind(&user_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let mut rows = state
+        .rhype
+        .find(format!(
+            "BetaLink.filter(.user_id == {} && .active == true)",
+            quote(&user_id)
+        ))
+        .await
+        .unwrap_or_default();
+    rows.sort_by(|a, b| b.string("created_at").cmp(&a.string("created_at")));
 
     let mut shared: Vec<SharedBook> = Vec::new();
-    for (token, reader_name, book_id, book_title, author_username) in rows {
+    for link in rows {
+        let token = link.string("token").unwrap_or_default();
+        let reader_name = link.string("reader_name").unwrap_or_default();
+        let book_id = link.string("book_id").unwrap_or_default();
+
+        // book → title + author user_id
+        let Some(book) = state
+            .rhype
+            .find_one(format!("Book.filter(.uuid == {}).limit(1)", quote(&book_id)))
+            .await
+            .ok()
+            .flatten()
+        else {
+            continue;
+        };
+        let book_title = book.string("title").unwrap_or_default();
+        let author_username = match book.string("user_id") {
+            Some(owner_id) => state
+                .rhype
+                .find_one(format!("User.filter(.uuid == {}).limit(1)", quote(&owner_id)))
+                .await
+                .ok()
+                .flatten()
+                .and_then(|u| u.string("username"))
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+
         let (description, cover_image) = state
             .books
             .get_book(&book_id)
@@ -875,6 +887,7 @@ pub async fn list_shared_books(
             .map(|b| (b.description, b.cover_image))
             .unwrap_or_default();
         let cover_image = rewrite_cover_for_beta(cover_image, &token);
+
         shared.push(SharedBook {
             book_title,
             book_description: description,
@@ -899,16 +912,21 @@ pub async fn claim_link(
     let user_id: Option<String> = session.get("user_id").await.ok().flatten();
 
     if let Some(user_id) = user_id {
-        // Only claim if the link exists, is active, and has no user attached
-        sqlx::query(
-            "UPDATE beta_reader_links SET user_id = ?
-             WHERE token = ? AND active = 1 AND user_id IS NULL",
-        )
-        .bind(&user_id)
-        .bind(&token)
-        .execute(&state.db)
-        .await
-        .ok();
+        // Only claim if the link exists, is active, and has no user attached.
+        if let Some(link) = link_by_token(&state, &token).await {
+            let active = link.bool("active").unwrap_or(false);
+            let unattached = link.string("user_id").is_none();
+            if active && unattached {
+                let _ = state
+                    .rhype
+                    .exec(format!(
+                        "BetaLink.filter(.token == {}).update({})",
+                        quote(&token),
+                        Fields::new().str("user_id", &user_id).render()
+                    ))
+                    .await;
+            }
+        }
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
@@ -917,25 +935,21 @@ pub async fn claim_link(
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 async fn fetch_replies(state: &AppState, feedback_id: &str) -> Vec<BetaFeedbackReply> {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, String)>(
-        "SELECT id, feedback_id, author_type, author_name, content, created_at
-         FROM beta_reader_replies WHERE feedback_id = ? ORDER BY created_at ASC",
-    )
-    .bind(feedback_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let mut rows = state
+        .rhype
+        .find(format!("BetaReply.filter(.feedback_id == {})", quote(feedback_id)))
+        .await
+        .unwrap_or_default();
+    rows.sort_by(|a, b| a.string("created_at").cmp(&b.string("created_at")));
 
     rows.into_iter()
-        .map(|(id, feedback_id, author_type, author_name, content, created_at)| {
-            BetaFeedbackReply {
-                id,
-                feedback_id,
-                author_type,
-                author_name,
-                content,
-                created_at,
-            }
+        .map(|r| BetaFeedbackReply {
+            id: r.string("uuid").unwrap_or_default(),
+            feedback_id: r.string("feedback_id").unwrap_or_default(),
+            author_type: r.string("author_type").unwrap_or_default(),
+            author_name: r.string("author_name").unwrap_or_default(),
+            content: r.string("content").unwrap_or_default(),
+            created_at: r.string("created_at").unwrap_or_default(),
         })
         .collect()
 }
@@ -945,28 +959,27 @@ async fn fetch_feedback_for_link(
     link_id: &str,
     reader_name: &str,
 ) -> Vec<BetaFeedback> {
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, String, i64, String)>(
-        "SELECT id, link_id, chapter_id, selected_text, context_block, comment, resolved, created_at
-         FROM beta_reader_feedback WHERE link_id = ? ORDER BY created_at DESC",
-    )
-    .bind(link_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
+    let mut rows = state
+        .rhype
+        .find(format!("BetaFeedback.filter(.link_id == {})", quote(link_id)))
+        .await
+        .unwrap_or_default();
+    rows.sort_by(|a, b| b.string("created_at").cmp(&a.string("created_at")));
 
     let mut feedback = Vec::new();
-    for (id, link_id, chapter_id, selected_text, context_block, comment, resolved, created_at) in rows {
+    for row in rows {
+        let id = row.string("uuid").unwrap_or_default();
         let replies = fetch_replies(state, &id).await;
         feedback.push(BetaFeedback {
             id,
-            link_id,
-            chapter_id,
-            selected_text,
-            context_block,
-            comment,
+            link_id: row.string("link_id").unwrap_or_default(),
+            chapter_id: row.string("chapter_id").unwrap_or_default(),
+            selected_text: row.string("selected_text").unwrap_or_default(),
+            context_block: row.string("context_block").unwrap_or_default(),
+            comment: row.string("comment").unwrap_or_default(),
             reader_name: reader_name.to_string(),
-            resolved: resolved != 0,
-            created_at,
+            resolved: row.bool("resolved").unwrap_or(false),
+            created_at: row.string("created_at").unwrap_or_default(),
             replies,
         });
     }

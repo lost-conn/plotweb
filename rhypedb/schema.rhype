@@ -1,0 +1,74 @@
+// PlotWeb metadata schema for rhypedb.
+//
+// Migrated from the SQLite schema (migrations/001..006). Only ownership / auth /
+// beta-reader metadata lives here — manuscript content, chapters, notes and
+// version history stay in git (see crates/plotweb-git).
+//
+// Design notes (see the deep-dive in the rhypedb track):
+//   * rhypedb assigns its own auto-increment u64 object id and the caller CANNOT
+//     supply one. PlotWeb keys everything by UUID v4 (shared with the git layer,
+//     URLs and the frontend), so each row carries its PlotWeb UUID in a
+//     `uuid: String @unique` field and is looked up with `filter(.uuid == "…")`,
+//     never `get(<int>)`.
+//   * Foreign keys are stored as the referenced row's UUID string (@indexed for
+//     fast exact-match lookups), NOT as rhypedb relations — every PlotWeb query
+//     addresses rows by UUID, and relations link by the engine's u64 id.
+//   * SQLite `ON DELETE CASCADE` is reproduced in the application adapter
+//     (delete children explicitly); the engine does not enforce it here.
+//   * Nullable columns (max_chapter_index, pinned_commit, user_id) are simply
+//     absent when unset — rhypedb has no NULL and no field defaults.
+//   * created_at is kept as the app's "%Y-%m-%d %H:%M:%S" string; it sorts
+//     lexicographically in chronological order (the DSL has no ORDER BY, so
+//     ordering is done in the adapter).
+
+// users (migration 001)
+type User {
+    uuid: String @unique
+    username: String @unique
+    email: String @unique
+    password_hash: String
+    created_at: String
+}
+
+// books, slimmed by migration 003 (content moved to git)
+type Book {
+    uuid: String @unique
+    user_id: String @indexed
+    title: String
+    created_at: String
+}
+
+// beta_reader_links (migrations 004 + 005 pinned_commit + 006 user_id)
+type BetaLink {
+    uuid: String @unique
+    book_id: String @indexed
+    token: String @unique
+    reader_name: String
+    max_chapter_index: i64
+    active: Bool
+    pinned_commit: String
+    user_id: String @indexed
+    created_at: String
+}
+
+// beta_reader_feedback (migration 004)
+type BetaFeedback {
+    uuid: String @unique
+    link_id: String @indexed
+    chapter_id: String @indexed
+    selected_text: String
+    context_block: String
+    comment: String
+    resolved: Bool
+    created_at: String
+}
+
+// beta_reader_replies (migration 004)
+type BetaReply {
+    uuid: String @unique
+    feedback_id: String @indexed
+    author_type: String
+    author_name: String
+    content: String
+    created_at: String
+}
