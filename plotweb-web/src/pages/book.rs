@@ -1998,23 +1998,21 @@ fn do_switch_chapter_inner(
             editor_loaded.set(true);
 
             let content = chapter.content.clone();
-            let window = web_sys::window().unwrap();
-            let closure = wasm_bindgen::closure::Closure::once(move || {
+            // Inject as soon as the editor node is present (deterministic), rather
+            // than guessing with a fixed setTimeout.
+            editor_utils::with_element_when_ready("#editor-main".to_string(), move |el| {
                 // Bail if another switch happened since we started
                 if SWITCH_GEN.with(|g| g.get()) != switch_gen {
                     return;
                 }
-                if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                    if let Ok(Some(el)) = doc.query_selector("#editor-main") {
-                        if content.is_empty() {
-                            el.set_inner_html("<p></p>");
-                        } else {
-                            el.set_inner_html(&editor_utils::markdown_to_html(&content));
-                        }
-                        // Re-enable editing now that the new content is loaded
-                        el.set_attribute("contenteditable", "true").ok();
-                    }
+                if content.is_empty() {
+                    el.set_inner_html("<p></p>");
+                } else {
+                    el.set_inner_html(&editor_utils::markdown_to_html(&content));
                 }
+                // Re-enable editing now that the new content is loaded
+                el.set_attribute("contenteditable", "true").ok();
+
                 // Execute pending feedback scroll if any
                 if let Some(scroll_signal) = pending_scroll {
                     if let Some((selected_text, context_block)) = scroll_signal.get() {
@@ -2033,11 +2031,6 @@ fn do_switch_chapter_inner(
                     }
                 }
             });
-            window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                closure.as_ref().unchecked_ref(),
-                100,
-            ).ok();
-            closure.forget();
         }
     });
 }

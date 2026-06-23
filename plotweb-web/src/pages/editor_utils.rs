@@ -25,6 +25,46 @@ fn query_cmd_value(cmd: &str) -> String {
     query_command_value_js(cmd).unwrap_or_default()
 }
 
+/// Invoke `action` with the element matching `selector` as soon as it exists in
+/// the DOM, polling on animation frames rather than guessing a fixed timeout.
+///
+/// This replaces the old `setTimeout(…, 100ms)` hacks that blindly waited for
+/// rinch to (re)render a node before injecting content into it: too short and
+/// the injection silently no-ops (lost content / stuck "read-only" editor); too
+/// long and chapter switches feel laggy. Polling on rAF injects on the first
+/// frame the node is present — deterministic regardless of render timing.
+///
+/// Capped at ~1s of frames so a selector that never matches can't spin forever.
+/// Implemented as chained one-shot closures (each `forget()`-ed, matching the
+/// crate's existing pattern) rather than a single self-rescheduling closure,
+/// which would have to drop itself mid-call — undefined behavior in wasm.
+pub fn with_element_when_ready(
+    selector: String,
+    action: impl FnOnce(&web_sys::Element) + 'static,
+) {
+    fn attempt(selector: String, frames_left: u32, action: Box<dyn FnOnce(&web_sys::Element)>) {
+        if let Some(el) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.query_selector(&selector).ok().flatten())
+        {
+            action(&el);
+            return;
+        }
+        if frames_left == 0 {
+            return;
+        }
+        let closure = wasm_bindgen::closure::Closure::once(move || {
+            attempt(selector, frames_left - 1, action);
+        });
+        if let Some(w) = web_sys::window() {
+            w.request_animation_frame(closure.as_ref().unchecked_ref()).ok();
+        }
+        closure.forget();
+    }
+    // ~1s at 60fps; the target node normally exists within a frame or two.
+    attempt(selector, 60, Box::new(action));
+}
+
 /// Execute a browser execCommand on the document (for contenteditable formatting).
 pub fn exec_cmd(command: &str) {
     exec_command_js(command, false, "").ok();
@@ -709,7 +749,14 @@ pub fn html_to_markdown(html: &str) -> String {
             }
         } else if ch == '>' && in_tag {
             in_tag = false;
-            let tag = tag_name.split_whitespace().next().unwrap_or("").to_lowercase();
+            // trim_end_matches('/') so self-closing void tags like `<br/>` and
+            // `<hr/>` are recognized the same as `<br>` / `<hr>`.
+            let tag = tag_name
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('/')
+                .to_lowercase();
 
             if !is_closing {
                 // Check for text-align in tag attributes
@@ -745,6 +792,21 @@ pub fn html_to_markdown(html: &str) -> String {
                         let alt = extract_attr(&tag_name, "alt").unwrap_or_default();
                         md.push_str(&format!("![{}]({})\n", alt, src));
                     }
+                    // Inline formatting with no markdown equivalent — preserve the
+                    // tag verbatim so it round-trips (markdown_to_html passes raw
+                    // HTML through unchanged). Without this, the toolbar's
+                    // underline button and pasted links/highlights were silently
+                    // dropped on every save. `a` keeps its attributes (href).
+                    "a" => {
+                        md.push('<');
+                        md.push_str(tag_name.trim_end_matches('/'));
+                        md.push('>');
+                    }
+                    "u" | "mark" | "ins" | "sub" | "sup" => {
+                        md.push('<');
+                        md.push_str(&tag);
+                        md.push('>');
+                    }
                     _ => {}
                 }
             } else {
@@ -759,6 +821,12 @@ pub fn html_to_markdown(html: &str) -> String {
                     "ul" | "ol" => {
                         list_stack.pop();
                         md.push('\n');
+                    }
+                    // Closing counterparts of the preserved inline tags above.
+                    "a" | "u" | "mark" | "ins" | "sub" | "sup" => {
+                        md.push_str("</");
+                        md.push_str(&tag);
+                        md.push('>');
                     }
                     _ => {}
                 }

@@ -620,24 +620,16 @@ pub fn reader_page(token: String) -> NodeHandle {
                     &format!("/api/beta/{}/chapters/{}", tok, cid),
                 ).await {
                     current_chapter.set(Some(ch.clone()));
-                    // Render content after a tick
-                    let window = web_sys::window().unwrap();
-                    let closure = wasm_bindgen::closure::Closure::once(move || {
-                        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                            if let Ok(Some(el)) = doc.query_selector("#reader-content") {
-                                if ch.content.is_empty() {
-                                    el.set_inner_html("<p><em>This chapter is empty.</em></p>");
-                                } else {
-                                    el.set_inner_html(&editor_utils::markdown_to_html(&ch.content));
-                                }
-                            }
-                        }
+                    // Inject as soon as the reader node is present (deterministic),
+                    // rather than guessing with a fixed setTimeout.
+                    let content_html = if ch.content.is_empty() {
+                        "<p><em>This chapter is empty.</em></p>".to_string()
+                    } else {
+                        editor_utils::markdown_to_html(&ch.content)
+                    };
+                    editor_utils::with_element_when_ready("#reader-content".to_string(), move |el| {
+                        el.set_inner_html(&content_html);
                     });
-                    window.set_timeout_with_callback_and_timeout_and_arguments_0(
-                        closure.as_ref().unchecked_ref(),
-                        50,
-                    ).ok();
-                    closure.forget();
                 }
             });
         }
