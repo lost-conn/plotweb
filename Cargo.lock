@@ -1855,6 +1855,7 @@ dependencies = [
 [[package]]
 name = "rhypedb-embed"
 version = "0.1.0"
+source = "git+https://github.com/joeleaver/rhypedb?rev=680de58d2d72e2b775b20677025de8a629d9cac8#680de58d2d72e2b775b20677025de8a629d9cac8"
 dependencies = [
  "thiserror",
 ]
@@ -1862,6 +1863,7 @@ dependencies = [
 [[package]]
 name = "rhypedb-engine"
 version = "0.1.0"
+source = "git+https://github.com/joeleaver/rhypedb?rev=680de58d2d72e2b775b20677025de8a629d9cac8#680de58d2d72e2b775b20677025de8a629d9cac8"
 dependencies = [
  "arc-swap",
  "base64",
@@ -1881,6 +1883,7 @@ dependencies = [
 [[package]]
 name = "rhypedb-query"
 version = "0.1.0"
+source = "git+https://github.com/joeleaver/rhypedb?rev=680de58d2d72e2b775b20677025de8a629d9cac8#680de58d2d72e2b775b20677025de8a629d9cac8"
 dependencies = [
  "bytes",
  "rhypedb-engine",
@@ -1892,6 +1895,7 @@ dependencies = [
 [[package]]
 name = "rhypedb-schema"
 version = "0.1.0"
+source = "git+https://github.com/joeleaver/rhypedb?rev=680de58d2d72e2b775b20677025de8a629d9cac8#680de58d2d72e2b775b20677025de8a629d9cac8"
 dependencies = [
  "thiserror",
 ]
@@ -1899,6 +1903,7 @@ dependencies = [
 [[package]]
 name = "rhypedb-storage"
 version = "0.1.0"
+source = "git+https://github.com/joeleaver/rhypedb?rev=680de58d2d72e2b775b20677025de8a629d9cac8#680de58d2d72e2b775b20677025de8a629d9cac8"
 dependencies = [
  "ahash",
  "bytes",
@@ -1916,6 +1921,7 @@ dependencies = [
 [[package]]
 name = "rhypedb-subscribe"
 version = "0.1.0"
+source = "git+https://github.com/joeleaver/rhypedb?rev=680de58d2d72e2b775b20677025de8a629d9cac8#680de58d2d72e2b775b20677025de8a629d9cac8"
 dependencies = [
  "parking_lot",
  "serde",
@@ -1925,6 +1931,7 @@ dependencies = [
 [[package]]
 name = "rhypedb-vector"
 version = "0.1.0"
+source = "git+https://github.com/joeleaver/rhypedb?rev=680de58d2d72e2b775b20677025de8a629d9cac8#680de58d2d72e2b775b20677025de8a629d9cac8"
 dependencies = [
  "boxcar",
  "parking_lot",

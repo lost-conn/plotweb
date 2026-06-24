@@ -21,13 +21,24 @@ reqwest = { version = "0.12", features = ["json"] }
 plotweb-common = { path = "crates/plotweb-common" }
 plotweb-git = { path = "crates/plotweb-git" }
 plotweb-import = { path = "crates/plotweb-import" }
-# Embedded rhypedb engine (sibling repo, like rinch). Our schema has no vector
-# fields, so we build with default-features=false to drop the optional
+# Embedded rhypedb engine. Pulled as a GIT dep (not a sibling path dep) so the
+# jkbase buildpack — whose build VM can't see sibling path deps but CAN reach
+# github.com during the fetch phase — resolves it from the remote. Our schema has
+# no vector fields, so we build with default-features=false to drop the optional
 # fastembed/ONNX stack entirely (no ONNX Runtime, ~2.5GB-RSS build avoided). The
 # `fastembed`/`onnx-*` features are how a consumer opts back into embedding.
-rhypedb-engine = { path = "../../personal/rhypedb/crates/rhypedb-engine", default-features = false }
-rhypedb-query = { path = "../../personal/rhypedb/crates/rhypedb-query", default-features = false }
-rhypedb-schema = { path = "../../personal/rhypedb/crates/rhypedb-schema" }
+#
+# rev 680de58 is the tip of the `feat/optional-fastembed` branch, which makes the
+# fastembed/ONNX stack an opt-in feature — REQUIRED for our default-features=false
+# build. rhypedb master does NOT have this yet; repin to the squash-merge commit
+# on master once that work lands.
+#
+# Local co-dev of rhypedb: add an UNCOMMITTED [patch] to point these back at the
+# sibling checkout — see DEPLOY.md. It must NOT be committed (jkbase builds can't
+# see the sibling path).
+rhypedb-engine = { git = "https://github.com/joeleaver/rhypedb", rev = "680de58d2d72e2b775b20677025de8a629d9cac8", default-features = false }
+rhypedb-query = { git = "https://github.com/joeleaver/rhypedb", rev = "680de58d2d72e2b775b20677025de8a629d9cac8", default-features = false }
+rhypedb-schema = { git = "https://github.com/joeleaver/rhypedb", rev = "680de58d2d72e2b775b20677025de8a629d9cac8" }
 git2 = "0.20"
 thiserror = "2"
 chrono = "0.4"
