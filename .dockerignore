@@ -6,3 +6,7 @@ plotweb-web/dist/
 *.db-shm
 data/
 .git/
+# Local tooling / scratch — not build inputs (was ballooning the context to ~9.6GB)
+.claude/
+android/
+.playwright-mcp/
