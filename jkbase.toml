@@ -1,0 +1,58 @@
+# jkbase deployment manifest for PlotWeb.
+#
+# Buildpack flow (NOT the Dockerfile): the Rust buildpack builds the backend in
+# the platform build VM (`cargo fetch` over https reaches github for the rhypedb
+# git dep, then an offline `cargo build --release`). The WASM frontend is NOT
+# built by jkbase — `[hosting]` only COPIES a pre-built `plotweb-web/dist/`, so
+# run `trunk build --release` locally BEFORE `jkbase deploy`. See DEPLOY.md.
+#
+# Schema is jkbase-common::config::ProjectConfig (verified against source):
+#   [project].name, [hosting].public/spa, [servers.<n>] with
+#   source/port/command/[[volumes]]/[health_check], [routes."<prefix>"] =
+#   { service, name }, and top-level domains = [...]. There is NO env field in
+#   the manifest — non-secret env + secrets are both set via `jkbase secret set`.
+
+# Top-level keys MUST appear before any [table] header (TOML rule): a bare key
+# placed after a table header would be parsed as a member of that table.
+domains = ["pw.lostconnection.dev"]
+
+[project]
+name = "plotweb"
+
+# Static frontend: the pre-built WASM SPA. Served at the root with SPA fallback
+# to index.html (client-side routing). The upload tars the whole source tree
+# (excluding only node_modules/.git/target — .gitignore is NOT honoured), so the
+# gitignored dist/ is still shipped as long as it exists on disk at deploy time.
+[hosting]
+public = "plotweb-web/dist"
+spa = true
+
+# Backend API server (Rust buildpack). `source = "."` builds the workspace; the
+# only binary target is plotweb-server, shipped to /app/plotweb-server. The
+# runtime clears the environment, so the launch command uses an absolute path.
+[servers.api]
+source = "."
+port = 3000
+command = ["/app/plotweb-server"]
+
+# One persistent volume holds BOTH stores:
+#   DATA_DIR        = /data/books    (git-backed book repos)
+#   RHYPEDB_DATA_DIR = /data/rhypedb (embedded rhypedb metadata)
+#   DATABASE_URL    = sqlite:/data/plotweb.db (legacy SQLite, still opened/migrated)
+# These env vars are set via `jkbase secret set` (see DEPLOY.md) so both stores
+# live under the mounted volume and survive redeploys.
+[[servers.api.volumes]]
+name = "data"
+mount = "/data"
+
+[servers.api.health_check]
+path = "/health"
+interval = "10s"
+timeout = "5s"
+
+# Path-prefix routing: everything under /api/* (incl. the /api/.../ws WebSocket
+# upgrades) goes to the api server; all other paths fall through to the static
+# site. The agent matches by longest prefix and proxies upgrades to servers.
+[routes."/api/*"]
+service = "server"
+name = "api"
