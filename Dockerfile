@@ -35,33 +35,16 @@ RUN trunk build --release
 # ------ Stage 2: Build the Rust backend --------------------
 FROM rust:1.88-bookworm AS backend
 
-# rhypedb is a sibling repo (like rinch) referenced by path in the workspace
-# Cargo.toml. It doesn't exist in the Docker build context, so clone it at a
-# pinned commit and repoint the path deps below. Built with default-features
-# = false (no ONNX/fastembed) — see the workspace Cargo.toml.
-#
-# Pinned to the tip of the `feat/optional-fastembed` branch, which makes the
-# fastembed/ONNX stack an opt-in feature — REQUIRED for our default-features=false
-# build. rhypedb master does NOT have this yet; repin to the squash-merge commit
-# on master once that work lands.
-ARG RHYPEDB_REPO=https://github.com/joeleaver/rhypedb.git
-ARG RHYPEDB_COMMIT=680de58d2d72e2b775b20677025de8a629d9cac8
-
+# rhypedb is now a GIT dep in the workspace Cargo.toml (pinned by rev), so cargo
+# fetches it from github.com during this build — no clone/sed dance needed. git
+# is required for cargo to resolve the git dependency.
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
-
-# Clone rhypedb at the pinned commit
-RUN git clone "$RHYPEDB_REPO" /build/rhypedb \
-    && cd /build/rhypedb && git checkout "$RHYPEDB_COMMIT"
 
 COPY . /build/plotweb/
 COPY --from=frontend /build/plotweb/plotweb-web/dist/ /build/plotweb/plotweb-web/dist/
 
 WORKDIR /build/plotweb
-
-# Patch rhypedb paths for the Docker build context (preserves the trailing
-# crate path and `, default-features = false }`; only the path prefix changes).
-RUN sed -i 's|path = "../../personal/rhypedb/|path = "/build/rhypedb/|g' Cargo.toml
 
 RUN cargo build --release --package plotweb-server
 
