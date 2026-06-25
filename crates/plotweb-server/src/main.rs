@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{DefaultBodyLimit, Path, State, WebSocketUpgrade};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
@@ -263,6 +264,9 @@ async fn main() {
     let serve_dir = ServeDir::new(&dist_path).not_found_service(ServeFile::new(&index_path));
 
     let app = Router::new()
+        // Lightweight liveness probe for the jkbase health check (and any LB).
+        // No state, no session — just a 200.
+        .route("/health", get(health))
         .merge(api)
         .fallback_service(serve_dir)
         .layer(session_layer);
@@ -271,6 +275,11 @@ async fn main() {
     println!("PlotWeb server running on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+/// Liveness probe — returns 200 OK. Used by the jkbase health check.
+async fn health() -> StatusCode {
+    StatusCode::OK
 }
 
 /// WebSocket endpoint for author feedback (authenticated via session).
