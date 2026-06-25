@@ -1,0 +1,11 @@
+[package]
+name = "plotweb-export"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+html-escape = "0.2"
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
+docx-rs = "0.4.20"
+epub-builder = "0.8.3"

@@ -183,6 +183,11 @@ async fn main() {
             "/api/beta/{token}/images/{filename}",
             get(routes::images::serve_beta),
         )
+        // Export endpoint
+        .route(
+            "/api/books/{book_id}/export",
+            get(routes::export::export_book),
+        )
         // Import endpoints
         .route(
             "/api/books/{book_id}/import/preview",
