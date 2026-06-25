@@ -1,13 +1,13 @@
 # jkbase deployment manifest for PlotWeb.
 #
-# Buildpack flow (NOT the Dockerfile): the Rust buildpack builds the backend in
-# the platform build VM (`cargo fetch` over https reaches github for the rhypedb
-# git dep, then an offline `cargo build --release`). The WASM frontend is NOT
-# built by jkbase — `[hosting]` only COPIES a pre-built `plotweb-web/dist/`, so
-# run `trunk build --release` locally BEFORE `jkbase deploy`. See DEPLOY.md.
+# Buildpack flow (NOT the Dockerfile): the Rust buildpack builds the backend and
+# the trunk buildpack builds the WASM frontend, both server-side in the platform
+# build VM (`cargo fetch` over https reaches github for the rhypedb + rinch git
+# deps, then an offline build). No local pre-build, no committed dist/ — which is
+# also what makes `git push` push-to-deploy work. See DEPLOY.md.
 #
 # Schema is jkbase-common::config::ProjectConfig (verified against source):
-#   [project].name, [hosting].public/spa, [servers.<n>] with
+#   [project].name, [sites.<n>].source/context/build/spa, [servers.<n>] with
 #   source/port/command/[[volumes]]/[health_check], [routes."<prefix>"] =
 #   { service, name }, and top-level domains = [...]. There is NO env field in
 #   the manifest — non-secret env + secrets are both set via `jkbase secret set`.
@@ -19,12 +19,16 @@ domains = ["pw.lostconnection.dev"]
 [project]
 name = "plotweb"
 
-# Static frontend: the pre-built WASM SPA. Served at the root with SPA fallback
-# to index.html (client-side routing). The upload tars the whole source tree
-# (excluding only node_modules/.git/target — .gitignore is NOT honoured), so the
-# gitignored dist/ is still shipped as long as it exists on disk at deploy time.
-[hosting]
-public = "plotweb-web/dist"
+# Frontend: jkbase builds the WASM SPA server-side via the trunk buildpack
+# (`build = "trunk"`) — no local pre-build, no committed dist/. `source` is the
+# frontend crate (its Trunk.toml is the buildpack's detect signal); `context = "."`
+# mounts the whole repo into the build VM so the crate's in-repo sibling dep
+# (`plotweb-common = "../crates/plotweb-common"`) resolves. Served at the root
+# with SPA fallback to index.html (client-side routing).
+[sites.app]
+source = "plotweb-web"
+context = "."
+build = "trunk"
 spa = true
 
 # Backend API server (Rust buildpack). `source = "."` builds the workspace; the
