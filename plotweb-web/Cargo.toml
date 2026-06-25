@@ -7,9 +7,15 @@ publish = false
 [dependencies]
 plotweb-common = { path = "../crates/plotweb-common" }
 
-rinch = { path = "../../rinch/crates/rinch", default-features = false, features = ["components", "theme"] }
-rinch-core = { path = "../../rinch/crates/rinch-core", features = ["theme"] }
-rinch-tabler-icons = { path = "../../rinch/crates/rinch-tabler-icons" }
+# rinch as GIT deps (pinned) so the trunk buildpack's sealed build VM — which
+# can't see the sibling `../../rinch` path — fetches it from github in the fetch
+# phase. Repin as rinch's main advances (kept in sync with the Dockerfile's
+# RINCH_COMMIT). For local rinch co-dev, add an UNCOMMITTED [patch] (see DEPLOY.md).
+# plotweb-common stays a path dep — it's in-repo and resolves via jkbase.toml's
+# `context = "."` (the build VM mounts the whole repo).
+rinch = { git = "https://github.com/joeleaver/rinch", rev = "1f93dae079208b2cc1f32f0551231438dd4b6871", default-features = false, features = ["components", "theme"] }
+rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "1f93dae079208b2cc1f32f0551231438dd4b6871", features = ["theme"] }
+rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "1f93dae079208b2cc1f32f0551231438dd4b6871" }
 
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

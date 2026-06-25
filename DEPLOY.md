@@ -1,11 +1,20 @@
 # Deploying PlotWeb to jkbase (buildpack flow)
 
 PlotWeb deploys to [jkbase](https://github.com/joeleaver/jkbase) using the
-**buildpack** flow, not the Dockerfile. The Rust buildpack builds the backend on
-the platform; the WASM frontend is built locally and shipped as static files.
+**buildpack** flow, not the Dockerfile. **Both** the Rust backend and the WASM
+frontend are built **server-side** on the platform — the Rust buildpack for the
+backend, the trunk buildpack for the frontend. Nothing is pre-built locally and
+no `dist/` is committed.
 
 The committed `Dockerfile` is kept as a fallback only — `jkbase.toml` selects the
 buildpack (`builder` is left unset → `auto`).
+
+> **Platform requirement:** server-side frontend builds need jkbase.app to be
+> running a jkbase build that includes the trunk buildpack
+> (joeleaver/jkbase **#49**, **#50**) and the monorepo build-`context` feature
+> (**#52**). All are merged upstream; the platform must have rolled them. If it
+> hasn't yet, fall back to the pre-built `[hosting]` form (git history of this
+> file) until it does.
 
 ## How the pieces fit
 
@@ -13,13 +22,14 @@ buildpack (`builder` is left unset → `auto`).
   runs `cargo fetch` (network up, through an egress proxy that allows github.com
   and crates.io) then `cargo build --release --offline`. The single binary is
   shipped to `/app/plotweb-server`.
-- **Frontend** — jkbase **cannot** build WASM (it never runs `trunk`).
-  `[hosting]` only *copies* a pre-built `plotweb-web/dist/`. So you must run
-  `trunk build --release` locally before each deploy.
-- **rhypedb** — pulled as a **git dep** (pinned `rev`) in the root `Cargo.toml`,
-  because the build VM can't see sibling path deps but the fetch phase can reach
-  github. (rinch stays a path dep — it's frontend-only and resolves locally where
-  the frontend is built.)
+- **Frontend** — `[sites.app] build = "trunk"` runs the trunk buildpack
+  server-side (`trunk build --release` in `plotweb-web/`) and serves the produced
+  `dist/` as a static SPA. `context = "."` mounts the whole repo into the build VM
+  so the frontend crate's in-repo sibling dep (`plotweb-common`) resolves.
+- **External deps as git deps** — both **rhypedb** (root `Cargo.toml`) and
+  **rinch** (`plotweb-web/Cargo.toml`) are pinned **git deps**, because the sealed
+  build VM can't see sibling path deps but the fetch phase can reach github.
+  (`plotweb-common` stays a path dep — it's in-repo and resolves via `context`.)
 - **Routing** — `[routes."/api/*"]` sends `/api/*` (including the
   `/api/.../feedback/ws` WebSocket upgrades) to the `api` server; everything else
   falls through to the static SPA, with SPA fallback to `index.html`.
@@ -33,20 +43,22 @@ buildpack (`builder` is left unset → `auto`).
 
 ## Deploy workflow
 
-```bash
-# 1. Build the WASM frontend locally — MUST happen before deploy.
-cd plotweb-web && trunk build --release && cd ..
+Both builds happen server-side, so there's **no local pre-build**. Two options:
 
-# 2. Deploy from the repo root (where jkbase.toml lives).
+```bash
+# A. Tarball upload, from the repo root (where jkbase.toml lives).
 jkbase deploy
+
+# B. Push-to-deploy: one-time connect (mints a token + adds a `jkbase` remote),
+#    then every push to the trigger branch deploys.
+jkbase repo connect
+git push jkbase main
 ```
 
-> **`dist/` must be present on disk at deploy time.** It is `.gitignore`d, but
-> the jkbase CLI's source tarball excludes only `node_modules/`, `.git/`, and
-> `target/` — it does **not** honour `.gitignore`. So `plotweb-web/dist/` is
-> uploaded as long as the `trunk build` output exists. If you `git clean -dfx` or
-> deploy from a fresh checkout, re-run `trunk build --release` first or the static
-> site will be empty.
+Push-to-deploy works precisely *because* nothing is pre-built: `git push` ships
+only committed content, and there is no committed `dist/` to be omitted — jkbase
+builds the frontend from source. (`jkbase repo github` scaffolds a GitHub Actions
+workflow for the same thing.)
 
 ## Environment variables and secrets
 
@@ -62,7 +74,7 @@ jkbase secret set DATA_DIR=/data/books
 jkbase secret set RHYPEDB_DATA_DIR=/data/rhypedb
 jkbase secret set DATABASE_URL=sqlite:/data/plotweb.db
 
-# --- email (Resend) ---
+# --- email (Resend) — optional; email features are disabled if RESEND_API_KEY is unset ---
 jkbase secret set RESEND_API_KEY=<resend-api-key>
 jkbase secret set RESEND_FROM='PlotWeb <noreply@pw.lostconnection.dev>'
 jkbase secret set APP_URL=https://pw.lostconnection.dev
@@ -72,11 +84,11 @@ Notes:
 
 - **`DATA_DIR` / `RHYPEDB_DATA_DIR` / `DATABASE_URL`** are not secret, but jkbase
   only delivers env via the secret mechanism, so they go through `secret set` too.
-  All three point under `/data`, which is the mounted volume — so git book repos,
-  the rhypedb metadata store, and the SQLite db all persist across redeploys.
-- **`DIST_DIR`** is intentionally NOT set. In the buildpack flow the static SPA is
-  served by jkbase's own static server (`[hosting]`), not by the backend binary,
-  so the server's built-in `ServeDir` fallback is never hit by routed traffic.
+  All three point under `/data`, the mounted volume — so git book repos, the
+  rhypedb metadata store, and the SQLite db all persist across redeploys.
+- **`DIST_DIR`** is intentionally NOT set. The static SPA is served by jkbase's
+  static server (the built `[sites.app]`), not by the backend binary, so the
+  server's built-in `ServeDir` fallback is never hit by routed traffic.
 - **Rotating `RESEND_API_KEY`**: create a new key in the Resend dashboard, then
   `jkbase secret set RESEND_API_KEY=<new-key>` and redeploy (or restart) so the
   new value is injected. Revoke the old key afterwards. `jkbase secret list`
@@ -99,44 +111,56 @@ A single persistent volume named `data` is mounted at `/data`:
 serves `GET /health` → `200 OK` (no auth, no session). interval `10s`, timeout
 `5s`.
 
-## Co-developing rhypedb locally (UNCOMMITTED patch)
+## Co-developing rhypedb / rinch locally (UNCOMMITTED patch)
 
-Because rhypedb is now a git dep, a plain `cargo build` fetches it from github
-instead of your local checkout. To iterate on rhypedb and PlotWeb together, add a
-`[patch]` to the **root `Cargo.toml`** pointing back at the sibling checkout:
+Because rhypedb and rinch are now git deps, a plain `cargo build` / `trunk build`
+fetches them from github instead of your local checkouts. To iterate on them and
+PlotWeb together, add `[patch]` sections pointing back at the sibling checkouts —
+rhypedb in the **root `Cargo.toml`**, rinch in **`plotweb-web/Cargo.toml`**:
 
 ```toml
-# DO NOT COMMIT — local rhypedb co-dev only. The jkbase build VM cannot see
-# sibling path deps, so committing this would break the buildpack deploy.
+# DO NOT COMMIT — local co-dev only. The jkbase build VM cannot see sibling path
+# deps, so committing these would break the buildpack deploy.
+
+# root Cargo.toml:
 [patch."https://github.com/joeleaver/rhypedb"]
 rhypedb-engine = { path = "../../personal/rhypedb/crates/rhypedb-engine" }
 rhypedb-query  = { path = "../../personal/rhypedb/crates/rhypedb-query" }
 rhypedb-schema = { path = "../../personal/rhypedb/crates/rhypedb-schema" }
+
+# plotweb-web/Cargo.toml:
+[patch."https://github.com/joeleaver/rinch"]
+rinch              = { path = "../../rinch/crates/rinch" }
+rinch-core         = { path = "../../rinch/crates/rinch-core" }
+rinch-tabler-icons = { path = "../../rinch/crates/rinch-tabler-icons" }
 ```
 
-Keep this out of commits (e.g. `git update-index --skip-worktree Cargo.toml`
-while iterating, or just remember to drop it before committing). The `default-
-features` flags on the original git deps still apply; the patch only swaps the
+Keep these out of commits (e.g. `git update-index --skip-worktree <file>` while
+iterating, or just remember to drop them before committing). The original git
+deps' `default-features`/`features` flags still apply; the patch only swaps the
 source.
 
-## Follow-up: repin the rhypedb git dep
+## Follow-up: repin the git deps
 
-The git dep is pinned to `rev = 680de58…`, the tip of rhypedb's
-`feat/optional-fastembed` branch. That branch makes the fastembed/ONNX stack an
-opt-in feature, which our `default-features = false` build requires (rhypedb
-`master` does not have it yet). **Once that work merges to rhypedb `master`,
-repin all three `rhypedb-*` deps in the root `Cargo.toml` to the squash-merge
-commit on `master`** (and update the same note in `Cargo.toml` / `Dockerfile`).
+- **rhypedb** is pinned to `rev = 680de58…`, the tip of rhypedb's
+  `feat/optional-fastembed` branch (it makes the fastembed/ONNX stack opt-in,
+  which our `default-features = false` build requires; rhypedb `master` may not
+  have it yet). Once that merges to `master`, repin all three `rhypedb-*` deps in
+  the root `Cargo.toml` (and the matching note in `Cargo.toml` / `Dockerfile`).
+- **rinch** is pinned to `rev = 1f93dae…` in `plotweb-web/Cargo.toml`, kept in
+  sync with the `Dockerfile`'s `RINCH_COMMIT`. Repin both together as rinch's
+  `main` advances.
 
-## What this repo could NOT verify
+## Verification status
 
-A live `jkbase deploy` was **not** run — there is no jkbase host / KVM available
-in this environment. Verified locally instead:
+Verified locally:
 
 - `cargo build -p plotweb-server` — builds, fetching the rhypedb git dep from
   github; the dependency tree is ONNX/fastembed-free.
-- `trunk build --release` in `plotweb-web/` — produces `dist/` (incl.
-  `index.html` + the wasm bundle).
-- `jkbase.toml` parses and resolves correctly against
-  `jkbase-common::config::ProjectConfig` (all fields, routes, volume, health
-  check, and domains verified).
+- `trunk build --release` in `plotweb-web/` — builds against **rinch as a git
+  dep** and produces `dist/` (index.html + the wasm bundle).
+- `jkbase.toml` parses against `jkbase-common::config::ProjectConfig`.
+
+Not yet verified end-to-end: a live deploy exercising the **server-side trunk
+build + monorepo `context`** on jkbase.app — that depends on the platform running
+the trunk/context features (see the platform-requirement note up top).
