@@ -96,13 +96,22 @@ pub async fn create(
         );
     }
 
-    // Create git repo
+    // Create git repo. On failure, roll back the metadata row so we don't leave
+    // a phantom book that has no backing repo.
     if let Err(e) = state
         .books
         .create_book(&id, &req.title, &req.description, &now)
         .await
     {
         eprintln!("Failed to create book git repo: {}", e);
+        let _ = state
+            .rhype
+            .exec(format!("Book.filter(.uuid == {}).delete()", quote(&id)))
+            .await;
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to create book" })),
+        );
     }
 
     let book = Book {
@@ -168,7 +177,27 @@ pub async fn update(
         );
     }
 
-    // Update title in the metadata row if changed
+    // Reject blank titles (mirrors create).
+    if let Some(title) = &req.title {
+        if title.trim().is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "title is required" })),
+            );
+        }
+    }
+
+    // Update git repo first; bail with 500 if it fails so the metadata row
+    // doesn't drift ahead of the git content.
+    if let Err(e) = state.books.update_book(&id, &req).await {
+        eprintln!("Failed to update book in git: {}", e);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to update book" })),
+        );
+    }
+
+    // Only now apply the metadata title update.
     if let Some(title) = &req.title {
         let _ = state
             .rhype
@@ -178,11 +207,6 @@ pub async fn update(
                 Fields::new().str("title", title).render()
             ))
             .await;
-    }
-
-    // Update git repo
-    if let Err(e) = state.books.update_book(&id, &req).await {
-        eprintln!("Failed to update book in git: {}", e);
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))

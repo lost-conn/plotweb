@@ -1036,8 +1036,13 @@ where
 /// Walks all text nodes in `#editor-main`, finds a match for `selected_text`
 /// (disambiguating with `context_block` if there are multiple matches),
 /// creates a Selection over it, scrolls it into view, and applies a flash highlight.
+/// Char-safe truncation for log messages (byte-slicing panics on multibyte UTF-8).
+fn truncate_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect::<String>()
+}
+
 fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
-    log::info!("scroll_to_text_in_editor called, text='{}'", &selected_text[..selected_text.len().min(40)]);
+    log::info!("scroll_to_text_in_editor called, text='{}'", truncate_chars(selected_text, 40));
     if selected_text.is_empty() {
         return;
     }
@@ -1105,7 +1110,7 @@ fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
     }
 
     if matches.is_empty() {
-        log::warn!("scroll_to_text: '{}' not found in editor content ({} chars)", &selected_text[..selected_text.len().min(40)], full_text.len());
+        log::warn!("scroll_to_text: '{}' not found in editor content ({} chars)", truncate_chars(selected_text, 40), full_text.len());
         return;
     }
     log::info!("scroll_to_text: found {} match(es)", matches.len());
@@ -1854,7 +1859,7 @@ fn render_history_chapter_preview(
                                 if let Ok(full_ch) = api::get::<Chapter>(
                                     &format!("/api/books/{}/history/{}/chapters/{}", bid, commit, ch_id),
                                 ).await {
-                                    let html = super::editor_utils::markdown_to_html(&full_ch.content);
+                                    let html = super::editor_utils::sanitize_html(&super::editor_utils::markdown_to_html(&full_ch.content));
                                     preview_content.set(Some(full_ch));
                                     // Set inner HTML imperatively after a tick
                                     let closure = wasm_bindgen::closure::Closure::once(move || {
@@ -1997,6 +2002,11 @@ fn do_switch_chapter_inner(
         if let Ok(chapter) = api::get::<Chapter>(
             &format!("/api/books/{}/chapters/{}", bid, new_cid),
         ).await {
+            // Bail if a newer switch happened while this fetch was in flight, so a
+            // slow stale response can't overwrite the current title/word count.
+            if SWITCH_GEN.with(|g| g.get()) != switch_gen {
+                return;
+            }
             chapter_title.set(chapter.title.clone());
             editor_word_count.set(chapter.word_count);
             editor_loaded.set(true);
@@ -2012,7 +2022,7 @@ fn do_switch_chapter_inner(
                 if content.is_empty() {
                     el.set_inner_html("<p></p>");
                 } else {
-                    el.set_inner_html(&editor_utils::markdown_to_html(&content));
+                    el.set_inner_html(&editor_utils::sanitize_html(&editor_utils::markdown_to_html(&content)));
                 }
                 // Re-enable editing now that the new content is loaded
                 el.set_attribute("contenteditable", "true").ok();
@@ -2733,6 +2743,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // Paste handler — intercept image paste in contenteditable areas
         let bid_paste = bid.clone();
         let paste_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
+            // Bail if this page instance is stale (user navigated away and back),
+            // otherwise leaked handlers from old page instances stack up.
+            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
             let in_editor = event
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
@@ -2764,6 +2777,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // Drop handler — intercept image drop in contenteditable areas
         let bid_drop = bid;
         let drop_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::DragEvent| {
+            // Bail if this page instance is stale (user navigated away and back),
+            // otherwise leaked handlers from old page instances stack up.
+            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
             let in_editor = event
                 .target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
@@ -3562,8 +3578,47 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }
     };
 
+    // Synchronously flush a pending (debounced) chapter autosave before leaving
+    // the editor pane. Without this, navigating away via the back-arrow or any
+    // sidebar button discards edits made in the last ~3s, because the pending
+    // debounce timer later sees active_pane != Editor and skips the save.
+    let flush_editor_if_active = move || {
+        if let BookPane::Editor(ref current_id) = active_pane.get() {
+            let current_id = current_id.clone();
+            // Clear the pending debounce timer so it doesn't fire a redundant/stale save.
+            let prev = auto_save_timer_id.get();
+            if prev != 0 {
+                if let Some(w) = web_sys::window() {
+                    w.clear_timeout_with_handle(prev);
+                }
+                auto_save_timer_id.set(0);
+            }
+            let bid = bid_signal.get();
+            let content = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.query_selector("#editor-main").ok().flatten())
+                .map(|el| el.inner_html());
+            if let Some(content) = content {
+                let markdown = editor_utils::html_to_markdown(&content);
+                save_status.set("saving");
+                wasm_bindgen_futures::spawn_local(async move {
+                    let req = UpdateChapterRequest { title: None, content: Some(markdown) };
+                    if api::put::<_, serde_json::Value>(
+                        &format!("/api/books/{}/chapters/{}", bid, current_id),
+                        &req,
+                    ).await.is_ok() {
+                        save_status.set("saved");
+                    } else {
+                        save_status.set("error");
+                    }
+                });
+            }
+        }
+    };
+
     // ── Sidebar click handlers ──────────────────────────────────
     let _open_chapters_pane = move || {
+        flush_editor_if_active();
         active_pane.set(BookPane::Chapters);
         store.sidebar_open.set(false);
     };
@@ -3571,6 +3626,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let open_typography_pane = {
         let setup = setup_font_pickers.clone();
         move || {
+            flush_editor_if_active();
             active_pane.set(BookPane::Typography);
             listeners_attached.set(false);
             setup();
@@ -3579,11 +3635,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let open_beta_pane = move || {
+        flush_editor_if_active();
         active_pane.set(BookPane::BetaReaders);
         store.sidebar_open.set(false);
     };
 
     let open_history_pane = move || {
+        flush_editor_if_active();
         active_pane.set(BookPane::History);
         store.sidebar_open.set(false);
         let bid = bid_signal.get();
@@ -3597,6 +3655,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let open_notes_pane = move || {
+        flush_editor_if_active();
         active_pane.set(BookPane::Notes);
         store.sidebar_open.set(false);
         // Fetch notes
@@ -3705,6 +3764,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let go_back_to_chapters = move || {
+        flush_editor_if_active();
         active_pane.set(BookPane::Chapters);
     };
 
@@ -3901,11 +3961,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 variant: "subtle",
                                 size: "sm",
                                 onclick: toggle_dark,
-                                {render_tabler_icon(
-                                    __scope,
-                                    if store.dark_mode.get() { TablerIcon::Sun } else { TablerIcon::Moon },
-                                    TablerIconStyle::Outline,
-                                )}
+                                // Reactive icon: an rsx `if` block re-renders the child
+                                // node when dark_mode toggles. A bare `{expr}` block is
+                                // captured once; a `{|| ...}` child closure is treated as
+                                // reactive text by rinch, not a node.
+                                if store.dark_mode.get() {
+                                    {render_tabler_icon(__scope, TablerIcon::Sun, TablerIconStyle::Outline)}
+                                } else {
+                                    {render_tabler_icon(__scope, TablerIcon::Moon, TablerIconStyle::Outline)}
+                                }
                             }
                             ActionIcon {
                                 variant: "subtle",

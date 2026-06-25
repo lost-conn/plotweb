@@ -53,7 +53,7 @@ async fn parse_response<T: DeserializeOwned>(resp: Response) -> Result<T, ApiErr
     }
 
     serde_json::from_str(&text).map_err(|e| ApiError {
-        message: format!("JSON parse error: {} (body: {})", e, &text[..text.len().min(200)]),
+        message: format!("JSON parse error: {} (body: {})", e, text.get(..200).unwrap_or(&text)),
     })
 }
 

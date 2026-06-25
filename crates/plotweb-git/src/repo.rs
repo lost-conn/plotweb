@@ -18,7 +18,7 @@ pub fn init_repo(path: &Path) -> Result<Repository> {
     std::fs::write(path.join(".gitignore"), "*.tmp\n")?;
 
     // Create initial empty commit on the (unborn) main branch
-    let sig = default_signature();
+    let sig = default_signature()?;
     let tree_id = repo.index()?.write_tree()?;
     {
         let tree = repo.find_tree(tree_id)?;
@@ -38,7 +38,7 @@ pub fn commit_all(repo: &Repository, message: &str) -> Result<()> {
 
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
-    let sig = default_signature();
+    let sig = default_signature()?;
 
     // Handle both unborn HEAD (first real commit) and normal case.
     match repo.head() {
@@ -54,8 +54,8 @@ pub fn commit_all(repo: &Repository, message: &str) -> Result<()> {
     Ok(())
 }
 
-fn default_signature() -> Signature<'static> {
-    Signature::now("PlotWeb", "plotweb@local").unwrap()
+fn default_signature() -> std::result::Result<Signature<'static>, git2::Error> {
+    Signature::now("PlotWeb", "plotweb@local")
 }
 
 /// Stage exactly `rel_paths` (repo-relative) and commit `message`.
@@ -76,7 +76,7 @@ pub fn commit_paths(repo: &Repository, rel_paths: &[String], message: &str) -> R
     index.write()?;
     let tree_id = index.write_tree()?;
     let tree = repo.find_tree(tree_id)?;
-    let sig = default_signature();
+    let sig = default_signature()?;
 
     match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
         Some(head_commit) => {

@@ -54,6 +54,14 @@ fn count_words(content: &str) -> u64 {
     text.split_whitespace().count() as u64
 }
 
+/// Validate that an id is a well-formed UUID. All ids in this app are
+/// `Uuid::new_v4().to_string()`, so anything else (notably path-traversal
+/// sequences like `../../etc/passwd`) must be rejected at the storage boundary
+/// before it reaches a filesystem path.
+fn valid_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok()
+}
+
 fn chapter_json_path(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> PathBuf {
     book::chapters_dir(base_dir, book_id).join(format!("{}.json", chapter_id))
 }
@@ -128,6 +136,9 @@ pub fn list_chapters(base_dir: &PathBuf, book_id: &str) -> Result<Vec<ChapterDat
 }
 
 pub fn get_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Result<ChapterData> {
+    if !valid_id(chapter_id) {
+        return Err(GitStoreError::ChapterNotFound(chapter_id.to_string()));
+    }
     let book_path = book::book_json_path(base_dir, book_id);
     if !book_path.exists() {
         return Err(GitStoreError::BookNotFound(book_id.to_string()));
@@ -216,6 +227,9 @@ pub fn update_chapter(
     title: Option<&str>,
     content: Option<&str>,
 ) -> Result<()> {
+    if !valid_id(chapter_id) {
+        return Err(GitStoreError::ChapterNotFound(chapter_id.to_string()));
+    }
     let json_path = chapter_json_path(base_dir, book_id, chapter_id);
     if !json_path.exists() {
         return Err(GitStoreError::ChapterNotFound(chapter_id.to_string()));
@@ -249,6 +263,19 @@ pub fn update_chapter(
 }
 
 pub fn delete_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Result<()> {
+    if !valid_id(chapter_id) {
+        return Err(GitStoreError::ChapterNotFound(chapter_id.to_string()));
+    }
+
+    // Update book.json FIRST so it never references files that are already
+    // deleted (if a crash happens mid-delete).
+    let book_path = book::book_json_path(base_dir, book_id);
+    if book_path.exists() {
+        let mut book_json: BookJson = repo::read_json(&book_path)?;
+        book_json.chapter_order.retain(|id| id != chapter_id);
+        repo::write_json(&book_path, &book_json)?;
+    }
+
     let json_path = chapter_json_path(base_dir, book_id, chapter_id);
     if json_path.exists() {
         std::fs::remove_file(&json_path)?;
@@ -256,14 +283,6 @@ pub fn delete_chapter(base_dir: &PathBuf, book_id: &str, chapter_id: &str) -> Re
     let md_path = chapter_md_path(base_dir, book_id, chapter_id);
     if md_path.exists() {
         std::fs::remove_file(&md_path)?;
-    }
-
-    // Remove from chapter_order
-    let book_path = book::book_json_path(base_dir, book_id);
-    if book_path.exists() {
-        let mut book_json: BookJson = repo::read_json(&book_path)?;
-        book_json.chapter_order.retain(|id| id != chapter_id);
-        repo::write_json(&book_path, &book_json)?;
     }
 
     let ms_dir = book::manuscript_dir(base_dir, book_id);
@@ -350,6 +369,9 @@ pub fn get_chapter_at_commit(
     chapter_id: &str,
     commit_hex: &str,
 ) -> Result<ChapterData> {
+    if !valid_id(chapter_id) {
+        return Err(GitStoreError::ChapterNotFound(chapter_id.to_string()));
+    }
     let ms_dir = book::manuscript_dir(base_dir, book_id);
     let git_repo = git2::Repository::open(&ms_dir)?;
     let oid = git2::Oid::from_str(commit_hex)?;

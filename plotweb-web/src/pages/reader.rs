@@ -446,8 +446,9 @@ where
     let fb_created = fb.created_at.clone();
     let quote_style = if fb.selected_text.is_empty() { "display:none" } else { "" };
     let quote_text = if !fb.selected_text.is_empty() {
-        let t = if fb.selected_text.len() > 100 {
-            format!("{}...", &fb.selected_text[..100])
+        let t = if fb.selected_text.chars().count() > 100 {
+            let truncated: String = fb.selected_text.chars().take(100).collect();
+            format!("{}...", truncated)
         } else {
             fb.selected_text.clone()
         };
@@ -619,6 +620,11 @@ pub fn reader_page(token: String) -> NodeHandle {
                 if let Ok(ch) = api::get::<Chapter>(
                     &format!("/api/beta/{}/chapters/{}", tok, cid),
                 ).await {
+                    // Guard: a newer chapter may have been selected while this
+                    // request was in flight. Don't inject stale content.
+                    if active_chapter_id.get().as_deref() != Some(cid.as_str()) {
+                        return;
+                    }
                     current_chapter.set(Some(ch.clone()));
                     // Inject as soon as the reader node is present (deterministic),
                     // rather than guessing with a fixed setTimeout.
@@ -627,8 +633,12 @@ pub fn reader_page(token: String) -> NodeHandle {
                     } else {
                         editor_utils::markdown_to_html(&ch.content)
                     };
+                    let guard_cid = cid.clone();
                     editor_utils::with_element_when_ready("#reader-content".to_string(), move |el| {
-                        el.set_inner_html(&content_html);
+                        if active_chapter_id.get().as_deref() != Some(guard_cid.as_str()) {
+                            return;
+                        }
+                        el.set_inner_html(&editor_utils::sanitize_html(&content_html));
                     });
                 }
             });

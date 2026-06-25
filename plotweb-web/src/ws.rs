@@ -1,7 +1,21 @@
 use plotweb_common::{BetaFeedback, BetaFeedbackReply};
 use serde::{Deserialize, Serialize};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+
+/// Holds the live WebSocket plus its event closures so they stay alive without
+/// `.forget()` (which leaked a fresh set of closures on every reconnect). When a
+/// new connection is established, the previous `WsConn` is dropped, releasing the
+/// old closures and socket.
+struct WsConn {
+    _ws: web_sys::WebSocket,
+    _on_msg: Closure<dyn FnMut(web_sys::MessageEvent)>,
+    _on_open: Closure<dyn FnMut(web_sys::Event)>,
+    _on_close: Closure<dyn FnMut(web_sys::CloseEvent)>,
+    _on_err: Closure<dyn FnMut(web_sys::Event)>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -27,14 +41,21 @@ pub fn connect_feedback_ws(
     on_message: impl Fn(WsMessage) + 'static,
 ) {
     let url = url.to_string();
-    let on_message = std::rc::Rc::new(on_message);
-    do_connect(url, on_message, 1000);
+    let on_message = Rc::new(on_message);
+    // Shared current-backoff cell: reset to the initial delay on every successful
+    // open, and grown (exponential, capped) on each close.
+    let backoff = Rc::new(Cell::new(1000));
+    // Slot that owns the current connection's closures. Replacing its contents on
+    // reconnect drops the previous closure set instead of leaking it via forget().
+    let slot: Rc<RefCell<Option<WsConn>>> = Rc::new(RefCell::new(None));
+    do_connect(url, on_message, backoff, slot);
 }
 
 fn do_connect(
     url: String,
-    on_message: std::rc::Rc<dyn Fn(WsMessage)>,
-    backoff_ms: i32,
+    on_message: Rc<dyn Fn(WsMessage)>,
+    backoff: Rc<Cell<i32>>,
+    slot: Rc<RefCell<Option<WsConn>>>,
 ) {
     let ws = match web_sys::WebSocket::new(&url) {
         Ok(ws) => ws,
@@ -55,44 +76,59 @@ fn do_connect(
         }
     }) as Box<dyn FnMut(_)>);
     ws.set_onmessage(Some(on_msg.as_ref().unchecked_ref()));
-    on_msg.forget();
 
-    // onopen — reset backoff
+    // onopen — reset backoff to the initial delay so a brief blip doesn't leave
+    // us stuck at the maximum reconnect interval.
+    let backoff_for_open = backoff.clone();
     let on_open = Closure::wrap(Box::new(move |_: web_sys::Event| {
         log::info!("WebSocket connected");
+        backoff_for_open.set(1000);
     }) as Box<dyn FnMut(_)>);
     ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
-    on_open.forget();
 
-    // onclose — reconnect with backoff
+    // onclose — reconnect with exponential backoff
     let url_for_close = url.clone();
     let on_message_for_close = on_message.clone();
+    let backoff_for_close = backoff.clone();
+    let slot_for_close = slot.clone();
     let on_close = Closure::wrap(Box::new(move |_: web_sys::CloseEvent| {
-        let next_backoff = (backoff_ms * 2).min(30_000);
+        // Current delay drives this reconnect; the next one doubles (capped).
+        let cur = backoff_for_close.get();
+        backoff_for_close.set((cur * 2).min(30_000));
+        log::info!("WebSocket closed, reconnecting in {}ms", cur);
         let url2 = url_for_close.clone();
         let cb2 = on_message_for_close.clone();
-        log::info!("WebSocket closed, reconnecting in {}ms", backoff_ms);
+        let backoff2 = backoff_for_close.clone();
+        let slot2 = slot_for_close.clone();
         let closure = Closure::once(move || {
-            do_connect(url2, cb2, next_backoff);
+            do_connect(url2, cb2, backoff2, slot2);
         });
         web_sys::window()
             .unwrap()
             .set_timeout_with_callback_and_timeout_and_arguments_0(
                 closure.as_ref().unchecked_ref(),
-                backoff_ms,
+                cur,
             )
             .ok();
         closure.forget();
     }) as Box<dyn FnMut(_)>);
     ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
-    on_close.forget();
 
     // onerror
     let on_err = Closure::wrap(Box::new(move |_: web_sys::Event| {
         log::warn!("WebSocket error");
     }) as Box<dyn FnMut(_)>);
     ws.set_onerror(Some(on_err.as_ref().unchecked_ref()));
-    on_err.forget();
+
+    // Take ownership of this connection's closures, dropping the previous set
+    // (and its socket) instead of leaking them via forget().
+    *slot.borrow_mut() = Some(WsConn {
+        _ws: ws,
+        _on_msg: on_msg,
+        _on_open: on_open,
+        _on_close: on_close,
+        _on_err: on_err,
+    });
 }
 
 /// Build the WebSocket URL from the current page location.

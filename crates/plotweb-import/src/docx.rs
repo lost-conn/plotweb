@@ -38,9 +38,11 @@ pub fn split_chapters(data: &[u8]) -> Result<Vec<DetectedChapter>, ImportError> 
     let mut chapters: Vec<DetectedChapter> = Vec::new();
     let mut current_title: Option<String> = None;
     let mut current_lines: Vec<String> = Vec::new();
+    let mut saw_heading = false;
 
     for para in &paragraphs {
         if para.is_heading {
+            saw_heading = true;
             // Flush previous chapter
             if current_title.is_some() || !current_lines.is_empty() {
                 let title = current_title.take().unwrap_or_else(|| "Preamble".to_string());
@@ -65,8 +67,11 @@ pub fn split_chapters(data: &[u8]) -> Result<Vec<DetectedChapter>, ImportError> 
         chapters.push(DetectedChapter { title, content });
     }
 
-    // If no headings were found, try the text-based heuristics (same as markdown)
-    if chapters.len() <= 1 {
+    // If the structured pass found NO heading at all, fall back to the
+    // text-based heuristics (same as markdown). When even a single valid
+    // heading-based chapter was found, keep it — re-running the heuristic would
+    // discard the alignment markers and inline formatting already built.
+    if !saw_heading && chapters.len() <= 1 {
         let full_text: String = paragraphs
             .iter()
             .map(|p| p.text.as_str())
@@ -261,9 +266,23 @@ fn parse_document_xml(xml: &[u8], style_map: &StyleMap) -> Result<Vec<Paragraph>
                         }
                     }
                     b"br" if in_run => {
+                        // Word emits text+break+text within a single run. Flush
+                        // the buffered run text (with formatting applied) BEFORE
+                        // the break so content keeps its original order, and so
+                        // wrap_formatting never wraps across the break.
+                        if !run_text.is_empty() {
+                            let formatted = wrap_formatting(&run_text, run_bold, run_italic);
+                            para_text.push_str(&formatted);
+                            run_text.clear();
+                        }
                         para_text.push('\n');
                     }
                     b"tab" if in_run => {
+                        if !run_text.is_empty() {
+                            let formatted = wrap_formatting(&run_text, run_bold, run_italic);
+                            para_text.push_str(&formatted);
+                            run_text.clear();
+                        }
                         para_text.push('\t');
                     }
                     _ => {}

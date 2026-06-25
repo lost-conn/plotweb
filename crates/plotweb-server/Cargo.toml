@@ -26,3 +26,7 @@ rhypedb-schema.workspace = true
 anyhow.workspace = true
 axum-extra = { version = "0.10", features = ["multipart"] }
 chrono = "0.4"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

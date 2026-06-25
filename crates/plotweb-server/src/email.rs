@@ -17,7 +17,11 @@ impl EmailService {
             return None;
         }
         Some(Arc::new(Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             api_key,
             from: std::env::var("RESEND_FROM")
                 .unwrap_or_else(|_| "PlotWeb <notifications@plotweb.app>".into()),
