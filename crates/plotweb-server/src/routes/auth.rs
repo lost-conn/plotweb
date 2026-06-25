@@ -7,9 +7,18 @@ use serde_json::json;
 use tower_sessions::{Expiry, Session};
 use uuid::Uuid;
 
+use std::sync::LazyLock;
+
 use crate::auth::{self, AuthSession};
 use crate::rhype::{quote, Fields};
 use crate::AppState;
+
+/// A valid argon2 PHC hash of a fixed throwaway password, computed once. Used to
+/// run an equivalent verify in the user-not-found branch of login so response
+/// timing doesn't reveal whether a username exists.
+static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| {
+    auth::hash_password("dummy-password-for-timing").unwrap_or_default()
+});
 
 pub async fn register(
     State(state): State<AppState>,
@@ -106,10 +115,15 @@ pub async fn login(
             };
             (StatusCode::OK, Json(serde_json::to_value(user).unwrap()))
         }
-        _ => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "invalid credentials" })),
-        ),
+        _ => {
+            // Run argon2 against a dummy hash so a missing user takes the same
+            // time as a wrong password (no timing oracle on username existence).
+            let _ = auth::verify_password(&req.password, &DUMMY_HASH);
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "invalid credentials" })),
+            )
+        }
     }
 }
 

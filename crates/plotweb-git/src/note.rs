@@ -57,6 +57,13 @@ fn notes_tree_path(base_dir: &PathBuf, book_id: &str) -> PathBuf {
     notes_repo_dir(base_dir, book_id).join("notes.json")
 }
 
+/// Validate that an id is a well-formed UUID. All note ids in this app are
+/// `Uuid::new_v4().to_string()`, so anything else (notably path-traversal
+/// sequences) must be rejected before it reaches a filesystem path.
+fn valid_id(id: &str) -> bool {
+    uuid::Uuid::parse_str(id).is_ok()
+}
+
 fn note_path(base_dir: &PathBuf, book_id: &str, note_id: &str) -> PathBuf {
     notes_repo_dir(base_dir, book_id).join(format!("{}.json", note_id))
 }
@@ -135,6 +142,9 @@ pub fn list_notes(base_dir: &PathBuf, book_id: &str) -> Result<(Vec<NoteData>, N
 }
 
 pub fn get_note(base_dir: &PathBuf, book_id: &str, note_id: &str) -> Result<NoteData> {
+    if !valid_id(note_id) {
+        return Err(GitStoreError::NoteNotFound(note_id.to_string()));
+    }
     let path = note_path(base_dir, book_id, note_id);
     if !path.exists() {
         return Err(GitStoreError::NoteNotFound(note_id.to_string()));
@@ -219,6 +229,9 @@ pub fn update_note(
     content: Option<&str>,
     color: Option<Option<&str>>,
 ) -> Result<()> {
+    if !valid_id(note_id) {
+        return Err(GitStoreError::NoteNotFound(note_id.to_string()));
+    }
     let path = note_path(base_dir, book_id, note_id);
     if !path.exists() {
         return Err(GitStoreError::NoteNotFound(note_id.to_string()));
@@ -249,6 +262,9 @@ pub fn update_note(
 }
 
 pub fn delete_note(base_dir: &PathBuf, book_id: &str, note_id: &str) -> Result<()> {
+    if !valid_id(note_id) {
+        return Err(GitStoreError::NoteNotFound(note_id.to_string()));
+    }
     let mut tree = read_tree(base_dir, book_id);
 
     // Collect all descendants to delete
@@ -295,6 +311,9 @@ pub fn move_note(
     new_parent_id: Option<&str>,
     index: usize,
 ) -> Result<()> {
+    if !valid_id(note_id) {
+        return Err(GitStoreError::NoteNotFound(note_id.to_string()));
+    }
     let mut tree = read_tree(base_dir, book_id);
 
     // Validate: cannot move into own subtree
@@ -308,8 +327,36 @@ pub fn move_note(
         }
     }
 
+    // Detect whether this is a reorder within the SAME list the note already
+    // lives in, and where it currently sits. remove_from_tree shifts indices,
+    // so a downward move within the same list would otherwise land one slot too
+    // late (off-by-one).
+    let same_list = match new_parent_id {
+        Some(pid) => tree
+            .children
+            .get(pid)
+            .map_or(false, |c| c.contains(&note_id.to_string())),
+        None => tree.root_order.contains(&note_id.to_string()),
+    };
+    let old_pos = match new_parent_id {
+        Some(pid) => tree
+            .children
+            .get(pid)
+            .and_then(|c| c.iter().position(|id| id == note_id)),
+        None => tree.root_order.iter().position(|id| id == note_id),
+    };
+
     // Remove from old position
     remove_from_tree(&mut tree, note_id);
+
+    let mut index = index;
+    if same_list {
+        if let Some(op) = old_pos {
+            if op < index {
+                index -= 1;
+            }
+        }
+    }
 
     // Insert at new position
     match new_parent_id {

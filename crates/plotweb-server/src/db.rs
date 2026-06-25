@@ -4,8 +4,13 @@ use std::str::FromStr;
 
 pub async fn init_db() -> SqlitePool {
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:plotweb.db".into());
+    init_db_with(&db_url).await
+}
 
-    let options = SqliteConnectOptions::from_str(&db_url)
+/// Like [`init_db`] but with an explicit connection URL. Used by integration
+/// tests pointing at a tempdir SQLite file.
+pub async fn init_db_with(db_url: &str) -> SqlitePool {
+    let options = SqliteConnectOptions::from_str(db_url)
         .expect("invalid DATABASE_URL")
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)

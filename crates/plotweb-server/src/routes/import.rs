@@ -79,8 +79,9 @@ pub async fn preview(
         .iter()
         .map(|ch| {
             let word_count = ch.content.split_whitespace().count();
-            let preview = if ch.content.len() > 200 {
-                format!("{}...", &ch.content[..200])
+            let preview = if ch.content.chars().count() > 200 {
+                let truncated: String = ch.content.chars().take(200).collect();
+                format!("{truncated}...")
             } else {
                 ch.content.clone()
             };

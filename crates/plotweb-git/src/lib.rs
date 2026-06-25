@@ -90,7 +90,7 @@ impl BookStore {
         let book_id = book_id.to_string();
         tokio::task::spawn_blocking(move || book::get_book(&base, &book_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn update_book(&self, book_id: &str, update: &UpdateBookRequest) -> Result<()> {
@@ -119,11 +119,21 @@ impl BookStore {
     pub async fn delete_book(&self, book_id: &str) -> Result<()> {
         let lock = self.manuscript_lock(book_id);
         let _guard = lock.lock().await;
+        let original_book_id = book_id.to_string();
         let base = self.base_dir.clone();
         let book_id = book_id.to_string();
-        tokio::task::spawn_blocking(move || book::delete_book(&base, &book_id))
+        let result = tokio::task::spawn_blocking(move || book::delete_book(&base, &book_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())));
+
+        // On success, drop the per-book lock map entries so they don't leak.
+        if result.is_ok() {
+            if let Ok(mut locks) = self.locks.lock() {
+                locks.remove(&format!("m:{}", original_book_id));
+                locks.remove(&format!("n:{}", original_book_id));
+            }
+        }
+        result
     }
 
     // ── Chapters ──
@@ -133,7 +143,7 @@ impl BookStore {
         let book_id = book_id.to_string();
         tokio::task::spawn_blocking(move || chapter::list_chapters(&base, &book_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn get_chapter(&self, book_id: &str, chapter_id: &str) -> Result<ChapterData> {
@@ -142,7 +152,7 @@ impl BookStore {
         let chapter_id = chapter_id.to_string();
         tokio::task::spawn_blocking(move || chapter::get_chapter(&base, &book_id, &chapter_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn create_chapter(
@@ -194,7 +204,7 @@ impl BookStore {
         let chapter_id = chapter_id.to_string();
         tokio::task::spawn_blocking(move || chapter::delete_chapter(&base, &book_id, &chapter_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     // ── Historical reads (no lock needed) ──
@@ -205,7 +215,7 @@ impl BookStore {
         let commit_hex = commit_hex.to_string();
         tokio::task::spawn_blocking(move || book::get_book_at_commit(&base, &book_id, &commit_hex))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn get_head_oid(&self, book_id: &str) -> Result<String> {
@@ -213,7 +223,7 @@ impl BookStore {
         let book_id = book_id.to_string();
         tokio::task::spawn_blocking(move || book::get_head_oid(&base, &book_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn get_chapter_at_commit(
@@ -380,7 +390,7 @@ impl BookStore {
         let ids = chapter_ids.to_vec();
         tokio::task::spawn_blocking(move || chapter::reorder_chapters(&base, &book_id, &ids))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     // ── Notes ──
@@ -393,7 +403,7 @@ impl BookStore {
         let book_id = book_id.to_string();
         tokio::task::spawn_blocking(move || note::list_notes(&base, &book_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn get_note(&self, book_id: &str, note_id: &str) -> Result<note::NoteData> {
@@ -402,7 +412,7 @@ impl BookStore {
         let note_id = note_id.to_string();
         tokio::task::spawn_blocking(move || note::get_note(&base, &book_id, &note_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn create_note(
@@ -476,7 +486,7 @@ impl BookStore {
         let note_id = note_id.to_string();
         tokio::task::spawn_blocking(move || note::delete_note(&base, &book_id, &note_id))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 
     pub async fn move_note(
@@ -512,6 +522,6 @@ impl BookStore {
         let tree = tree.clone();
         tokio::task::spawn_blocking(move || note::update_note_tree(&base, &book_id, &tree))
             .await
-            .unwrap()
+            .unwrap_or_else(|e| Err(error::GitStoreError::Task(e.to_string())))
     }
 }

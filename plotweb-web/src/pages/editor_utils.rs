@@ -342,7 +342,6 @@ pub fn editor_toolbar(book_id: String) -> NodeHandle {
             refresh();
         }) as Box<dyn FnMut(_)>);
         doc.add_event_listener_with_callback("selectionchange", listener.as_ref().unchecked_ref()).ok();
-        listener.forget();
 
         // Override Ctrl+B/I/U so they work in Firefox (which otherwise
         // opens bookmarks / page-info / view-source).
@@ -380,7 +379,29 @@ pub fn editor_toolbar(book_id: String) -> NodeHandle {
             deferred.forget();
         }) as Box<dyn FnMut(_)>);
         doc.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
-        keydown.forget();
+
+        // Previously both closures were .forget()'d, leaking a pair of document
+        // listeners every time the toolbar mounted (chapter + note editors, and
+        // per navigation). Instead, keep them alive and tear them down when this
+        // component's scope is disposed, so they don't stack.
+        let cleanup_doc = doc.clone();
+        __scope.on_cleanup(move || {
+            cleanup_doc
+                .remove_event_listener_with_callback(
+                    "selectionchange",
+                    listener.as_ref().unchecked_ref(),
+                )
+                .ok();
+            cleanup_doc
+                .remove_event_listener_with_callback(
+                    "keydown",
+                    keydown.as_ref().unchecked_ref(),
+                )
+                .ok();
+            // Closures dropped here, after the listeners are detached.
+            drop(listener);
+            drop(keydown);
+        });
     }
 
     rsx! {
@@ -626,6 +647,102 @@ pub fn markdown_to_html(md: &str) -> String {
     }
 
     html
+}
+
+/// Allowlist of element tag names (lowercase) permitted in rendered prose.
+/// Anything not in this list is unwrapped/removed by `sanitize_html`.
+const ALLOWED_TAGS: &[&str] = &[
+    "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote",
+    "hr", "br", "strong", "b", "em", "i", "code", "s", "del", "u", "mark",
+    "ins", "sub", "sup", "a", "img", "span", "div",
+];
+
+/// Sanitize untrusted HTML produced from user prose before it is injected via
+/// `set_inner_html`. `markdown_to_html` only converts a handful of inline markers
+/// and copies the rest of the prose verbatim, so a literal `<img onerror=...>` or
+/// `<script>` in the source would otherwise become live DOM (self-XSS).
+///
+/// Strategy: parse the HTML into a DETACHED element (never connected to the live
+/// document, so no scripts run / no resources load), walk the resulting DOM tree,
+/// drop disallowed elements (unwrapping their text children so prose survives),
+/// and strip dangerous attributes (`on*` handlers, `javascript:` URLs). The
+/// cleaned element's innerHTML is returned.
+pub fn sanitize_html(raw: &str) -> String {
+    let doc = match web_sys::window().and_then(|w| w.document()) {
+        Some(d) => d,
+        None => return String::new(),
+    };
+    let container = match doc.create_element("div") {
+        Ok(el) => el,
+        Err(_) => return String::new(),
+    };
+    // Setting innerHTML on a detached element parses but does NOT execute scripts
+    // or fetch resources.
+    container.set_inner_html(raw);
+
+    sanitize_node(&container);
+
+    container.inner_html()
+}
+
+/// Recursively sanitize the element children of `el` in place.
+fn sanitize_node(el: &web_sys::Element) {
+    use wasm_bindgen::JsCast;
+
+    // Collect element children first; we mutate the tree as we go. Use child_nodes()
+    // (NodeList) + an ELEMENT_NODE filter to avoid needing the HtmlCollection
+    // web-sys feature. Non-element nodes (text, comments) are left untouched.
+    let child_nodes = el.child_nodes();
+    let mut nodes: Vec<web_sys::Element> = Vec::new();
+    for i in 0..child_nodes.length() {
+        if let Some(node) = child_nodes.item(i) {
+            if node.node_type() == web_sys::Node::ELEMENT_NODE {
+                if let Ok(child_el) = node.dyn_into::<web_sys::Element>() {
+                    nodes.push(child_el);
+                }
+            }
+        }
+    }
+
+    for child in nodes {
+        let tag = child.tag_name().to_lowercase();
+        if !ALLOWED_TAGS.contains(&tag.as_str()) {
+            // Disallowed element (script, iframe, svg, object, embed, style, ...).
+            // Remove it entirely. We intentionally do NOT preserve children of
+            // dangerous containers (e.g. <script> text) to avoid leaking payloads.
+            child.remove();
+            continue;
+        }
+
+        // Strip dangerous attributes on the allowed element.
+        let attrs = child.get_attribute_names();
+        let mut to_remove: Vec<String> = Vec::new();
+        for i in 0..attrs.length() {
+            if let Some(name) = attrs.get(i).as_string() {
+                let lower = name.to_lowercase();
+                if lower.starts_with("on") {
+                    to_remove.push(name);
+                    continue;
+                }
+                if lower == "href" || lower == "src" || lower == "xlink:href" {
+                    let val = child.get_attribute(&name).unwrap_or_default();
+                    let trimmed = val.trim_start().to_lowercase();
+                    if trimmed.starts_with("javascript:")
+                        || trimmed.starts_with("data:text/html")
+                        || trimmed.starts_with("vbscript:")
+                    {
+                        to_remove.push(name);
+                    }
+                }
+            }
+        }
+        for name in to_remove {
+            child.remove_attribute(&name).ok();
+        }
+
+        // Recurse into the (now attribute-cleaned) allowed element.
+        sanitize_node(&child);
+    }
 }
 
 /// Wrap each `marker`-delimited pair in `open`/`close`, in a single left-to-right

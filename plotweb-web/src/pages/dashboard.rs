@@ -328,11 +328,16 @@ pub fn dashboard_page() -> NodeHandle {
                         variant: "subtle",
                         size: "sm",
                         onclick: toggle_dark,
-                        {render_tabler_icon(
-                            __scope,
-                            if store.dark_mode.get() { TablerIcon::Sun } else { TablerIcon::Moon },
-                            TablerIconStyle::Outline,
-                        )}
+                        // Reactive icon: an rsx `if` block re-renders the child node
+                        // when `dark_mode` toggles. A bare `{expr}` block is captured
+                        // once at render and would never update; a `{|| ...}` child
+                        // closure is treated as reactive *text* (ToString) by rinch, not
+                        // a node, so it can't return a NodeHandle here.
+                        if store.dark_mode.get() {
+                            {render_tabler_icon(__scope, TablerIcon::Sun, TablerIconStyle::Outline)}
+                        } else {
+                            {render_tabler_icon(__scope, TablerIcon::Moon, TablerIconStyle::Outline)}
+                        }
                     }
                     Text {
                         size: "sm",

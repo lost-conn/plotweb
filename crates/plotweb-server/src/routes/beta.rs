@@ -434,10 +434,30 @@ pub async fn reader_create_feedback(
     let link_id = link.string("uuid").unwrap_or_default();
     let book_id = link.string("book_id").unwrap_or_default();
     let reader_name = link.string("reader_name").unwrap_or_default();
+    let max_chapter_index = link.i64("max_chapter_index");
+    let pinned_commit = link.string("pinned_commit");
 
     if req.comment.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "comment is required" })));
     }
+
+    // Verify the chapter exists and is within this reader's allowed range
+    // (mirrors reader_chapter's access check).
+    let ch_result = if let Some(ref commit) = pinned_commit {
+        state.books.get_chapter_at_commit(&book_id, &req.chapter_id, commit).await
+    } else {
+        state.books.get_chapter(&book_id, &req.chapter_id).await
+    };
+    let chapter = match ch_result {
+        Ok(ch) => ch,
+        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "chapter not found" }))),
+    };
+    if let Some(max) = max_chapter_index {
+        if chapter.sort_order > max {
+            return (StatusCode::FORBIDDEN, Json(json!({ "error": "chapter not accessible" })));
+        }
+    }
+    let chapter_title = chapter.title.clone();
 
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -474,15 +494,9 @@ pub async fn reader_create_feedback(
         let email_service = email_service.clone();
         let state2 = state.clone();
         let book_id = book_id.clone();
-        let chapter_id = req.chapter_id.clone();
+        let chapter_title = chapter_title.clone();
         tokio::spawn(async move {
             if let Some((email, book_title)) = author_email_and_title(&state2, &book_id).await {
-                let chapter_title = state2
-                    .books
-                    .get_chapter(&book_id, &chapter_id)
-                    .await
-                    .map(|ch| ch.title)
-                    .unwrap_or_default();
                 email_service
                     .notify_new_feedback(&email, &book_title, &chapter_title, &reader_name, &comment, &book_id)
                     .await;
@@ -732,6 +746,30 @@ pub async fn author_reply_to_feedback(
 ) -> impl IntoResponse {
     if !verify_book_ownership(&state, &book_id, &user_id).await {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
+    }
+
+    // Confirm the feedback's link belongs to this book before replying.
+    let fb = state
+        .rhype
+        .find_one(format!("BetaFeedback.filter(.uuid == {}).limit(1)", quote(&feedback_id)))
+        .await
+        .ok()
+        .flatten();
+    let Some(fb) = fb else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "feedback not found" })));
+    };
+    let link_id = fb.string("link_id").unwrap_or_default();
+    let in_book = state
+        .rhype
+        .exists(format!(
+            "BetaLink.filter(.uuid == {} && .book_id == {}).limit(1)",
+            quote(&link_id),
+            quote(&book_id)
+        ))
+        .await
+        .unwrap_or(false);
+    if !in_book {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "feedback not found" })));
     }
 
     // Get author username

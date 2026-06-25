@@ -57,9 +57,22 @@ trunk build                    # production build to plotweb-web/dist/
 #   Terminal 2: cd plotweb-web && trunk serve  (frontend, port 8080)
 
 # Tests
-cargo test                     # all workspace tests
+cargo test                     # all workspace tests (incl. server HTTP integration tests)
 cargo test -p plotweb-import   # import crate tests only (markdown chapter detection)
+cargo test -p plotweb-server   # server integration tests (tests/*.rs drive the real Axum app)
+
+# End-to-end (Playwright, browser): builds the SPA + server over a temp data dir
+cd e2e && npm install && npx playwright install chromium-headless-shell
+cd e2e && npx playwright test
 ```
+
+The server is a **lib + bin**: routing/state live in `crates/plotweb-server/src/lib.rs`
+(`api_router`, `build_state`, `test_router`); `main.rs` is a thin wrapper that adds
+env-based state and static-file serving. Integration tests in
+`crates/plotweb-server/tests/` build the app in-process via `tower::oneshot` over
+tempdir SQLite/rhypedb/git stores (see `tests/common/mod.rs`). E2E lives in `e2e/`
+(see `e2e/README.md`); the `RHYPEDB_DATA_DIR` env var (default `data/rhypedb`)
+points the metadata store at a directory.
 
 ## Environment Variables
 
@@ -67,6 +80,7 @@ cargo test -p plotweb-import   # import crate tests only (markdown chapter detec
 |----------|---------|---------|
 | `DATABASE_URL` | `sqlite:plotweb.db` | SQLite database path |
 | `DATA_DIR` | `data/books` | Root directory for git-backed book repositories |
+| `RHYPEDB_DATA_DIR` | `data/rhypedb` | Embedded rhypedb metadata store directory |
 | `DIST_DIR` | `../plotweb-web/dist` | Path to built frontend dist/ folder |
 
 ## Key Conventions
