@@ -2511,6 +2511,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Full chapter content stored separately (preview only has truncated text)
     let import_full_chapters: Signal<Vec<ImportChapter>> = Signal::new(Vec::new());
 
+    // Export signals
+    let show_export_modal: Signal<bool> = Signal::new(false);
+    let export_format: Signal<&str> = Signal::new("md");
+    let export_selected: Signal<std::collections::HashSet<String>> =
+        Signal::new(std::collections::HashSet::new());
+    let export_loading: Signal<bool> = Signal::new(false);
+    let export_error: Signal<Option<String>> = Signal::new(None);
+
     // Note signals
     let show_note_modal: Signal<bool> = Signal::new(false);
     let new_note_title: Signal<String> = Signal::new(String::new());
@@ -3952,6 +3960,21 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     }
                                     Button {
                                         size: "sm",
+                                        variant: "outline",
+                                        onclick: move || {
+                                            // Default to exporting the whole book.
+                                            let all: std::collections::HashSet<String> =
+                                                store.chapters.get().iter().map(|c| c.id.clone()).collect();
+                                            export_selected.set(all);
+                                            export_format.set("md");
+                                            export_error.set(None);
+                                            export_loading.set(false);
+                                            show_export_modal.set(true);
+                                        },
+                                        "Export"
+                                    }
+                                    Button {
+                                        size: "sm",
                                         onclick: move || {
                                             new_chapter_title.set(String::new());
                                             show_chapter_modal.set(true);
@@ -5025,6 +5048,163 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             },
                             {move || format!("Import {} Chapters", import_preview.get().len())}
                         }
+                    }
+                }
+            }
+
+            // Export Manuscript Modal
+            Modal {
+                opened_fn: move || show_export_modal.get(),
+                onclose: move || {
+                    show_export_modal.set(false);
+                    export_error.set(None);
+                },
+                title: "Export Manuscript",
+
+                Text { size: "sm", color: "dimmed",
+                    "Choose a format and which chapters to include, then download your manuscript."
+                }
+                Space { h: "md" }
+
+                Text { size: "xs", weight: "600", color: "dimmed", "FORMAT" }
+                Space { h: "xs" }
+                Group {
+                    gap: "xs",
+                    Button {
+                        size: "sm",
+                        variant: {move || if export_format.get() == "md" { "filled".to_string() } else { "outline".to_string() }},
+                        onclick: move || export_format.set("md"),
+                        "Markdown"
+                    }
+                    Button {
+                        size: "sm",
+                        variant: {move || if export_format.get() == "docx" { "filled".to_string() } else { "outline".to_string() }},
+                        onclick: move || export_format.set("docx"),
+                        "DOCX"
+                    }
+                    Button {
+                        size: "sm",
+                        variant: {move || if export_format.get() == "epub" { "filled".to_string() } else { "outline".to_string() }},
+                        onclick: move || export_format.set("epub"),
+                        "EPUB"
+                    }
+                    Button { size: "sm", variant: "subtle", disabled: true, onclick: move || {}, "PDF · soon" }
+                }
+                Space { h: "md" }
+
+                Group {
+                    justify: "space-between",
+                    Text { size: "xs", weight: "600", color: "dimmed", "CHAPTERS" }
+                    Group {
+                        gap: "xs",
+                        Button {
+                            size: "xs",
+                            variant: "subtle",
+                            onclick: move || {
+                                let all: std::collections::HashSet<String> =
+                                    store.chapters.get().iter().map(|c| c.id.clone()).collect();
+                                export_selected.set(all);
+                            },
+                            "All"
+                        }
+                        Button {
+                            size: "xs",
+                            variant: "subtle",
+                            onclick: move || export_selected.set(std::collections::HashSet::new()),
+                            "None"
+                        }
+                    }
+                }
+                Space { h: "xs" }
+                div {
+                    style: "max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 4px;",
+                    for ch in store.chapters.get() {
+                        Checkbox {
+                            key: ch.id.clone(),
+                            label: ch.title.clone(),
+                            checked_fn: {
+                                let id = ch.id.clone();
+                                move || export_selected.get().contains(&id)
+                            },
+                            onchange: {
+                                let id = ch.id.clone();
+                                move || {
+                                    let id = id.clone();
+                                    export_selected.update(|set| {
+                                        if !set.remove(&id) {
+                                            set.insert(id);
+                                        }
+                                    });
+                                }
+                            },
+                        }
+                    }
+                }
+
+                if let Some(err) = export_error.get() {
+                    Space { h: "sm" }
+                    Text { size: "sm", color: "red", {err} }
+                }
+
+                Space { h: "lg" }
+                Group {
+                    justify: "flex-end",
+                    Button {
+                        variant: "subtle",
+                        onclick: move || {
+                            show_export_modal.set(false);
+                            export_error.set(None);
+                        },
+                        "Cancel"
+                    }
+                    Button {
+                        onclick: move || {
+                            let sel = export_selected.get();
+                            if sel.is_empty() {
+                                export_error.set(Some("Select at least one chapter.".to_string()));
+                                return;
+                            }
+                            let bid = bid_signal.get();
+                            let fmt = export_format.get();
+                            let total = store.chapters.get().len();
+                            // Whole book → omit the chapters param entirely.
+                            let url = if sel.len() >= total {
+                                format!("/api/books/{}/export?format={}", bid, fmt)
+                            } else {
+                                let ids: Vec<String> = store
+                                    .chapters
+                                    .get()
+                                    .iter()
+                                    .filter(|c| sel.contains(&c.id))
+                                    .map(|c| c.id.clone())
+                                    .collect();
+                                format!(
+                                    "/api/books/{}/export?format={}&chapters={}",
+                                    bid,
+                                    fmt,
+                                    ids.join(",")
+                                )
+                            };
+                            export_loading.set(true);
+                            export_error.set(None);
+                            let fallback = format!("manuscript.{}", fmt);
+                            wasm_bindgen_futures::spawn_local(async move {
+                                match api::download_file(&url, &fallback).await {
+                                    Ok(()) => {
+                                        show_export_modal.set(false);
+                                    }
+                                    Err(e) => {
+                                        export_error.set(Some(e.message));
+                                    }
+                                }
+                                export_loading.set(false);
+                            });
+                        },
+                        {move || if export_loading.get() {
+                            "Exporting...".to_string()
+                        } else {
+                            format!("Export {} chapters", export_selected.get().len())
+                        }}
                     }
                 }
             }

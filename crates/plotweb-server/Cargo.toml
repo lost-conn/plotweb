@@ -19,6 +19,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest.workspace = true
 plotweb-git.workspace = true
 plotweb-import.workspace = true
+plotweb-export.workspace = true
 rhypedb-engine.workspace = true
 rhypedb-query.workspace = true
 rhypedb-schema.workspace = true

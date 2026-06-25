@@ -2,6 +2,7 @@ pub mod auth;
 pub mod beta;
 pub mod books;
 pub mod chapters;
+pub mod export;
 pub mod fonts;
 pub mod history;
 pub mod images;
