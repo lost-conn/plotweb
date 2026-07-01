@@ -4,6 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>PlotWeb</title>
+    <meta name="description" content="A fiction writing web app for drafting books, managing chapters and notes, and sharing with beta readers." />
+    <meta name="theme-color" content="#1C1917" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="PlotWeb" />
     <style>
         html, body {
             margin: 0;
@@ -36,8 +42,13 @@
     <link href="https://fonts.googleapis.com/css2?family=Playwrite+DE+Grund:wght@100..400&family=Macondo+Swash+Caps&display=swap" rel="stylesheet">
     <link data-trunk rel="rust" data-wasm-opt="z" />
     <link data-trunk rel="copy-file" href="favicon.png" />
+    <link data-trunk rel="copy-file" href="manifest.webmanifest" />
+    <link data-trunk rel="copy-file" href="sw.js" />
     <link data-trunk rel="copy-dir" href="assets" />
+    <link data-trunk rel="copy-dir" href="icons" />
     <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
 </head>
 <body>
     <div id="loading">
@@ -59,6 +70,16 @@
             const el = document.getElementById('loading');
             if (el) el.style.display = 'none';
         }, 10000);
+    </script>
+    <script>
+        // Register the service worker for PWA installability + offline app shell.
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js').catch((err) => {
+                    console.warn('Service worker registration failed:', err);
+                });
+            });
+        }
     </script>
 </body>
 </html>
