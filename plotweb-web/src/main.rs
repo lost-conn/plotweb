@@ -124,25 +124,54 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
     let browser_doc = doc.browser_document().clone();
 
     // ── Drag state machine ──────────────────────────────────────────────────
-    // Shared between mousedown/mousemove/mouseup closures.
+    // Shared between pointerdown/pointermove/pointerup/pointercancel closures.
     // Rinch's native renderer has a pending-drag system with a 5px threshold
-    // that separates clicks from drags. The web DOM bridge needs to replicate
-    // this: on mousedown inside a draggable element, defer the click; on
-    // mousemove past 5px, activate drag; on mouseup, fire deferred click or
-    // ondragend depending on which phase we're in.
+    // that separates clicks from drags. The web DOM bridge replicates it, but
+    // driven by Pointer Events (not mouse) so it works for touch + pen too:
+    //   * mouse: pending on pointerdown inside a draggable, activate at 5px.
+    //   * touch/pen: activate on a ~350ms long-press. Movement past 10px before
+    //     the hold completes is treated as a scroll and abandons the pending
+    //     drag, so a list of draggable rows still scrolls normally.
+    // On activation we setPointerCapture (moves keep flowing to us even off the
+    // source) and preventDefault during the active drag to suppress scrolling.
+    // A single primary pointer owns the drag; other pointers are ignored.
+    const DRAG_THRESHOLD: f32 = 5.0;
+    const TOUCH_LONG_PRESS_MS: f64 = 350.0;
+    const TOUCH_MOVE_SLOP: f32 = 10.0;
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum PtrKind {
+        Mouse,
+        Touch,
+    }
+    impl PtrKind {
+        fn from_event(e: &web_sys::PointerEvent) -> Self {
+            // Pen is treated like touch (long-press to drag).
+            if e.pointer_type() == "mouse" {
+                PtrKind::Mouse
+            } else {
+                PtrKind::Touch
+            }
+        }
+    }
 
     enum DragPhase {
-        /// Mousedown happened on a draggable element, waiting to see if the
-        /// user moves 5px (drag) or releases (click).
+        /// Pointerdown happened on a draggable element, waiting to see if it
+        /// becomes a drag (mouse: 5px; touch: 350ms hold) or a click/tap.
         Pending {
+            pointer_id: i32,
+            kind: PtrKind,
             click_rid: usize,
             click_el: web_sys::Element,
             draggable_el: web_sys::Element,
             start_x: f32,
             start_y: f32,
+            /// Pointerdown timestamp (ms) — for the touch long-press.
+            start_time: f64,
         },
-        /// Threshold crossed — drag is active.
+        /// Activation reached — drag is live.
         Active {
+            pointer_id: i32,
             draggable_el: web_sys::Element,
             over_el: Option<web_sys::Element>,
         },
@@ -150,10 +179,27 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
 
     let drag_phase: Rc<RefCell<Option<DragPhase>>> = Rc::new(RefCell::new(None));
 
-    // ── Mousedown ───────────────────────────────────────────────────────────
+    fn phase_pointer_id(p: &DragPhase) -> i32 {
+        match p {
+            DragPhase::Pending { pointer_id, .. } | DragPhase::Active { pointer_id, .. } => {
+                *pointer_id
+            }
+        }
+    }
+
+    // ── Pointerdown ─────────────────────────────────────────────────────────
     let browser_doc_for_click = browser_doc.clone();
     let drag_phase_down = drag_phase.clone();
-    let mousedown_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    let pointerdown_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        // A drag is owned by a single pointer; ignore additional pointers (e.g.
+        // a second finger) while one is in progress.
+        if drag_phase_down.borrow().is_some() {
+            return;
+        }
+        // Only the primary button / primary pointer starts a drag or click.
+        if event.button() > 0 {
+            return;
+        }
         if let Some(target) = event.target()
             && let Ok(el) = target.dyn_into::<web_sys::Element>()
         {
@@ -170,14 +216,19 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                     && let Some(rid_str) = rid_el.get_attribute("data-rid")
                     && let Ok(rid) = rid_str.parse::<usize>()
                 {
-                    // Enter pending state — don't fire click yet
+                    // Enter pending state — don't fire click yet. (preventDefault
+                    // on pointerdown suppresses the compat mouse/click events; it
+                    // does not block scrolling — that's gated by activation below.)
                     event.prevent_default();
                     *drag_phase_down.borrow_mut() = Some(DragPhase::Pending {
+                        pointer_id: event.pointer_id(),
+                        kind: PtrKind::from_event(&event),
                         click_rid: rid,
                         click_el: rid_el,
                         draggable_el,
                         start_x: event.client_x() as f32,
                         start_y: event.client_y() as f32,
+                        start_time: event.time_stamp(),
                     });
                     return;
                 }
@@ -224,53 +275,83 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
-        .add_event_listener_with_callback("mousedown", mousedown_closure.as_ref().unchecked_ref())
+        .add_event_listener_with_callback(
+            "pointerdown",
+            pointerdown_closure.as_ref().unchecked_ref(),
+        )
         .unwrap();
-    mousedown_closure.forget();
+    pointerdown_closure.forget();
 
-    // ── Mousemove ───────────────────────────────────────────────────────────
+    // ── Pointermove ─────────────────────────────────────────────────────────
     let browser_doc_for_move = browser_doc.clone();
     let drag_phase_move = drag_phase.clone();
-    let mousemove_closure = Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
+    let pointermove_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
         let mx = event.client_x() as f32;
         let my = event.client_y() as f32;
+        let evt_pointer_id = event.pointer_id();
 
         // Take phase out so we don't hold a borrow during event dispatch
         let phase = drag_phase_move.borrow_mut().take();
         let new_phase = match phase {
+            // A move from a non-owning pointer leaves the drag untouched.
+            Some(p @ (DragPhase::Pending { .. } | DragPhase::Active { .. }))
+                if phase_pointer_id(&p) != evt_pointer_id =>
+            {
+                Some(p)
+            }
             Some(DragPhase::Pending {
+                pointer_id,
+                kind,
                 click_rid,
                 click_el,
                 draggable_el,
                 start_x,
                 start_y,
+                start_time,
             }) => {
                 let dx = mx - start_x;
                 let dy = my - start_y;
-                if (dx * dx + dy * dy).sqrt() >= 5.0 {
-                    // Threshold crossed — activate drag
+                let dist = (dx * dx + dy * dy).sqrt();
+                let activate = match kind {
+                    PtrKind::Mouse => dist >= DRAG_THRESHOLD,
+                    // Touch/pen: hold ~350ms. Moving past the slop before then is
+                    // a scroll, not a drag (handled in the else branch below).
+                    PtrKind::Touch => event.time_stamp() - start_time >= TOUCH_LONG_PRESS_MS,
+                };
+                if activate {
+                    // Activate drag: capture the pointer, suppress scrolling.
                     event.prevent_default();
+                    draggable_el.set_pointer_capture(pointer_id).ok();
                     if let Some(handler_str) = draggable_el.get_attribute("data-ondragstart")
                         && let Ok(handler_id) = handler_str.parse::<usize>()
                     {
                         events::dispatch_event(events::EventHandlerId(handler_id));
                     }
                     Some(DragPhase::Active {
+                        pointer_id,
                         draggable_el,
                         over_el: None,
                     })
+                } else if kind == PtrKind::Touch && dist > TOUCH_MOVE_SLOP {
+                    // Moved before the long-press completed — it's a scroll.
+                    // Abandon the pending drag and let the browser scroll.
+                    None
                 } else {
-                    // Still below threshold
+                    // Still waiting (below mouse threshold, or holding for touch).
                     Some(DragPhase::Pending {
+                        pointer_id,
+                        kind,
                         click_rid,
                         click_el,
                         draggable_el,
                         start_x,
                         start_y,
+                        start_time,
                     })
                 }
             }
             Some(DragPhase::Active {
+                pointer_id,
                 draggable_el,
                 mut over_el,
             }) => {
@@ -278,38 +359,82 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                 // Hit-test for drop targets under cursor
                 if let Some(el_under) = browser_doc_for_move.element_from_point(mx, my) {
                     let new_over = el_under.closest("[data-ondragenter]").ok().flatten();
-                    // Fire ondragenter when entering a new target
+                    // Fire ondragleave on the old target / ondragenter on the new
+                    // one when the target changes.
                     let changed = match (&new_over, &over_el) {
                         (Some(a), Some(b)) => a != b,
                         (None, None) => false,
                         _ => true,
                     };
                     if changed {
-                        if let Some(ref target) = new_over {
-                            if let Some(handler_str) = target.get_attribute("data-ondragenter")
-                                && let Ok(handler_id) = handler_str.parse::<usize>()
-                            {
-                                let rect = target.get_bounding_client_rect();
-                                events::set_click_context(events::ClickContext {
-                                    mouse_x: mx,
-                                    mouse_y: my,
-                                    element_x: rect.x() as f32,
-                                    element_y: rect.y() as f32,
-                                    element_width: rect.width() as f32,
-                                    element_height: rect.height() as f32,
-                                    text_hit: Default::default(),
-                                    viewport_width: 0.0,
-                                    viewport_height: 0.0,
-                                    button: Default::default(),
-                                    modifiers: Default::default(),
-                                });
-                                events::dispatch_event(events::EventHandlerId(handler_id));
-                            }
+                        // Leaving the previous target
+                        if let Some(ref prev) = over_el
+                            && let Some(handler_str) = prev.get_attribute("data-ondragleave")
+                            && let Ok(handler_id) = handler_str.parse::<usize>()
+                        {
+                            events::dispatch_event(events::EventHandlerId(handler_id));
                         }
+                        // Entering the new target
+                        if let Some(ref target) = new_over
+                            && let Some(handler_str) = target.get_attribute("data-ondragenter")
+                            && let Ok(handler_id) = handler_str.parse::<usize>()
+                        {
+                            let rect = target.get_bounding_client_rect();
+                            events::set_click_context(events::ClickContext {
+                                mouse_x: mx,
+                                mouse_y: my,
+                                element_x: rect.x() as f32,
+                                element_y: rect.y() as f32,
+                                element_width: rect.width() as f32,
+                                element_height: rect.height() as f32,
+                                text_hit: Default::default(),
+                                viewport_width: 0.0,
+                                viewport_height: 0.0,
+                                button: Default::default(),
+                                modifiers: Default::default(),
+                            });
+                            events::dispatch_event(events::EventHandlerId(handler_id));
+                        }
+                    }
+                    // Fire ondragover on the current target every move, passing the
+                    // target's bounds + cursor so the handler can compute whether
+                    // the drop is before / after / into the element.
+                    if let Some(ref target) = new_over
+                        && let Some(handler_str) = target.get_attribute("data-ondragover")
+                        && let Ok(handler_id) = handler_str.parse::<usize>()
+                    {
+                        let rect = target.get_bounding_client_rect();
+                        events::set_click_context(events::ClickContext {
+                            mouse_x: mx,
+                            mouse_y: my,
+                            element_x: rect.x() as f32,
+                            element_y: rect.y() as f32,
+                            element_width: rect.width() as f32,
+                            element_height: rect.height() as f32,
+                            text_hit: Default::default(),
+                            viewport_width: 0.0,
+                            viewport_height: 0.0,
+                            button: Default::default(),
+                            modifiers: Default::default(),
+                        });
+                        events::dispatch_event(events::EventHandlerId(handler_id));
                     }
                     over_el = new_over;
                 }
+                // Fire ondragmove on the source every move, passing the cursor
+                // position so the handler can position its own drag ghost.
+                if let Some(handler_str) = draggable_el.get_attribute("data-ondragmove")
+                    && let Ok(handler_id) = handler_str.parse::<usize>()
+                {
+                    events::set_click_context(events::ClickContext {
+                        mouse_x: mx,
+                        mouse_y: my,
+                        ..Default::default()
+                    });
+                    events::dispatch_event(events::EventHandlerId(handler_id));
+                }
                 Some(DragPhase::Active {
+                    pointer_id,
                     draggable_el,
                     over_el,
                 })
@@ -324,15 +449,36 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
         }
     }) as Box<dyn FnMut(_)>);
     browser_doc
-        .add_event_listener_with_callback("mousemove", mousemove_closure.as_ref().unchecked_ref())
+        .add_event_listener_with_callback(
+            "pointermove",
+            pointermove_closure.as_ref().unchecked_ref(),
+        )
         .unwrap();
-    mousemove_closure.forget();
+    pointermove_closure.forget();
 
-    // ── Mouseup ─────────────────────────────────────────────────────────────
+    // ── Pointerup / Pointercancel ───────────────────────────────────────────
+    // Shared release path. `fire_click` distinguishes a normal release (a
+    // never-activated pending drag becomes a click) from a cancel (pointercancel
+    // / the system stealing the gesture — no click). Only the owning pointer can
+    // end the drag. An active drag always fires ondragend so the app clears its
+    // own drag ghost.
     let browser_doc_for_up = browser_doc.clone();
     let drag_phase_up = drag_phase.clone();
-    let mouseup_closure = Closure::wrap(Box::new(move |_event: web_sys::MouseEvent| {
-        let phase = drag_phase_up.borrow_mut().take();
+    let on_release: Rc<dyn Fn(i32, bool)> = Rc::new(move |pid: i32, fire_click: bool| {
+        // Take the phase only if this pointer owns it (drop the borrow before
+        // dispatching handlers, which may run app code).
+        let phase = {
+            let mut slot = drag_phase_up.borrow_mut();
+            let owns = matches!(
+                slot.as_ref(),
+                Some(DragPhase::Pending { pointer_id, .. } | DragPhase::Active { pointer_id, .. })
+                    if *pointer_id == pid
+            );
+            if !owns {
+                return;
+            }
+            slot.take()
+        };
         match phase {
             Some(DragPhase::Pending {
                 click_rid,
@@ -341,27 +487,29 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
                 start_y,
                 ..
             }) => {
-                // Didn't cross threshold — it was a click, not a drag
-                let rect = click_el.get_bounding_client_rect();
-                let text_hit =
-                    resolve_text_hit(&browser_doc_for_up, start_x, start_y).unwrap_or_default();
-                events::set_click_context(events::ClickContext {
-                    mouse_x: start_x,
-                    mouse_y: start_y,
-                    element_x: rect.x() as f32,
-                    element_y: rect.y() as f32,
-                    element_width: rect.width() as f32,
-                    element_height: rect.height() as f32,
-                    text_hit,
-                    viewport_width: 0.0,
-                    viewport_height: 0.0,
-                    button: Default::default(),
-                    modifiers: Default::default(),
-                });
-                events::dispatch_event(events::EventHandlerId(click_rid));
+                if fire_click {
+                    // Never activated — it was a click/tap, not a drag.
+                    let rect = click_el.get_bounding_client_rect();
+                    let text_hit = resolve_text_hit(&browser_doc_for_up, start_x, start_y)
+                        .unwrap_or_default();
+                    events::set_click_context(events::ClickContext {
+                        mouse_x: start_x,
+                        mouse_y: start_y,
+                        element_x: rect.x() as f32,
+                        element_y: rect.y() as f32,
+                        element_width: rect.width() as f32,
+                        element_height: rect.height() as f32,
+                        text_hit,
+                        viewport_width: 0.0,
+                        viewport_height: 0.0,
+                        button: Default::default(),
+                        modifiers: Default::default(),
+                    });
+                    events::dispatch_event(events::EventHandlerId(click_rid));
+                }
             }
             Some(DragPhase::Active { draggable_el, .. }) => {
-                // Drag completed — fire ondragend on the source element
+                // Drag ended — fire ondragend on the source element.
                 if let Some(handler_str) = draggable_el.get_attribute("data-ondragend")
                     && let Ok(handler_id) = handler_str.parse::<usize>()
                 {
@@ -372,11 +520,28 @@ fn setup_event_delegation(doc: &web_document::WebDocument) {
         }
         // Also handle Drag builder cancel
         rinch_core::Drag::cancel();
+    });
+
+    let on_release_up = on_release.clone();
+    let pointerup_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        on_release_up(event.pointer_id(), true);
     }) as Box<dyn FnMut(_)>);
     browser_doc
-        .add_event_listener_with_callback("mouseup", mouseup_closure.as_ref().unchecked_ref())
+        .add_event_listener_with_callback("pointerup", pointerup_closure.as_ref().unchecked_ref())
         .unwrap();
-    mouseup_closure.forget();
+    pointerup_closure.forget();
+
+    let on_release_cancel = on_release.clone();
+    let pointercancel_closure = Closure::wrap(Box::new(move |event: web_sys::PointerEvent| {
+        on_release_cancel(event.pointer_id(), false);
+    }) as Box<dyn FnMut(_)>);
+    browser_doc
+        .add_event_listener_with_callback(
+            "pointercancel",
+            pointercancel_closure.as_ref().unchecked_ref(),
+        )
+        .unwrap();
+    pointercancel_closure.forget();
 
     // Keyboard delegation
     let keydown_closure = Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {

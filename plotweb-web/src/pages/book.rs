@@ -401,6 +401,64 @@ const NOTES_CSS: &str = r#"
     font-size: 12px;
     color: var(--rinch-color-dimmed);
 }
+.note-drag-ghost {
+    display: none;
+    position: fixed;
+    left: 0;
+    top: 0;
+    transform: translate(-50%, -50%) rotate(-2deg);
+    z-index: 9999;
+    pointer-events: none;
+    max-width: 220px;
+    padding: 8px 10px;
+    border-radius: var(--rinch-radius-sm);
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    border-left: 3px solid var(--note-color, var(--rinch-color-teal-6));
+    box-shadow: 0 6px 18px rgba(0,0,0,0.3);
+    opacity: 0.9;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--rinch-color-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Mobile: vertical stack, full-width cards, indented nesting ─────────── */
+@media (max-width: 768px) {
+    .notes-pane {
+        overflow-x: hidden;
+    }
+    .notes-tree {
+        min-width: 0;
+    }
+    .note-branch {
+        flex-direction: column;
+        align-items: stretch;
+        width: 100%;
+    }
+    .note-card {
+        width: auto;
+    }
+    .note-children {
+        padding-left: 14px;
+    }
+    /* The horizontal connector stub doesn't apply to the vertical layout. */
+    .note-child-row::before {
+        display: none;
+    }
+    /* Actions are hover-only on desktop; always show them on touch. */
+    .note-card-actions {
+        opacity: 1;
+    }
+}
+/* Coarse pointers (touch) can't hover — always reveal the card actions. */
+@media (hover: none) {
+    .note-card-actions {
+        opacity: 1;
+    }
+}
 "#;
 
 /// CSS for the book workspace layout.
@@ -2230,6 +2288,10 @@ fn note_content_preview(html: &str) -> String {
 fn render_note_card(
     __scope: &mut RenderScope,
     note_id: String,
+    // The card's own parent + position among its siblings, so ondragover can
+    // compute a before/after insertion point.
+    parent_id: Option<String>,
+    sibling_index: usize,
     store: AppStore,
     active_pane: Signal<BookPane>,
     bid_signal: Signal<String>,
@@ -2241,8 +2303,13 @@ fn render_note_card(
     note_editor_color: Signal<Option<String>>,
     dragging_note_id: Signal<Option<String>>,
     drop_target: Signal<Option<(Option<String>, usize)>>,
+    ghost_visible: Signal<bool>,
+    ghost_pos: Signal<(f32, f32)>,
+    ghost_label: Signal<String>,
+    ghost_color: Signal<String>,
 ) -> NodeHandle {
     let nid = Signal::new(note_id);
+    let parent_sig: Signal<Option<String>> = Signal::new(parent_id);
 
     rsx! {
         div { class: "note-branch",
@@ -2272,7 +2339,47 @@ fn render_note_card(
                     }},
                     draggable: "true",
                     ondragstart: move || {
-                        dragging_note_id.set(Some(nid.get()));
+                        let n = nid.get();
+                        dragging_note_id.set(Some(n.clone()));
+                        // Seed the floating ghost with this note's title + color.
+                        let notes = store.notes.get();
+                        let note = notes.iter().find(|note| note.id == n);
+                        ghost_label.set(
+                            note.map(|note| note.title.clone()).unwrap_or_default(),
+                        );
+                        ghost_color.set(
+                            note.and_then(|note| note.color.clone())
+                                .unwrap_or_else(|| "teal".to_string()),
+                        );
+                        ghost_visible.set(true);
+                    },
+                    ondragmove: move || {
+                        // Follow the cursor with the ghost (cursor is in ClickContext).
+                        let ctx = rinch_core::events::get_click_context();
+                        ghost_pos.set((ctx.mouse_x, ctx.mouse_y));
+                    },
+                    ondragover: move || {
+                        // Split the card into thirds: top => insert before, bottom
+                        // => insert after, middle => drop as a child of this note.
+                        let ctx = rinch_core::events::get_click_context();
+                        let h = ctx.element_height;
+                        let rel_y = ctx.relative_y();
+                        if h > 0.0 && rel_y < h / 3.0 {
+                            drop_target.set(Some((parent_sig.get(), sibling_index)));
+                        } else if h > 0.0 && rel_y > h * 2.0 / 3.0 {
+                            drop_target.set(Some((parent_sig.get(), sibling_index + 1)));
+                        } else {
+                            drop_target.set(Some((Some(nid.get()), 0)));
+                        }
+                    },
+                    ondragleave: move || {
+                        // Clear the indicator only if it still points at this card,
+                        // so a freshly-entered target isn't wiped out.
+                        if let Some((ref pid, _)) = drop_target.get() {
+                            if pid.as_deref() == Some(nid.get().as_str()) {
+                                drop_target.set(None);
+                            }
+                        }
                     },
                     ondragend: move || {
                         if let Some(target) = drop_target.get() {
@@ -2299,6 +2406,7 @@ fn render_note_card(
                         }
                         dragging_note_id.set(None);
                         drop_target.set(None);
+                        ghost_visible.set(false);
                     },
                     ondragenter: move || {
                         drop_target.set(Some((Some(nid.get()), 0)));
@@ -2446,6 +2554,8 @@ fn render_note_card(
                                 {render_note_card(
                                     __scope,
                                     child_id.clone(),
+                                    Some(nid.get()),
+                                    idx,
                                     store,
                                     active_pane,
                                     bid_signal,
@@ -2457,6 +2567,10 @@ fn render_note_card(
                                     note_editor_color,
                                     dragging_note_id,
                                     drop_target,
+                                    ghost_visible,
+                                    ghost_pos,
+                                    ghost_label,
+                                    ghost_color,
                                 )}
                             }
                         }
@@ -2540,6 +2654,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let note_editor_color: Signal<Option<String>> = Signal::new(None);
     let dragging_note_id: Signal<Option<String>> = Signal::new(None);
     let drop_target: Signal<Option<(Option<String>, usize)>> = Signal::new(None);
+    // Floating drag ghost, positioned from ondragmove (see render_note_card).
+    let ghost_visible: Signal<bool> = Signal::new(false);
+    let ghost_pos: Signal<(f32, f32)> = Signal::new((0.0, 0.0));
+    let ghost_label: Signal<String> = Signal::new(String::new());
+    let ghost_color: Signal<String> = Signal::new("teal".to_string());
 
     // History signals
     let history_commits: Signal<Vec<CommitInfo>> = Signal::new(Vec::new());
@@ -4381,6 +4500,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                         {render_note_card(
                                             __scope,
                                             root_id.clone(),
+                                            None,
+                                            idx,
                                             store,
                                             active_pane,
                                             bid_signal,
@@ -4392,11 +4513,32 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                             note_editor_color,
                                             dragging_note_id,
                                             drop_target,
+                                            ghost_visible,
+                                            ghost_pos,
+                                            ghost_label,
+                                            ghost_color,
                                         )}
                                     }
                                 }
                                 {render_drop_zone(__scope, Signal::new(None), store.note_tree.get().map(|t| t.root_order.len()).unwrap_or(0), drop_target, dragging_note_id)}
                             }
+                        }
+
+                        // Floating drag ghost — follows the cursor during a drag.
+                        // Positioned imperatively from ondragmove via signals; a
+                        // reactive style binding is fine (only node swaps must use
+                        // if/match). pointer-events:none so it never eats events.
+                        div {
+                            class: "note-drag-ghost",
+                            style: {move || {
+                                let (x, y) = ghost_pos.get();
+                                let display = if ghost_visible.get() { "block" } else { "none" };
+                                format!(
+                                    "display: {}; left: {}px; top: {}px; --note-color: var(--rinch-color-{}-6);",
+                                    display, x, y, ghost_color.get(),
+                                )
+                            }},
+                            {move || ghost_label.get()}
                         }
                     }
 
