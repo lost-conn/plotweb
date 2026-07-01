@@ -39,6 +39,9 @@ type Book {
 }
 
 // beta_reader_links (migrations 004 + 005 pinned_commit + 006 user_id)
+//
+// last_chapter_id / last_page (improved reader mode) auto-track where the reader
+// left off — absent on old rows (read as empty / 0).
 type BetaLink {
     uuid: String @unique
     book_id: String @indexed
@@ -48,6 +51,18 @@ type BetaLink {
     active: Bool
     pinned_commit: String
     user_id: String @indexed
+    last_chapter_id: String
+    last_page: i64
+    created_at: String
+}
+
+// beta_reader_bookmarks (improved reader mode) — a reader's saved chapter+page.
+type BetaBookmark {
+    uuid: String @unique
+    link_id: String @indexed
+    chapter_id: String @indexed
+    page: i64
+    label: String
     created_at: String
 }
 

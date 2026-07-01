@@ -20,6 +20,7 @@ pub fn route_content(__scope: &mut RenderScope) -> NodeHandle {
         Route::Dashboard => dashboard::dashboard_page(__scope),
         Route::Book(id) => book::book_page(__scope, id),
         Route::Reader(token) => reader::reader_page(__scope, token),
+        Route::ReaderPreview(book_id) => reader::reader_preview_page(__scope, book_id),
         Route::ThemePreview => theme_preview::theme_preview_page(__scope),
     }
 }

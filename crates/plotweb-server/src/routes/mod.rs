@@ -60,6 +60,13 @@ pub async fn delete_link_cascade(state: &AppState, link_id: &str) {
     delete_feedback_for_link(state, link_id).await;
     let _ = state
         .rhype
+        .exec(format!(
+            "BetaBookmark.filter(.link_id == {}).delete()",
+            quote(link_id)
+        ))
+        .await;
+    let _ = state
+        .rhype
         .exec(format!("BetaLink.filter(.uuid == {}).delete()", quote(link_id)))
         .await;
 }
@@ -75,6 +82,13 @@ pub async fn delete_book_beta_metadata(state: &AppState, book_id: &str) {
     for link in &links {
         if let Some(link_id) = link.str("uuid") {
             delete_feedback_for_link(state, link_id).await;
+            let _ = state
+                .rhype
+                .exec(format!(
+                    "BetaBookmark.filter(.link_id == {}).delete()",
+                    quote(link_id)
+                ))
+                .await;
         }
     }
     let _ = state

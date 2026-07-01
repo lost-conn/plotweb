@@ -3953,6 +3953,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         Button {
                             variant: "subtle",
                             size: "xs",
+                            onclick: move || router::navigate(Route::ReaderPreview(bid_signal.get())),
+                            {render_tabler_icon(__scope, TablerIcon::Eye, TablerIconStyle::Outline)}
+                            " Preview as reader"
+                        }
+                        Button {
+                            variant: "subtle",
+                            size: "xs",
                             onclick: go_dashboard,
                             "\u{2190} Dashboard"
                         }

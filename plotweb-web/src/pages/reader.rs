@@ -4,8 +4,9 @@ use rinch_core::use_store;
 use rinch_core::Signal;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{
-    BetaFeedback, BetaReaderView, Chapter,
-    CreateBetaFeedbackRequest, CreateBetaReplyRequest,
+    BetaBookmark, BetaChapterSummary, BetaFeedback, BetaReaderView, Book, Chapter,
+    CreateBetaFeedbackRequest, CreateBetaReplyRequest, CreateBookmarkRequest,
+    UpdateReadingProgressRequest,
 };
 
 use crate::api;
@@ -109,23 +110,109 @@ const READER_CSS: &str = r#"
     flex-shrink: 0;
 }
 
-.reader-scroll {
+/* Paginated reading column (always paged — no scroll). */
+.reader-reading-col {
     flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.reader-viewport {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    justify-content: center;
     background: var(--rinch-color-body);
+    touch-action: pan-y;
+}
+
+/* The fixed window that clips exactly one page. Vertical reading margins live
+   here (consistent per page); horizontal margins are applied to the columns
+   element in JS so every page is inset symmetrically. */
+.reader-page-frame {
+    width: 100%;
+    max-width: 760px;
+    height: 100%;
+    padding: 40px 0;
+    box-sizing: border-box;
+    overflow: hidden;
+    position: relative;
 }
 
 .reader-content {
-    max-width: 720px;
-    margin: 0 auto;
-    padding: 48px;
+    height: 100%;
+    box-sizing: border-box;
     font-size: 16px;
     line-height: 1.8;
     color: var(--rinch-color-text);
     -webkit-font-smoothing: antialiased;
     user-select: text;
-    cursor: text;
+    /* Multi-column pagination: column-width / column-gap / horizontal padding
+       are set imperatively once content dimensions are known. */
+    column-fill: auto;
+    transition: transform 0.28s ease;
+    will-change: transform;
+}
+
+/* Page controls bar under the reading column. */
+.reader-pagebar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 6px 16px;
+    border-top: 1px solid var(--rinch-color-border);
+    background: var(--pw-color-deep);
+    flex-shrink: 0;
+    font-size: 13px;
+    color: var(--rinch-color-dimmed);
+    user-select: none;
+}
+
+.reader-pagebar-indicator {
+    min-width: 70px;
+    text-align: center;
+}
+
+/* Bookmarks list in the sidebar. */
+.reader-sidebar-bookmarks {
+    border-top: 1px solid var(--rinch-color-border);
+    padding: 8px 0;
+    max-height: 30%;
+    overflow-y: auto;
+    flex-shrink: 0;
+}
+
+.reader-bookmarks-title {
+    padding: 4px 16px 6px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--rinch-color-dimmed);
+}
+
+.reader-bookmark-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px 4px 16px;
+    font-size: 13px;
+}
+
+.reader-bookmark-item:hover {
+    background: var(--rinch-color-surface);
+}
+
+.reader-bookmark-label {
+    flex: 1;
+    cursor: pointer;
+    color: var(--rinch-color-teal-4);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .reader-content p { margin: 0 0 8px 0; }
@@ -354,7 +441,7 @@ const READER_CSS: &str = r#"
 @media (max-width: 768px) {
     .reader-mobile-topbar { display: flex; }
     .reader-topbar { display: none; }
-    .reader-content { padding: 16px; }
+    .reader-page-frame { padding: 20px 0; }
 
     /* Sidebar drawer */
     .reader-sidebar {
@@ -396,6 +483,107 @@ const READER_CSS: &str = r#"
     .feedback-tooltip textarea { width: 100%; }
 }
 "#;
+
+/// Where the reader gets its data. Beta readers hit the token-scoped public
+/// endpoints (with feedback + progress persistence); author preview reads the
+/// authenticated book/chapter endpoints and never writes anything back.
+#[derive(Clone)]
+enum ReaderSource {
+    Beta(String),          // beta link token
+    AuthorPreview(String), // book_id
+}
+
+/// Horizontal reading margin (px) for the paginated column, by viewport width.
+fn side_pad(vw: f64) -> f64 {
+    if vw < 640.0 { 18.0 } else { 48.0 }
+}
+
+fn reader_content_el() -> Option<web_sys::HtmlElement> {
+    web_sys::window()?
+        .document()?
+        .query_selector("#reader-content")
+        .ok()
+        .flatten()?
+        .dyn_into()
+        .ok()
+}
+
+/// Apply the multi-column styling to `#reader-content` (sized to the live
+/// viewport) and return the resulting total page count. Reading `scroll_width`
+/// forces the synchronous reflow we need before counting pages.
+fn measure_and_style() -> i32 {
+    let Some(el) = reader_content_el() else { return 1 };
+    let vw = el.client_width() as f64;
+    if vw <= 1.0 {
+        return 1;
+    }
+    let pad = side_pad(vw);
+    let col_w = (vw - 2.0 * pad).max(1.0);
+    let style = el.style();
+    let _ = style.set_property("column-width", &format!("{}px", col_w));
+    let _ = style.set_property("column-gap", &format!("{}px", pad));
+    let _ = style.set_property("padding-left", &format!("{}px", pad));
+    let _ = style.set_property("padding-right", &format!("{}px", pad));
+    let stride = vw - pad; // = col_w + gap
+    let sw = el.scroll_width() as f64;
+    // scroll_width == pad + n * stride, so (sw - pad) / stride == n.
+    (((sw - pad) / stride) - 0.01).ceil().max(1.0) as i32
+}
+
+/// Translate the columns element so `page` is the visible page.
+fn apply_page_transform(page: i32) {
+    if let Some(el) = reader_content_el() {
+        let vw = el.client_width() as f64;
+        let pad = side_pad(vw);
+        let stride = (vw - pad).max(0.0);
+        let _ = el
+            .style()
+            .set_property("transform", &format!("translateX(-{}px)", (page as f64) * stride));
+    }
+}
+
+/// True if the current document selection is empty (used so a text-selection
+/// drag for feedback isn't mistaken for a page swipe).
+fn selection_is_empty() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_selection().ok().flatten())
+        .map(|s| s.to_string().as_string().unwrap_or_default().trim().is_empty())
+        .unwrap_or(true)
+}
+
+fn reader_bookmark_item<F, D, DO>(
+    __scope: &mut RenderScope,
+    bm: BetaBookmark,
+    open: F,
+    del: D,
+) -> NodeHandle
+where
+    F: Fn(String, i32) + 'static + Copy,
+    D: Fn(String) -> DO + 'static + Copy,
+    DO: Fn() + 'static,
+{
+    let cid = bm.chapter_id.clone();
+    let page = bm.page as i32;
+    let label = bm.label.clone();
+    let del_id = bm.id.clone();
+    rsx! {
+        div { class: "reader-bookmark-item", key: bm.id,
+            div {
+                class: "reader-bookmark-label",
+                onclick: move || open(cid.clone(), page),
+                {label}
+            }
+            ActionIcon {
+                variant: "subtle",
+                size: "xs",
+                color: "red",
+                onclick: del(del_id),
+                {render_tabler_icon(__scope, TablerIcon::Trash, TablerIconStyle::Outline)}
+            }
+        }
+    }
+}
 
 fn reader_chapter_item<F, FO>(
     __scope: &mut RenderScope,
@@ -508,15 +696,41 @@ fn reply_item(
 
 #[component]
 pub fn reader_page(token: String) -> NodeHandle {
+    reader_body(__scope, ReaderSource::Beta(token))
+}
+
+#[component]
+pub fn reader_preview_page(book_id: String) -> NodeHandle {
+    reader_body(__scope, ReaderSource::AuthorPreview(book_id))
+}
+
+/// Shared reader implementation for both beta readers and author preview.
+fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     let store = use_store::<AppStore>();
+
+    let is_preview = matches!(source, ReaderSource::AuthorPreview(_));
+    let (token, book_id) = match &source {
+        ReaderSource::Beta(t) => (t.clone(), String::new()),
+        ReaderSource::AuthorPreview(b) => (String::new(), b.clone()),
+    };
+    let token_signal = Signal::new(token.clone());
+    let book_id_signal = Signal::new(book_id.clone());
+
     let view_data: Signal<Option<BetaReaderView>> = Signal::new(None);
     let current_chapter: Signal<Option<Chapter>> = Signal::new(None);
     let active_chapter_id: Signal<Option<String>> = Signal::new(None);
     let feedback_list: Signal<Vec<BetaFeedback>> = Signal::new(Vec::new());
+    let bookmarks: Signal<Vec<BetaBookmark>> = Signal::new(Vec::new());
     let show_feedback_panel: Signal<bool> = Signal::new(true);
     let sidebar_open: Signal<bool> = Signal::new(false);
     let mobile_feedback_open: Signal<bool> = Signal::new(false);
     let error_msg: Signal<Option<String>> = Signal::new(None);
+
+    // Pagination state
+    let current_page: Signal<i32> = Signal::new(0);
+    let total_pages: Signal<i32> = Signal::new(1);
+    // Debounce handle for progress saves (a window timeout id, or None).
+    let progress_timer: Signal<Option<i32>> = Signal::new(None);
 
     // Tooltip state
     let tooltip_visible: Signal<bool> = Signal::new(false);
@@ -526,125 +740,295 @@ pub fn reader_page(token: String) -> NodeHandle {
     let tooltip_context: Signal<String> = Signal::new(String::new());
     let tooltip_comment: Signal<String> = Signal::new(String::new());
 
-    let token_signal = Signal::new(token.clone());
-
-    // Fetch book view
-    let tok = token.clone();
-    wasm_bindgen_futures::spawn_local(async move {
-        match api::get::<BetaReaderView>(&format!("/api/beta/{}", tok)).await {
-            Ok(data) => {
-                if let Some(ref fs) = data.font_settings {
-                    fonts::load_book_fonts(fs);
-                }
-                view_data.set(Some(data));
-            }
-            Err(e) => {
-                error_msg.set(Some(e.message));
-            }
+    // ── Auto last-page: persist reading position, debounced (beta only) ──────
+    let save_progress = move |chapter_id: String, page: i32| {
+        if is_preview {
+            return;
         }
-    });
-
-    // Fetch feedback
-    let tok = token.clone();
-    wasm_bindgen_futures::spawn_local(async move {
-        if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/beta/{}/feedback", tok)).await {
-            feedback_list.set(fb);
+        let window = match web_sys::window() {
+            Some(w) => w,
+            None => return,
+        };
+        if let Some(h) = progress_timer.get() {
+            window.clear_timeout_with_handle(h);
         }
-    });
-
-    // Check session first, then auto-claim if logged in.
-    // Auth check must come first — the claim endpoint's Session extractor
-    // could create a new empty session that overwrites the valid cookie.
-    {
-        let tok = token.clone();
-        let store = use_store::<AppStore>();
-        wasm_bindgen_futures::spawn_local(async move {
-            // Check if we have a valid session
-            if store.current_user.get().is_none() {
-                if let Ok(user) = api::get::<plotweb_common::User>("/api/auth/me").await {
-                    store.current_user.set(Some(user));
-                }
-            }
-            // Only claim if we're logged in
-            if store.current_user.get().is_some() {
-                api::post::<_, serde_json::Value>(&format!("/api/beta/{}/claim", tok), &serde_json::json!({})).await.ok();
-            }
-        });
-    }
-
-    // Connect WebSocket for real-time feedback
-    {
-        let tok = token.clone();
-        let ws_url = crate::ws::ws_url(&format!("/api/beta/{}/feedback/ws", tok));
-        crate::ws::connect_feedback_ws(&ws_url, move |msg| {
-            match msg {
-                crate::ws::WsMessage::NewFeedback(fb) => {
-                    feedback_list.update(|list| {
-                        if !list.iter().any(|f| f.id == fb.id) {
-                            list.insert(0, fb);
-                        }
-                    });
-                }
-                crate::ws::WsMessage::NewReply { feedback_id, reply } => {
-                    feedback_list.update(|list| {
-                        if let Some(fb) = list.iter_mut().find(|f| f.id == feedback_id) {
-                            if !fb.replies.iter().any(|r| r.id == reply.id) {
-                                fb.replies.push(reply);
-                            }
-                        }
-                    });
-                }
-                crate::ws::WsMessage::FeedbackResolved { feedback_id, resolved } => {
-                    feedback_list.update(|list| {
-                        if let Some(fb) = list.iter_mut().find(|f| f.id == feedback_id) {
-                            fb.resolved = resolved;
-                        }
-                    });
-                }
-                crate::ws::WsMessage::FeedbackDeleted { feedback_id } => {
-                    feedback_list.update(|list| list.retain(|f| f.id != feedback_id));
-                }
-            }
-        });
-    }
-
-    // Load chapter function
-    let load_chapter = move |chapter_id: String| {
-        move || {
-            active_chapter_id.set(Some(chapter_id.clone()));
-            tooltip_visible.set(false);
-            sidebar_open.set(false);
-            let tok = token_signal.get();
-            let cid = chapter_id.clone();
+        let tok = token_signal.get();
+        let closure = wasm_bindgen::closure::Closure::once(move || {
             wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(ch) = api::get::<Chapter>(
-                    &format!("/api/beta/{}/chapters/{}", tok, cid),
-                ).await {
-                    // Guard: a newer chapter may have been selected while this
-                    // request was in flight. Don't inject stale content.
-                    if active_chapter_id.get().as_deref() != Some(cid.as_str()) {
+                let req = UpdateReadingProgressRequest { chapter_id, page: page as i64 };
+                let _ = api::put::<_, serde_json::Value>(
+                    &format!("/api/beta/{}/progress", tok),
+                    &req,
+                ).await;
+            });
+        });
+        let handle = window
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                closure.as_ref().unchecked_ref(),
+                500,
+            )
+            .unwrap_or(-1);
+        closure.forget();
+        progress_timer.set(Some(handle));
+    };
+
+    // ── Pagination: (re)measure the column layout and place a page ───────────
+    // Deferred to a rAF because inner_html fills / reflows asynchronously.
+    let repaginate = move |target_page: i32| {
+        let closure = wasm_bindgen::closure::Closure::once(move || {
+            let total = measure_and_style();
+            total_pages.set(total);
+            let clamped = target_page.max(0).min((total - 1).max(0));
+            current_page.set(clamped);
+            apply_page_transform(clamped);
+            if let Some(cid) = active_chapter_id.get() {
+                save_progress(cid, clamped);
+            }
+        });
+        if let Some(w) = web_sys::window() {
+            w.request_animation_frame(closure.as_ref().unchecked_ref()).ok();
+        }
+        closure.forget();
+    };
+
+    // ── Open a chapter, optionally resuming at `target_page` ─────────────────
+    let open_chapter = move |chapter_id: String, target_page: i32| {
+        active_chapter_id.set(Some(chapter_id.clone()));
+        tooltip_visible.set(false);
+        sidebar_open.set(false);
+        current_page.set(0);
+        total_pages.set(1);
+        let cid = chapter_id.clone();
+        let url = if is_preview {
+            format!("/api/books/{}/chapters/{}", book_id_signal.get(), cid)
+        } else {
+            format!("/api/beta/{}/chapters/{}", token_signal.get(), cid)
+        };
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Ok(ch) = api::get::<Chapter>(&url).await {
+                // Guard: a newer chapter may have been selected while this
+                // request was in flight. Don't inject stale content.
+                if active_chapter_id.get().as_deref() != Some(cid.as_str()) {
+                    return;
+                }
+                current_chapter.set(Some(ch.clone()));
+                let content_html = if ch.content.is_empty() {
+                    "<p><em>This chapter is empty.</em></p>".to_string()
+                } else {
+                    editor_utils::markdown_to_html(&ch.content)
+                };
+                let guard_cid = cid.clone();
+                editor_utils::with_element_when_ready("#reader-content".to_string(), move |el| {
+                    if active_chapter_id.get().as_deref() != Some(guard_cid.as_str()) {
                         return;
                     }
-                    current_chapter.set(Some(ch.clone()));
-                    // Inject as soon as the reader node is present (deterministic),
-                    // rather than guessing with a fixed setTimeout.
-                    let content_html = if ch.content.is_empty() {
-                        "<p><em>This chapter is empty.</em></p>".to_string()
-                    } else {
-                        editor_utils::markdown_to_html(&ch.content)
-                    };
-                    let guard_cid = cid.clone();
-                    editor_utils::with_element_when_ready("#reader-content".to_string(), move |el| {
-                        if active_chapter_id.get().as_deref() != Some(guard_cid.as_str()) {
-                            return;
-                        }
-                        el.set_inner_html(&editor_utils::sanitize_html(&content_html));
+                    el.set_inner_html(&editor_utils::sanitize_html(&content_html));
+                    repaginate(target_page);
+                    // A second pass catches late reflow (e.g. images loading).
+                    let closure = wasm_bindgen::closure::Closure::once(move || {
+                        repaginate(current_page.get());
                     });
+                    if let Some(w) = web_sys::window() {
+                        w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                            closure.as_ref().unchecked_ref(),
+                            250,
+                        ).ok();
+                    }
+                    closure.forget();
+                });
+            }
+        });
+    };
+
+    // ── Turn to a page (clamped to the valid range) ──────────────────────────
+    let go_to_page = move |page: i32| {
+        let total = total_pages.get();
+        let clamped = page.max(0).min((total - 1).max(0));
+        if clamped == current_page.get() {
+            return;
+        }
+        current_page.set(clamped);
+        apply_page_transform(clamped);
+        if let Some(cid) = active_chapter_id.get() {
+            save_progress(cid, clamped);
+        }
+    };
+
+    // ── Bookmarks (beta only) ────────────────────────────────────────────────
+    let add_bookmark = move || {
+        if is_preview {
+            return;
+        }
+        let (Some(cid), Some(ch)) = (active_chapter_id.get(), current_chapter.get()) else {
+            return;
+        };
+        let page = current_page.get();
+        let label = format!("Ch. {} \u{b7} p.{}", ch.title, page + 1);
+        let tok = token_signal.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            let req = CreateBookmarkRequest { chapter_id: cid, page: page as i64, label };
+            if let Ok(bm) = api::post::<_, BetaBookmark>(
+                &format!("/api/beta/{}/bookmarks", tok),
+                &req,
+            ).await {
+                bookmarks.update(|list| list.push(bm));
+            }
+        });
+    };
+
+    let delete_bookmark = move |id: String| {
+        move || {
+            if is_preview {
+                return;
+            }
+            let tok = token_signal.get();
+            let bid = id.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if api::delete_req::<serde_json::Value>(
+                    &format!("/api/beta/{}/bookmarks/{}", tok, bid),
+                ).await.is_ok() {
+                    bookmarks.update(|list| list.retain(|b| b.id != bid));
                 }
             });
         }
     };
 
+    // ── Load book view (branches on source) ──────────────────────────────────
+    match source.clone() {
+        ReaderSource::Beta(tok) => {
+            let tok2 = tok.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                match api::get::<BetaReaderView>(&format!("/api/beta/{}", tok2)).await {
+                    Ok(data) => {
+                        if let Some(ref fs) = data.font_settings {
+                            fonts::load_book_fonts(fs);
+                        }
+                        bookmarks.set(data.bookmarks.clone());
+                        let resume = data.last_chapter_id.clone();
+                        let resume_page = data.last_page as i32;
+                        view_data.set(Some(data));
+                        // Resume where the reader left off, if permitted.
+                        if let Some(cid) = resume {
+                            open_chapter(cid, resume_page);
+                        }
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(e.message));
+                    }
+                }
+            });
+
+            // Fetch feedback
+            let tokf = tok.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/beta/{}/feedback", tokf)).await {
+                    feedback_list.set(fb);
+                }
+            });
+
+            // Check session first, then auto-claim if logged in.
+            // Auth check must come first — the claim endpoint's Session extractor
+            // could create a new empty session that overwrites the valid cookie.
+            {
+                let tokc = tok.clone();
+                let store = use_store::<AppStore>();
+                wasm_bindgen_futures::spawn_local(async move {
+                    if store.current_user.get().is_none() {
+                        if let Ok(user) = api::get::<plotweb_common::User>("/api/auth/me").await {
+                            store.current_user.set(Some(user));
+                        }
+                    }
+                    if store.current_user.get().is_some() {
+                        api::post::<_, serde_json::Value>(&format!("/api/beta/{}/claim", tokc), &serde_json::json!({})).await.ok();
+                    }
+                });
+            }
+
+            // Connect WebSocket for real-time feedback
+            {
+                let ws_url = crate::ws::ws_url(&format!("/api/beta/{}/feedback/ws", tok));
+                crate::ws::connect_feedback_ws(&ws_url, move |msg| {
+                    match msg {
+                        crate::ws::WsMessage::NewFeedback(fb) => {
+                            feedback_list.update(|list| {
+                                if !list.iter().any(|f| f.id == fb.id) {
+                                    list.insert(0, fb);
+                                }
+                            });
+                        }
+                        crate::ws::WsMessage::NewReply { feedback_id, reply } => {
+                            feedback_list.update(|list| {
+                                if let Some(fb) = list.iter_mut().find(|f| f.id == feedback_id) {
+                                    if !fb.replies.iter().any(|r| r.id == reply.id) {
+                                        fb.replies.push(reply);
+                                    }
+                                }
+                            });
+                        }
+                        crate::ws::WsMessage::FeedbackResolved { feedback_id, resolved } => {
+                            feedback_list.update(|list| {
+                                if let Some(fb) = list.iter_mut().find(|f| f.id == feedback_id) {
+                                    fb.resolved = resolved;
+                                }
+                            });
+                        }
+                        crate::ws::WsMessage::FeedbackDeleted { feedback_id } => {
+                            feedback_list.update(|list| list.retain(|f| f.id != feedback_id));
+                        }
+                    }
+                });
+            }
+        }
+        ReaderSource::AuthorPreview(bid) => {
+            // Build an equivalent in-memory view from the authenticated author
+            // endpoints. No feedback / progress / bookmark writes in this mode.
+            wasm_bindgen_futures::spawn_local(async move {
+                let book = api::get::<Book>(&format!("/api/books/{}", bid)).await;
+                let chapters = api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid)).await;
+                match (book, chapters) {
+                    (Ok(book), Ok(chs)) => {
+                        if let Some(fs) = &book.font_settings {
+                            fonts::load_book_fonts(fs);
+                        }
+                        let mut summaries: Vec<BetaChapterSummary> = chs
+                            .iter()
+                            .map(|c| BetaChapterSummary {
+                                id: c.id.clone(),
+                                title: c.title.clone(),
+                                sort_order: c.sort_order,
+                            })
+                            .collect();
+                        summaries.sort_by_key(|s| s.sort_order);
+                        let view = BetaReaderView {
+                            book_title: book.title.clone(),
+                            book_description: book.description.clone(),
+                            reader_name: "Preview".to_string(),
+                            chapters: summaries,
+                            font_settings: book.font_settings.clone(),
+                            cover_image: book.cover_image.clone(),
+                            last_chapter_id: None,
+                            last_page: 0,
+                            bookmarks: Vec::new(),
+                        };
+                        view_data.set(Some(view));
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        error_msg.set(Some(e.message));
+                    }
+                }
+            });
+        }
+    }
+
+    // Sidebar chapter click → open at page 0.
+    let load_chapter = move |chapter_id: String| {
+        move || {
+            open_chapter(chapter_id.clone(), 0);
+        }
+    };
+
+    // Feedback text-selection is beta-only (no feedback panel in preview).
+    if !is_preview {
     // Shared selection handler for both mouse and touch
     let handle_selection = std::rc::Rc::new(move |client_x: i32, client_y: i32| {
         let doc = web_sys::window().unwrap().document().unwrap();
@@ -752,6 +1136,84 @@ pub fn reader_page(token: String) -> NodeHandle {
             .ok();
         touchend_closure.forget();
     }
+    } // end if !is_preview (feedback selection)
+
+    // ── Keyboard paging (Arrow left/right), ignoring text inputs ─────────────
+    {
+        let keydown_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+            if let Some(t) = event.target() {
+                if let Ok(el) = t.dyn_into::<web_sys::Element>() {
+                    let tag = el.tag_name().to_lowercase();
+                    if tag == "textarea" || tag == "input" {
+                        return;
+                    }
+                }
+            }
+            match event.key().as_str() {
+                "ArrowLeft" => go_to_page(current_page.get() - 1),
+                "ArrowRight" => go_to_page(current_page.get() + 1),
+                _ => {}
+            }
+        }) as Box<dyn FnMut(_)>);
+        web_sys::window().unwrap().document().unwrap()
+            .add_event_listener_with_callback("keydown", keydown_closure.as_ref().unchecked_ref())
+            .ok();
+        keydown_closure.forget();
+    }
+
+    // ── Touch swipe paging (skipped while text is selected for feedback) ─────
+    {
+        let swipe_start = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+        {
+            let s = swipe_start.clone();
+            let touchstart_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::TouchEvent| {
+                if let Some(t) = event.touches().get(0) {
+                    s.set(t.client_x() as f64);
+                }
+            }) as Box<dyn FnMut(_)>);
+            web_sys::window().unwrap().document().unwrap()
+                .add_event_listener_with_callback("touchstart", touchstart_closure.as_ref().unchecked_ref())
+                .ok();
+            touchstart_closure.forget();
+        }
+        {
+            let s = swipe_start.clone();
+            let touchend_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::TouchEvent| {
+                let within = event
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                    .and_then(|el| el.closest("#reader-viewport").ok().flatten())
+                    .is_some();
+                if !within || !selection_is_empty() {
+                    return;
+                }
+                let end_x = event.changed_touches().get(0).map(|t| t.client_x() as f64).unwrap_or(s.get());
+                let dx = end_x - s.get();
+                if dx.abs() > 45.0 {
+                    if dx < 0.0 {
+                        go_to_page(current_page.get() + 1);
+                    } else {
+                        go_to_page(current_page.get() - 1);
+                    }
+                }
+            }) as Box<dyn FnMut(_)>);
+            web_sys::window().unwrap().document().unwrap()
+                .add_event_listener_with_callback("touchend", touchend_closure.as_ref().unchecked_ref())
+                .ok();
+            touchend_closure.forget();
+        }
+    }
+
+    // ── Re-flow pages on window resize ───────────────────────────────────────
+    {
+        let resize_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            repaginate(current_page.get());
+        }) as Box<dyn FnMut(_)>);
+        web_sys::window().unwrap()
+            .add_event_listener_with_callback("resize", resize_closure.as_ref().unchecked_ref())
+            .ok();
+        resize_closure.forget();
+    }
 
     // Submit feedback
     let submit_feedback = move || {
@@ -818,6 +1280,8 @@ pub fn reader_page(token: String) -> NodeHandle {
 
     let toggle_feedback = move || {
         show_feedback_panel.update(|v| *v = !*v);
+        // Toggling the side panel changes the reading measure → re-flow pages.
+        repaginate(current_page.get());
     };
 
     rsx! {
@@ -905,6 +1369,14 @@ pub fn reader_page(token: String) -> NodeHandle {
                                 {reader_chapter_item(__scope, ch.id.clone(), ch.title.clone(), ch.sort_order, active_chapter_id, load_chapter)}
                             }
                         }
+                        if !is_preview && !bookmarks.get().is_empty() {
+                            div { class: "reader-sidebar-bookmarks",
+                                div { class: "reader-bookmarks-title", "Bookmarks" }
+                                for bm in bookmarks.get() {
+                                    {reader_bookmark_item(__scope, bm, open_chapter, delete_bookmark)}
+                                }
+                            }
+                        }
                         if store.current_user.get().is_some() {
                             div { class: "reader-sidebar-footer",
                                 Button {
@@ -930,11 +1402,22 @@ pub fn reader_page(token: String) -> NodeHandle {
                             Text { weight: "600", size: "sm",
                                 {move || current_chapter.get().map(|c| c.title.clone()).unwrap_or_else(|| "Select a chapter".into())}
                             }
-                            ActionIcon {
-                                variant: {move || if mobile_feedback_open.get() { "filled".to_string() } else { "subtle".to_string() }},
-                                size: "sm",
-                                onclick: move || mobile_feedback_open.update(|v| *v = !*v),
-                                {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
+                            div {
+                                style: "display: flex; align-items: center; gap: 4px;",
+                                if !is_preview {
+                                    ActionIcon {
+                                        variant: "subtle",
+                                        size: "sm",
+                                        onclick: add_bookmark,
+                                        {render_tabler_icon(__scope, TablerIcon::Bookmark, TablerIconStyle::Outline)}
+                                    }
+                                    ActionIcon {
+                                        variant: {move || if mobile_feedback_open.get() { "filled".to_string() } else { "subtle".to_string() }},
+                                        size: "sm",
+                                        onclick: move || mobile_feedback_open.update(|v| *v = !*v),
+                                        {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
+                                    }
+                                }
                             }
                         }
 
@@ -948,12 +1431,23 @@ pub fn reader_page(token: String) -> NodeHandle {
                             }
                             div {
                                 style: "display: flex; align-items: center; gap: 8px;",
-                                Text { size: "xs", color: "dimmed", "Select text to leave feedback" }
-                                ActionIcon {
-                                    variant: {move || if show_feedback_panel.get() { "filled".to_string() } else { "subtle".to_string() }},
-                                    size: "sm",
-                                    onclick: toggle_feedback,
-                                    {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
+                                if is_preview {
+                                    Badge { variant: "light", size: "sm", "Preview" }
+                                }
+                                if !is_preview {
+                                    Text { size: "xs", color: "dimmed", "Select text to leave feedback" }
+                                    ActionIcon {
+                                        variant: "subtle",
+                                        size: "sm",
+                                        onclick: add_bookmark,
+                                        {render_tabler_icon(__scope, TablerIcon::Bookmark, TablerIconStyle::Outline)}
+                                    }
+                                    ActionIcon {
+                                        variant: {move || if show_feedback_panel.get() { "filled".to_string() } else { "subtle".to_string() }},
+                                        size: "sm",
+                                        onclick: toggle_feedback,
+                                        {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
+                                    }
                                 }
                             }
                         }
@@ -972,20 +1466,43 @@ pub fn reader_page(token: String) -> NodeHandle {
                         } else {
                             div {
                                 style: "display: flex; flex: 1; overflow: hidden;",
-                                div { class: "reader-scroll",
-                                    div {
-                                        class: "reader-content",
-                                        id: "reader-content",
+                                // Paginated reading column + page controls
+                                div { class: "reader-reading-col",
+                                    div { class: "reader-viewport", id: "reader-viewport",
+                                        div { class: "reader-page-frame",
+                                            div {
+                                                class: "reader-content",
+                                                id: "reader-content",
+                                            }
+                                        }
+                                    }
+                                    div { class: "reader-pagebar",
+                                        ActionIcon {
+                                            variant: "subtle",
+                                            size: "sm",
+                                            onclick: move || go_to_page(current_page.get() - 1),
+                                            {render_tabler_icon(__scope, TablerIcon::ChevronLeft, TablerIconStyle::Outline)}
+                                        }
+                                        div { class: "reader-pagebar-indicator",
+                                            {move || format!("{} / {}", current_page.get() + 1, total_pages.get())}
+                                        }
+                                        ActionIcon {
+                                            variant: "subtle",
+                                            size: "sm",
+                                            onclick: move || go_to_page(current_page.get() + 1),
+                                            {render_tabler_icon(__scope, TablerIcon::ChevronRight, TablerIconStyle::Outline)}
+                                        }
                                     }
                                 }
 
                                 // Mobile feedback backdrop
                                 div {
-                                    class: {move || if mobile_feedback_open.get() { "reader-feedback-backdrop open" } else { "reader-feedback-backdrop" }},
+                                    class: {move || if !is_preview && mobile_feedback_open.get() { "reader-feedback-backdrop open" } else { "reader-feedback-backdrop" }},
                                     onclick: move || mobile_feedback_open.set(false),
                                 }
 
-                                // Feedback panel
+                                // Feedback panel (beta only)
+                                if !is_preview {
                                 div {
                                     class: {move || {
                                         let desktop = show_feedback_panel.get();
@@ -1024,13 +1541,15 @@ pub fn reader_page(token: String) -> NodeHandle {
                                         }
                                     }
                                 }
+                                } // end if !is_preview (feedback panel)
                             }
                         }
                     }
                 }
             }
 
-            // Feedback tooltip (floating)
+            // Feedback tooltip (floating, beta only)
+            if !is_preview {
             div {
                 class: {move || if tooltip_visible.get() { "feedback-tooltip visible" } else { "feedback-tooltip" }},
                 style: {move || format!(
@@ -1066,6 +1585,7 @@ pub fn reader_page(token: String) -> NodeHandle {
                     }
                 }
             }
+            } // end if !is_preview (feedback tooltip)
         }
     }
 }

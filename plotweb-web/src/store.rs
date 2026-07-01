@@ -43,6 +43,9 @@ pub enum Route {
     Dashboard,
     Book(String),
     Reader(String),
+    /// Author "preview as reader" for a book (by book_id), using the improved
+    /// paginated reader without feedback/progress persistence.
+    ReaderPreview(String),
     ThemePreview,
 }
 
@@ -54,6 +57,7 @@ impl Route {
             Route::Register => "/register".into(),
             Route::Book(id) => format!("/book/{}", id),
             Route::Reader(token) => format!("/read/{}", token),
+            Route::ReaderPreview(book_id) => format!("/preview/{}", book_id),
             Route::ThemePreview => "/theme".into(),
         }
     }
@@ -79,6 +83,14 @@ impl Route {
                     Route::Dashboard
                 } else {
                     Route::Reader(token.to_string())
+                }
+            }
+            _ if path.starts_with("/preview/") => {
+                let id = &path[9..];
+                if id.is_empty() {
+                    Route::Dashboard
+                } else {
+                    Route::ReaderPreview(id.to_string())
                 }
             }
             _ => Route::Dashboard,

@@ -147,6 +147,10 @@ pub fn app_shell() -> NodeHandle {
                     style: "height: 100dvh; overflow: hidden;",
                     {crate::pages::reader::reader_page(__scope, _token)}
                 },
+                Route::ReaderPreview(_book_id) => div {
+                    style: "height: 100dvh; overflow: hidden;",
+                    {crate::pages::reader::reader_preview_page(__scope, _book_id)}
+                },
             }
         }
     }

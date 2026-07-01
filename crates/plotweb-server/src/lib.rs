@@ -207,6 +207,22 @@ pub fn api_router(state: AppState) -> Router {
             "/api/beta/{token}/feedback/{id}/replies",
             post(routes::beta::reader_reply_to_feedback),
         )
+        .route(
+            "/api/beta/{token}/progress",
+            put(routes::beta::reader_update_progress),
+        )
+        .route(
+            "/api/beta/{token}/bookmarks",
+            get(routes::beta::reader_list_bookmarks),
+        )
+        .route(
+            "/api/beta/{token}/bookmarks",
+            post(routes::beta::reader_create_bookmark),
+        )
+        .route(
+            "/api/beta/{token}/bookmarks/{id}",
+            delete(routes::beta::reader_delete_bookmark),
+        )
         .route("/api/books/{book_id}/feedback/ws", get(ws_author_feedback))
         .route("/api/beta/{token}/feedback/ws", get(ws_reader_feedback))
         .with_state(state)

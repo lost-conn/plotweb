@@ -201,6 +201,40 @@ pub struct BetaReaderView {
     pub font_settings: Option<FontSettings>,
     #[serde(default)]
     pub cover_image: Option<String>,
+    /// Improved reader mode: the chapter/page the reader last left off at, and
+    /// their saved bookmarks. `last_chapter_id` is `None`/`last_page` is 0 when
+    /// nothing has been read yet.
+    #[serde(default)]
+    pub last_chapter_id: Option<String>,
+    #[serde(default)]
+    pub last_page: i64,
+    #[serde(default)]
+    pub bookmarks: Vec<BetaBookmark>,
+}
+
+/// A reader's saved bookmark (chapter + page in the paginated reader).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BetaBookmark {
+    pub id: String,
+    pub chapter_id: String,
+    pub page: i64,
+    pub label: String,
+    pub created_at: String,
+}
+
+/// Body for `PUT /api/beta/{token}/progress` — auto last-page tracking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateReadingProgressRequest {
+    pub chapter_id: String,
+    pub page: i64,
+}
+
+/// Body for `POST /api/beta/{token}/bookmarks`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateBookmarkRequest {
+    pub chapter_id: String,
+    pub page: i64,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

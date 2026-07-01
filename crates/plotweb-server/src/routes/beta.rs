@@ -314,6 +314,7 @@ pub async fn reader_view(
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
     }
 
+    let link_id = link.string("uuid").unwrap_or_default();
     let book_id = link.string("book_id").unwrap_or_default();
     let reader_name = link.string("reader_name").unwrap_or_default();
     let max_chapter_index = link.i64("max_chapter_index");
@@ -351,6 +352,20 @@ pub async fn reader_view(
         .collect();
     summaries.sort_by_key(|s| s.sort_order);
 
+    // Improved reader mode: resume position + bookmarks. Only surface a saved
+    // position/bookmark for a chapter this reader can still access (mirrors the
+    // max_chapter_index guard).
+    let accessible = |cid: &str| summaries.iter().any(|s| s.id == cid);
+    let last_chapter_id = link
+        .string("last_chapter_id")
+        .filter(|cid| !cid.is_empty() && accessible(cid));
+    let last_page = link.i64("last_page").unwrap_or(0).max(0);
+    let bookmarks = fetch_bookmarks_for_link(&state, &link_id)
+        .await
+        .into_iter()
+        .filter(|b| accessible(&b.chapter_id))
+        .collect();
+
     let view = BetaReaderView {
         book_title: book_data.title,
         book_description: book_data.description,
@@ -358,6 +373,9 @@ pub async fn reader_view(
         chapters: summaries,
         font_settings: book_data.font_settings,
         cover_image: rewrite_cover_for_beta(book_data.cover_image, &token),
+        last_chapter_id,
+        last_page,
+        bookmarks,
     };
 
     (StatusCode::OK, Json(serde_json::to_value(view).unwrap()))
@@ -414,6 +432,161 @@ pub async fn reader_chapter(
         }
         Err(_) => (StatusCode::NOT_FOUND, Json(json!({ "error": "chapter not found" }))),
     }
+}
+
+// ── Improved Reader Mode: progress + bookmarks (token-based, no auth) ────────
+
+/// True if `chapter_id` exists in the link's book and is within the reader's
+/// allowed range. Mirrors the access check used by `reader_chapter`.
+async fn reader_can_access_chapter(
+    state: &AppState,
+    link: &crate::rhype::RhypeObject,
+    chapter_id: &str,
+) -> bool {
+    let book_id = link.string("book_id").unwrap_or_default();
+    let max_chapter_index = link.i64("max_chapter_index");
+    let pinned_commit = link.string("pinned_commit");
+    let ch = if let Some(ref commit) = pinned_commit {
+        state.books.get_chapter_at_commit(&book_id, chapter_id, commit).await
+    } else {
+        state.books.get_chapter(&book_id, chapter_id).await
+    };
+    match ch {
+        Ok(ch) => max_chapter_index.map(|max| ch.sort_order <= max).unwrap_or(true),
+        Err(_) => false,
+    }
+}
+
+/// Update the reader's last-read position (auto last-page). Idempotent.
+pub async fn reader_update_progress(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+    Json(req): Json<UpdateReadingProgressRequest>,
+) -> impl IntoResponse {
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    };
+
+    if !link.bool("active").unwrap_or(false) {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
+    }
+
+    // Only persist a position within the reader's allowed range.
+    if !reader_can_access_chapter(&state, &link, &req.chapter_id).await {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "chapter not accessible" })));
+    }
+
+    let fields = Fields::new()
+        .str("last_chapter_id", &req.chapter_id)
+        .int("last_page", req.page.max(0))
+        .render();
+    let _ = state
+        .rhype
+        .exec(format!(
+            "BetaLink.filter(.token == {}).update({})",
+            quote(&token),
+            fields
+        ))
+        .await;
+
+    (StatusCode::OK, Json(json!({ "ok": true })))
+}
+
+/// List the reader's bookmarks (oldest first).
+pub async fn reader_list_bookmarks(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> impl IntoResponse {
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    };
+
+    if !link.bool("active").unwrap_or(false) {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
+    }
+
+    let link_id = link.string("uuid").unwrap_or_default();
+    let bookmarks = fetch_bookmarks_for_link(&state, &link_id).await;
+    (StatusCode::OK, Json(serde_json::to_value(bookmarks).unwrap()))
+}
+
+/// Create a bookmark for the current chapter+page.
+pub async fn reader_create_bookmark(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+    Json(req): Json<CreateBookmarkRequest>,
+) -> impl IntoResponse {
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    };
+
+    if !link.bool("active").unwrap_or(false) {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
+    }
+
+    if !reader_can_access_chapter(&state, &link, &req.chapter_id).await {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "chapter not accessible" })));
+    }
+
+    let link_id = link.string("uuid").unwrap_or_default();
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let page = req.page.max(0);
+
+    let fields = Fields::new()
+        .str("uuid", &id)
+        .str("link_id", &link_id)
+        .str("chapter_id", &req.chapter_id)
+        .int("page", page)
+        .str("label", req.label.trim())
+        .str("created_at", &now)
+        .render();
+    if let Err(e) = state.rhype.create(format!("BetaBookmark.create({fields})")).await {
+        eprintln!("Failed to create bookmark: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to create bookmark" })),
+        );
+    }
+
+    let bookmark = BetaBookmark {
+        id,
+        chapter_id: req.chapter_id,
+        page,
+        label: req.label.trim().to_string(),
+        created_at: now,
+    };
+    (StatusCode::CREATED, Json(serde_json::to_value(bookmark).unwrap()))
+}
+
+/// Delete a bookmark (only if it belongs to this link).
+pub async fn reader_delete_bookmark(
+    State(state): State<AppState>,
+    Path((token, bookmark_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let link = match link_by_token(&state, &token).await {
+        Some(l) => l,
+        None => return (StatusCode::NOT_FOUND, Json(json!({ "error": "link not found" }))),
+    };
+
+    if !link.bool("active").unwrap_or(false) {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "this link has been deactivated" })));
+    }
+
+    let link_id = link.string("uuid").unwrap_or_default();
+    let _ = state
+        .rhype
+        .exec(format!(
+            "BetaBookmark.filter(.uuid == {} && .link_id == {}).delete()",
+            quote(&bookmark_id),
+            quote(&link_id)
+        ))
+        .await;
+
+    (StatusCode::OK, Json(json!({ "ok": true })))
 }
 
 /// Submit feedback as a beta reader.
@@ -987,6 +1160,26 @@ async fn fetch_replies(state: &AppState, feedback_id: &str) -> Vec<BetaFeedbackR
             author_type: r.string("author_type").unwrap_or_default(),
             author_name: r.string("author_name").unwrap_or_default(),
             content: r.string("content").unwrap_or_default(),
+            created_at: r.string("created_at").unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// Load a link's bookmarks (oldest first), mapped to the shared type.
+async fn fetch_bookmarks_for_link(state: &AppState, link_id: &str) -> Vec<BetaBookmark> {
+    let mut rows = state
+        .rhype
+        .find(format!("BetaBookmark.filter(.link_id == {})", quote(link_id)))
+        .await
+        .unwrap_or_default();
+    rows.sort_by(|a, b| a.string("created_at").cmp(&b.string("created_at")));
+
+    rows.into_iter()
+        .map(|r| BetaBookmark {
+            id: r.string("uuid").unwrap_or_default(),
+            chapter_id: r.string("chapter_id").unwrap_or_default(),
+            page: r.i64("page").unwrap_or(0),
+            label: r.string("label").unwrap_or_default(),
             created_at: r.string("created_at").unwrap_or_default(),
         })
         .collect()
