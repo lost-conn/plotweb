@@ -2011,10 +2011,16 @@ fn do_switch_chapter_inner(
         chapter_title_save_timer_id.set(0);
     }
 
-    // Save current chapter if we're editing — read DOM synchronously to avoid
-    // stale content if another switch happens before the async block runs.
-    if let BookPane::Editor(ref current_id) = active_pane.get() {
-        let current_id = current_id.clone();
+    // Save the chapter we're leaving — but ONLY if its content was actually loaded
+    // into the editor. While a switch is still loading (editor_loaded == false), the
+    // DOM holds the *previous* chapter's HTML; reading it here and writing it to
+    // `current_id` would overwrite that chapter with another chapter's content
+    // (the chapter-overwrite bug when switching quickly between chapters).
+    let leaving_id = match active_pane.get() {
+        BookPane::Editor(id) if editor_loaded.get() => Some(id),
+        _ => None,
+    };
+    if let Some(current_id) = leaving_id {
         let bid = bid.to_string();
         let content = web_sys::window()
             .and_then(|w| w.document())
@@ -2067,7 +2073,6 @@ fn do_switch_chapter_inner(
             }
             chapter_title.set(chapter.title.clone());
             editor_word_count.set(chapter.word_count);
-            editor_loaded.set(true);
 
             let content = chapter.content.clone();
             // Inject as soon as the editor node is present (deterministic), rather
@@ -2084,6 +2089,10 @@ fn do_switch_chapter_inner(
                 }
                 // Re-enable editing now that the new content is loaded
                 el.set_attribute("contenteditable", "true").ok();
+
+                // The DOM now truly reflects the current chapter — only now is it
+                // safe for save-on-leave paths to read #editor-main and persist it.
+                editor_loaded.set(true);
 
                 // Execute pending feedback scroll if any
                 if let Some(scroll_signal) = pending_scroll {
@@ -2745,6 +2754,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let save_content = move |chapter_id_to_save: String| {
         // Bail if this page instance is no longer current (user navigated away and back)
         if PAGE_GEN.with(|g| g.get()) != page_gen {
+            return;
+        }
+        // If the editor is still loading a chapter, the DOM holds the previous
+        // chapter's content — saving now would overwrite the wrong chapter.
+        if !editor_loaded.get() {
             return;
         }
         let bid = bid_signal.get();
@@ -3711,6 +3725,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     w.clear_timeout_with_handle(prev);
                 }
                 auto_save_timer_id.set(0);
+            }
+            // Don't flush while the chapter is still loading: the DOM holds the
+            // previous chapter's HTML, so saving it to `current_id` would overwrite
+            // this chapter with another chapter's content.
+            if !editor_loaded.get() {
+                return;
             }
             let bid = bid_signal.get();
             let content = web_sys::window()
