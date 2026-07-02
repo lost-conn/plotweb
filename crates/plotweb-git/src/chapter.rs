@@ -433,3 +433,96 @@ pub fn list_chapters_at_commit(
 
     Ok(chapters)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::book;
+    use crate::repo;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Unique scratch dir under the system temp dir (no tempfile dep available).
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new() -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let dir = std::env::temp_dir().join(format!(
+                "plotweb-git-test-{}-{}",
+                std::process::id(),
+                n
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            TempDir(dir)
+        }
+        fn path(&self) -> &PathBuf {
+            &self.0
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Count commits reachable from HEAD of a book's manuscript repo.
+    fn commit_count(base_dir: &PathBuf, book_id: &str) -> usize {
+        let ms_dir = book::manuscript_dir(base_dir, book_id);
+        let git_repo = git2::Repository::open(&ms_dir).unwrap();
+        // Large limit — these test repos have only a handful of commits.
+        repo::list_commits(&git_repo, 10_000, 0).unwrap().len()
+    }
+
+    fn head_tree_id(base_dir: &PathBuf, book_id: &str) -> git2::Oid {
+        let ms_dir = book::manuscript_dir(base_dir, book_id);
+        let git_repo = git2::Repository::open(&ms_dir).unwrap();
+        let oid = repo::head_oid(&git_repo).unwrap();
+        git_repo.find_commit(oid).unwrap().tree_id()
+    }
+
+    #[test]
+    fn update_chapter_skips_noop_commit_but_records_real_change() {
+        let tmp = TempDir::new();
+        let base = tmp.path().clone();
+
+        let book_id = uuid::Uuid::new_v4().to_string();
+        book::create_book(&base, &book_id, "Test Book", "desc", "2026-01-01 00:00:00").unwrap();
+
+        let chapter_id = uuid::Uuid::new_v4().to_string();
+        create_chapter(&base, &book_id, &chapter_id, "Chapter One", "2026-01-01 00:00:00").unwrap();
+
+        // Baseline: the "Add chapter" commit wrote an empty .md.
+        let count_before = commit_count(&base, &book_id);
+        let tree_before = head_tree_id(&base, &book_id);
+
+        // 1) Re-save with IDENTICAL content ("" matches what create_chapter wrote)
+        //    → staged tree equals HEAD tree → no commit should be recorded.
+        update_chapter(&base, &book_id, &chapter_id, None, Some("")).unwrap();
+        assert_eq!(
+            commit_count(&base, &book_id),
+            count_before,
+            "no-op re-save must not create a ghost commit"
+        );
+        assert_eq!(
+            head_tree_id(&base, &book_id),
+            tree_before,
+            "HEAD must be unchanged after a no-op save"
+        );
+
+        // 2) Save with DIFFERENT content → a real commit must be recorded.
+        //    The prior commit ("Add chapter") is a multi-file change, so
+        //    commit_paths appends rather than amends → exactly +1 commit.
+        update_chapter(&base, &book_id, &chapter_id, None, Some("Some new prose.")).unwrap();
+        assert_eq!(
+            commit_count(&base, &book_id),
+            count_before + 1,
+            "a genuine content change must add exactly one commit"
+        );
+        assert_ne!(
+            head_tree_id(&base, &book_id),
+            tree_before,
+            "HEAD tree must differ once the new content is committed"
+        );
+    }
+}

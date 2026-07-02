@@ -44,6 +44,11 @@ pub fn commit_all(repo: &Repository, message: &str) -> Result<()> {
     match repo.head() {
         Ok(head) => {
             let parent = head.peel_to_commit()?;
+            // Skip empty commits when the working tree matches HEAD (e.g. a
+            // reorder that resolves to the same order, or an unchanged re-save).
+            if parent.tree_id() == tree_id {
+                return Ok(());
+            }
             repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
         }
         Err(_) => {
@@ -80,6 +85,12 @@ pub fn commit_paths(repo: &Repository, rel_paths: &[String], message: &str) -> R
 
     match repo.head().ok().and_then(|h| h.peel_to_commit().ok()) {
         Some(head_commit) => {
+            // Nothing actually changed since HEAD — skip so we don't record an
+            // empty "ghost" commit (e.g. the editor's leave-save re-persists
+            // unchanged content just by opening/switching chapters).
+            if head_commit.tree_id() == tree_id {
+                return Ok(());
+            }
             if can_amend(repo, &head_commit, rel_paths) {
                 head_commit.amend(Some("HEAD"), Some(&sig), Some(&sig), None, Some(message), Some(&tree))?;
             } else {
