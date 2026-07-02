@@ -6,3 +6,18 @@ plotweb-web/dist/
 *.db-wal
 data/
 deploy.log
+
+# Claude Code — local machine state (per-user settings + agent git worktrees)
+.claude/settings.local.json
+.claude/worktrees/
+
+# Android — generated build output, Gradle/Kotlin caches, and IDE files.
+# No Android source is tracked in this repo; the dir is build artifacts only.
+android/.gradle/
+android/.kotlin/
+android/.idea/
+android/build/
+android/app/build/
+android/captures/
+android/local.properties
+android/**/*.iml

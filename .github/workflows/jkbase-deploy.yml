@@ -1,0 +1,16 @@
+name: Deploy to jkbase
+# Pushes this repo's default branch to jkbase, which builds + deploys it.
+# Triggers on main OR master; HEAD is always pushed to jkbase's `main`
+# (the branch jkbase builds), so a master-default repo still deploys.
+on:
+  push:
+    branches: [main, master]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so the push to jkbase isn't shallow
+      - name: Push to jkbase
+        run: git push https://jkbase:${{ secrets.JKBASE_GIT_TOKEN }}@api.jkbase.app/git/plotweb HEAD:main
