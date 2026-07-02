@@ -13,9 +13,9 @@ plotweb-common = { path = "../crates/plotweb-common" }
 # RINCH_COMMIT). For local rinch co-dev, add an UNCOMMITTED [patch] (see DEPLOY.md).
 # plotweb-common stays a path dep — it's in-repo and resolves via jkbase.toml's
 # `context = "."` (the build VM mounts the whole repo).
-rinch = { git = "https://github.com/joeleaver/rinch", rev = "b3c98b36d99123b92f94f682a591b6e85b85dc06", default-features = false, features = ["components", "theme"] }
-rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "b3c98b36d99123b92f94f682a591b6e85b85dc06", features = ["theme"] }
-rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "b3c98b36d99123b92f94f682a591b6e85b85dc06" }
+rinch = { git = "https://github.com/joeleaver/rinch", rev = "1378a6d6b16f0e066d9a2e08d3d381b39863c5a7", default-features = false, features = ["components", "theme"] }
+rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "1378a6d6b16f0e066d9a2e08d3d381b39863c5a7", features = ["theme"] }
+rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "1378a6d6b16f0e066d9a2e08d3d381b39863c5a7" }
 
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
