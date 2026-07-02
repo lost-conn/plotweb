@@ -16,6 +16,7 @@ plotweb-common = { path = "../crates/plotweb-common" }
 rinch = { git = "https://github.com/joeleaver/rinch", rev = "1378a6d6b16f0e066d9a2e08d3d381b39863c5a7", default-features = false, features = ["components", "theme"] }
 rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "1378a6d6b16f0e066d9a2e08d3d381b39863c5a7", features = ["theme"] }
 rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "1378a6d6b16f0e066d9a2e08d3d381b39863c5a7" }
+rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "1378a6d6b16f0e066d9a2e08d3d381b39863c5a7" }
 
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
