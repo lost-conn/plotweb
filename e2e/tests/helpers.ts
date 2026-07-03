@@ -158,6 +158,52 @@ export async function createBetaLink(
 }
 
 /**
+ * Create a chapter and stuff it with enough prose to span many paginated pages
+ * in the reader at the default 1280x720 viewport.
+ *
+ * The chapter is created through the UI (so it lands in the sidebar / book.json
+ * exactly like a real one), then its content is written directly via the
+ * authenticated chapter PUT endpoint — far more deterministic than typing a wall
+ * of text into the contenteditable editor. The reader renders markdown where
+ * every non-empty line becomes its own `<p>`, so a big pile of paragraph lines
+ * reliably overflows a single column into multiple pages.
+ *
+ * Returns the new chapter's server id.
+ */
+export async function seedLongChapter(
+  page: Page,
+  bookId: string,
+  title: string,
+  paragraphs = 80,
+): Promise<string> {
+  await addChapter(page, title);
+
+  // Resolve the freshly created chapter's id from the authenticated list.
+  const listResp = await page.request.get(`/api/books/${bookId}/chapters`);
+  const chapters = (await listResp.json()) as Array<{ id: string; title: string }>;
+  const chapterId = chapters.find((c) => c.title === title)?.id;
+  if (!chapterId) throw new Error(`chapter not found after create: ${title}`);
+
+  // A deterministic block of prose: `paragraphs` distinct lines, each its own
+  // `<p>` once rendered. Distinct text per line avoids any de-duping surprises.
+  const lorem =
+    "The lantern guttered against the fog while the harbour bell counted out the hours and the tide dragged its slow grey fingers across the shingle below the cliff path.";
+  const body = Array.from(
+    { length: paragraphs },
+    (_, i) => `Paragraph ${i + 1}. ${lorem}`,
+  ).join("\n\n");
+
+  const putResp = await page.request.put(
+    `/api/books/${bookId}/chapters/${chapterId}`,
+    { data: { content: body } },
+  );
+  if (!putResp.ok()) {
+    throw new Error(`failed to seed chapter content: ${putResp.status()}`);
+  }
+  return chapterId;
+}
+
+/**
  * Open the in-editor feedback sidebar. The toggle (a MessageCircle ActionIcon in
  * the editor topbar) only renders once the book has at least one feedback item,
  * so a chapter/editor must already be open and feedback must exist. Clicking it
