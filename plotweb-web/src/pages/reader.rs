@@ -629,6 +629,7 @@ where
     let _fb_id = fb.id.clone();
     let fb_id2 = fb.id.clone();
     let fb_id3 = fb.id.clone();
+    let fb_id_enter = fb.id.clone();
     let class = if fb.resolved { "feedback-card resolved" } else { "feedback-card" };
     let fb_comment = fb.comment.clone();
     let fb_created = fb.created_at.clone();
@@ -648,6 +649,24 @@ where
         reply_item(__scope, r.author_type.clone(), r.author_name.clone(), r.content.clone())
     }).collect();
 
+    let reply_submit_id = __scope.register_handler(reply_to_feedback(fb_id_enter));
+    let reply_box = rsx! {
+        div { class: "feedback-reply-input",
+            textarea {
+                id: {format!("reply-input-{}", fb_id2)},
+                placeholder: "Reply...",
+                rows: "1",
+            }
+            ActionIcon {
+                variant: "subtle",
+                size: "xs",
+                onclick: reply_to_feedback(fb_id3),
+                {render_tabler_icon(__scope, TablerIcon::Send, TablerIconStyle::Outline)}
+            }
+        }
+    };
+    reply_box.set_attribute("data-onsubmit", &reply_submit_id.0.to_string());
+
     rsx! {
         div {
             class: class,
@@ -661,20 +680,7 @@ where
                 {reply_nodes}
             }
 
-            div { class: "feedback-reply-input",
-                onsubmit: reply_to_feedback(fb_id3.clone()),
-                textarea {
-                    id: {format!("reply-input-{}", fb_id2)},
-                    placeholder: "Reply...",
-                    rows: "1",
-                }
-                ActionIcon {
-                    variant: "subtle",
-                    size: "xs",
-                    onclick: reply_to_feedback(fb_id3),
-                    {render_tabler_icon(__scope, TablerIcon::Send, TablerIconStyle::Outline)}
-                }
-            }
+            {reply_box}
         }
     }
 }
