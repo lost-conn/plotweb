@@ -106,6 +106,71 @@ export async function createNote(page: Page, title: string) {
 }
 
 /**
+ * Open the Beta Readers pane from the book sidebar (mirrors `openNotesPane`).
+ *
+ * The sidebar "Beta Readers" section header flips `active_pane` to
+ * `BookPane::BetaReaders`, revealing the pane's "Beta Readers" heading.
+ */
+export async function openBetaReadersPane(page: Page) {
+  await page
+    .locator(".sidebar-section-header", { hasText: "Beta Readers" })
+    .click();
+  await expect(page.getByRole("heading", { name: "Beta Readers" })).toBeVisible();
+}
+
+/**
+ * Create a beta reader link through the Beta Readers pane UI and return its
+ * server-side `token`.
+ *
+ * Opens the pane, clicks "Create Link", fills the reader name in the modal, and
+ * confirms. The link's token isn't surfaced in the DOM, so we read it back from
+ * `GET /api/books/{id}/beta-links` (polled until the just-created link appears,
+ * proving the POST landed server-side).
+ */
+export async function createBetaLink(
+  page: Page,
+  bookId: string,
+  readerName: string,
+): Promise<string> {
+  await openBetaReadersPane(page);
+  await page.getByRole("button", { name: "Create Link" }).click();
+  const modal = page.locator(".rinch-modal__body:visible");
+  await modal
+    .locator("input[placeholder='e.g. Alice, Book Club, etc.']")
+    .fill(readerName);
+  await modal.getByRole("button", { name: "Create", exact: true }).click();
+  // The modal closes once the POST succeeds.
+  await expect(page.locator(".rinch-modal__body:visible")).toHaveCount(0);
+
+  let token = "";
+  await expect
+    .poll(async () => {
+      const resp = await page.request.get(`/api/books/${bookId}/beta-links`);
+      const links = (await resp.json()) as Array<{
+        token: string;
+        reader_name: string;
+      }>;
+      token = links.find((l) => l.reader_name === readerName)?.token ?? "";
+      return token;
+    })
+    .not.toBe("");
+  return token;
+}
+
+/**
+ * Open the in-editor feedback sidebar. The toggle (a MessageCircle ActionIcon in
+ * the editor topbar) only renders once the book has at least one feedback item,
+ * so a chapter/editor must already be open and feedback must exist. Clicking it
+ * flips `.editor-feedback-sidebar` from `.hidden` to `.visible`.
+ */
+export async function openFeedbackSidebar(page: Page) {
+  // The editor topbar has two ActionIcons: back-arrow (first) and the feedback
+  // toggle (last, only present when feedback exists).
+  await page.locator(".editor-topbar .rinch-action-icon").last().click();
+  await expect(page.locator(".editor-feedback-sidebar.visible")).toBeVisible();
+}
+
+/**
  * Open a chapter in the editor by its sidebar name; waits until it's editable.
  *
  * The editor node always exists but only flips to `contenteditable=true` once a
