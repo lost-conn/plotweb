@@ -73,6 +73,39 @@ export async function addChapter(page: Page, title: string) {
 }
 
 /**
+ * Open the Notes pane from the book sidebar.
+ *
+ * The sidebar "Notes" section header toggles the notes pane into the main
+ * content area (a CSS `display` toggle). Clicking it flips `active_pane` to
+ * Notes; we wait for the pane header to be visible before returning.
+ */
+export async function openNotesPane(page: Page) {
+  await page
+    .locator(".sidebar-section-header", { hasText: "Notes" })
+    .getByText("Notes", { exact: true })
+    .click();
+  await expect(page.locator(".notes-pane-header")).toBeVisible();
+}
+
+/**
+ * Create a note via the "Add Note" modal (mirrors `addChapter`).
+ *
+ * Opens the notes pane first (the "Add Note" button lives inside it), fills the
+ * title, confirms, and waits for the new note card to appear in the tree.
+ */
+export async function createNote(page: Page, title: string) {
+  await openNotesPane(page);
+  await page.getByRole("button", { name: "Add Note" }).first().click();
+  const modal = page.locator(".rinch-modal__body:visible");
+  await modal.locator("input[placeholder='Enter note title']").fill(title);
+  await modal.getByRole("button", { name: "Add", exact: true }).click();
+  // The note shows up as a card in the tree.
+  await expect(
+    page.locator(".notes-tree .note-card-title", { hasText: title }),
+  ).toBeVisible();
+}
+
+/**
  * Open a chapter in the editor by its sidebar name; waits until it's editable.
  *
  * The editor node always exists but only flips to `contenteditable=true` once a
