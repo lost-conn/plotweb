@@ -2228,6 +2228,40 @@ where
     }
 }
 
+/// Perform the note move for the current drag/drop selection.
+/// Reads `drop_target` + `dragging_note_id`; if both are set, issues the
+/// MoveNoteRequest PUT and refetches the notes tree into the store.
+/// Shared by the note card's and drop zone's `ondrop` handlers.
+fn perform_note_move(
+    store: AppStore,
+    bid_signal: Signal<String>,
+    drop_target: Signal<Option<(Option<String>, usize)>>,
+    dragging_note_id: Signal<Option<String>>,
+) {
+    if let Some(target) = drop_target.get() {
+        if let Some(drag_id) = dragging_note_id.get() {
+            let bid = bid_signal.get();
+            let req = MoveNoteRequest {
+                note_id: drag_id,
+                new_parent_id: target.0,
+                index: target.1,
+            };
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(_) = api::put::<_, serde_json::Value>(
+                    &format!("/api/books/{}/notes/move", bid), &req,
+                ).await {
+                    if let Ok(resp) = api::get::<NotesResponse>(
+                        &format!("/api/books/{}/notes", bid),
+                    ).await {
+                        store.notes.set(resp.notes);
+                        store.note_tree.set(Some(resp.tree));
+                    }
+                }
+            });
+        }
+    }
+}
+
 /// Render a drop zone for reordering notes between siblings.
 /// `parent_id` is None for root level, Some(id) for children of a note.
 /// `index` is the insertion position among siblings.
@@ -2237,6 +2271,8 @@ fn render_drop_zone(
     index: usize,
     drop_target: Signal<Option<(Option<String>, usize)>>,
     dragging_note_id: Signal<Option<String>>,
+    bid_signal: Signal<String>,
+    store: AppStore,
 ) -> NodeHandle {
     rsx! {
         div {
@@ -2252,6 +2288,9 @@ fn render_drop_zone(
             }},
             ondragenter: move || {
                 drop_target.set(Some((parent_id.get(), index)));
+            },
+            ondrop: move || {
+                perform_note_move(store, bid_signal, drop_target, dragging_note_id);
             },
         }
     }
@@ -2390,29 +2429,10 @@ fn render_note_card(
                             }
                         }
                     },
+                    ondrop: move || {
+                        perform_note_move(store, bid_signal, drop_target, dragging_note_id);
+                    },
                     ondragend: move || {
-                        if let Some(target) = drop_target.get() {
-                            if let Some(drag_id) = dragging_note_id.get() {
-                                let bid = bid_signal.get();
-                                let req = MoveNoteRequest {
-                                    note_id: drag_id,
-                                    new_parent_id: target.0,
-                                    index: target.1,
-                                };
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(_) = api::put::<_, serde_json::Value>(
-                                        &format!("/api/books/{}/notes/move", bid), &req,
-                                    ).await {
-                                        if let Ok(resp) = api::get::<NotesResponse>(
-                                            &format!("/api/books/{}/notes", bid),
-                                        ).await {
-                                            store.notes.set(resp.notes);
-                                            store.note_tree.set(Some(resp.tree));
-                                        }
-                                    }
-                                });
-                            }
-                        }
                         dragging_note_id.set(None);
                         drop_target.set(None);
                         ghost_visible.set(false);
@@ -2558,7 +2578,7 @@ fn render_note_card(
                 div { class: "note-children",
                     for (idx, child_id) in store.note_tree.get().and_then(|t| t.children.get(&nid.get()).cloned()).unwrap_or_default().into_iter().enumerate() {
                         div { style: "display: contents;",
-                            {render_drop_zone(__scope, Signal::new(Some(nid.get())), idx, drop_target, dragging_note_id)}
+                            {render_drop_zone(__scope, Signal::new(Some(nid.get())), idx, drop_target, dragging_note_id, bid_signal, store)}
                             div { class: "note-child-row",
                                 {render_note_card(
                                     __scope,
@@ -2584,7 +2604,7 @@ fn render_note_card(
                             }
                         }
                     }
-                    {render_drop_zone(__scope, Signal::new(Some(nid.get())), store.note_tree.get().and_then(|t| t.children.get(&nid.get()).map(|c| c.len())).unwrap_or(0), drop_target, dragging_note_id)}
+                    {render_drop_zone(__scope, Signal::new(Some(nid.get())), store.note_tree.get().and_then(|t| t.children.get(&nid.get()).map(|c| c.len())).unwrap_or(0), drop_target, dragging_note_id, bid_signal, store)}
                 }
             }
         }
@@ -4516,7 +4536,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             div { class: "notes-tree",
                                 for (idx, root_id) in store.note_tree.get().map(|t| t.root_order.clone()).unwrap_or_default().into_iter().enumerate() {
                                     div { style: "display: contents;",
-                                        {render_drop_zone(__scope, Signal::new(None), idx, drop_target, dragging_note_id)}
+                                        {render_drop_zone(__scope, Signal::new(None), idx, drop_target, dragging_note_id, bid_signal, store)}
                                         {render_note_card(
                                             __scope,
                                             root_id.clone(),
@@ -4540,7 +4560,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                         )}
                                     }
                                 }
-                                {render_drop_zone(__scope, Signal::new(None), store.note_tree.get().map(|t| t.root_order.len()).unwrap_or(0), drop_target, dragging_note_id)}
+                                {render_drop_zone(__scope, Signal::new(None), store.note_tree.get().map(|t| t.root_order.len()).unwrap_or(0), drop_target, dragging_note_id, bid_signal, store)}
                             }
                         }
 
