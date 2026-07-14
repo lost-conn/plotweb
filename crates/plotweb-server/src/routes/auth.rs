@@ -132,6 +132,165 @@ pub async fn logout(session: Session) -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
 
+/// Request a password-reset link. Always responds `200 { ok: true }` with an
+/// identical body whether or not the email maps to an account, so it can't be
+/// used to probe which addresses are registered (same principle as the
+/// timing-equalised login above). If a user is found we issue a single-use,
+/// 1-hour token — storing only its hash — and email the raw token.
+pub async fn forgot_password(
+    State(state): State<AppState>,
+    Json(req): Json<ForgotPasswordRequest>,
+) -> impl IntoResponse {
+    let email = req.email.trim();
+    let mut body = json!({ "ok": true });
+
+    if !email.is_empty() {
+        if let Ok(Some(user)) = state
+            .rhype
+            .find_one(format!("User.filter(.email == {}).limit(1)", quote(email)))
+            .await
+        {
+            let user_id = user.string("uuid").unwrap_or_default();
+            let token = auth::generate_token();
+            let token_hash = auth::hash_token(&token);
+            let now = chrono::Utc::now();
+            let created_at = now.format("%Y-%m-%d %H:%M:%S").to_string();
+            let expires_at = (now + chrono::Duration::hours(1))
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+
+            // One active token per user: clear any earlier ones first.
+            let _ = state
+                .rhype
+                .exec(format!(
+                    "PasswordReset.filter(.user_id == {}).delete()",
+                    quote(&user_id)
+                ))
+                .await;
+
+            let id = Uuid::new_v4().to_string();
+            let fields = Fields::new()
+                .str("uuid", &id)
+                .str("user_id", &user_id)
+                .str("token_hash", &token_hash)
+                .str("expires_at", &expires_at)
+                .str("created_at", &created_at)
+                .render();
+
+            match state
+                .rhype
+                .create(format!("PasswordReset.create({fields})"))
+                .await
+            {
+                Ok(_) => {
+                    if let Some(mailer) = &state.email {
+                        let to = user.string("email").unwrap_or_default();
+                        mailer.send_password_reset(&to, &token).await;
+                    }
+                    // Dev convenience: with no mailer configured in a debug
+                    // build, hand the token back so the flow is usable locally.
+                    // Never happens in a release build.
+                    if state.email.is_none() && cfg!(debug_assertions) {
+                        body = json!({ "ok": true, "reset_token": token });
+                    }
+                }
+                Err(e) => eprintln!("password reset token create failed: {e}"),
+            }
+        }
+    }
+
+    (StatusCode::OK, Json(body))
+}
+
+/// Redeem a reset token for a new password. Looks the token up by its hash,
+/// rejects it if missing/expired, then updates the user's `password_hash` and
+/// deletes every outstanding token for that user (single-use). All failure
+/// modes return the same generic 400 so a valid-but-expired token isn't
+/// distinguishable from a bogus one.
+pub async fn reset_password(
+    State(state): State<AppState>,
+    Json(req): Json<ResetPasswordRequest>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    if req.new_password.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "password is required" })),
+        );
+    }
+
+    let invalid = || {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid or expired token" })),
+        )
+    };
+
+    let token_hash = auth::hash_token(req.token.trim());
+    let reset = match state
+        .rhype
+        .find_one(format!(
+            "PasswordReset.filter(.token_hash == {}).limit(1)",
+            quote(&token_hash)
+        ))
+        .await
+    {
+        Ok(Some(o)) => o,
+        _ => return invalid(),
+    };
+
+    // Fixed-width timestamps compare lexicographically in chronological order.
+    let expires_at = reset.string("expires_at").unwrap_or_default();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    if expires_at.is_empty() || now >= expires_at {
+        let _ = state
+            .rhype
+            .exec(format!(
+                "PasswordReset.filter(.token_hash == {}).delete()",
+                quote(&token_hash)
+            ))
+            .await;
+        return invalid();
+    }
+
+    let user_id = reset.string("user_id").unwrap_or_default();
+    let password_hash = match auth::hash_password(&req.new_password) {
+        Ok(h) => h,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "failed to hash password" })),
+            )
+        }
+    };
+
+    if let Err(e) = state
+        .rhype
+        .exec(format!(
+            "User.filter(.uuid == {}).update({})",
+            quote(&user_id),
+            Fields::new().str("password_hash", &password_hash).render()
+        ))
+        .await
+    {
+        eprintln!("password reset update failed: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "failed to reset password" })),
+        );
+    }
+
+    // Single-use: drop every outstanding token for this user.
+    let _ = state
+        .rhype
+        .exec(format!(
+            "PasswordReset.filter(.user_id == {}).delete()",
+            quote(&user_id)
+        ))
+        .await;
+
+    (StatusCode::OK, Json(json!({ "ok": true })))
+}
+
 pub async fn me(
     State(state): State<AppState>,
     AuthSession(user_id): AuthSession,

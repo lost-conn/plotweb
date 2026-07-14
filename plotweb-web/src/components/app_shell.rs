@@ -131,6 +131,12 @@ pub fn app_shell() -> NodeHandle {
                 Route::Register => div {
                     {crate::pages::register::register_page(__scope)}
                 },
+                Route::ForgotPassword => div {
+                    {crate::pages::forgot_password::forgot_password_page(__scope)}
+                },
+                Route::ResetPassword(_token) => div {
+                    {crate::pages::reset_password::reset_password_page(__scope, _token)}
+                },
                 Route::ThemePreview => div {
                     style: "height: 100dvh; overflow-y: auto; padding: 40px 48px; background: var(--rinch-color-body);",
                     {crate::pages::theme_preview::theme_preview_page(__scope)}

@@ -95,6 +95,14 @@ pub fn api_router(state: AppState) -> Router {
         .route("/api/auth/login", post(routes::auth::login))
         .route("/api/auth/logout", post(routes::auth::logout))
         .route("/api/auth/me", get(routes::auth::me))
+        .route(
+            "/api/auth/forgot-password",
+            post(routes::auth::forgot_password),
+        )
+        .route(
+            "/api/auth/reset-password",
+            post(routes::auth::reset_password),
+        )
         .route("/api/fonts", get(routes::fonts::list))
         .route("/api/books", get(routes::books::list))
         .route("/api/books", post(routes::books::create))

@@ -1,5 +1,7 @@
 pub mod login;
 pub mod register;
+pub mod forgot_password;
+pub mod reset_password;
 pub mod dashboard;
 pub mod book;
 pub mod editor_utils;
@@ -17,6 +19,8 @@ pub fn route_content(__scope: &mut RenderScope) -> NodeHandle {
     match route {
         Route::Login => login::login_page(__scope),
         Route::Register => register::register_page(__scope),
+        Route::ForgotPassword => forgot_password::forgot_password_page(__scope),
+        Route::ResetPassword(token) => reset_password::reset_password_page(__scope, token),
         Route::Dashboard => dashboard::dashboard_page(__scope),
         Route::Book(id) => book::book_page(__scope, id),
         Route::Reader(token) => reader::reader_page(__scope, token),

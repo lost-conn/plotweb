@@ -51,6 +51,10 @@ pub fn login_page() -> NodeHandle {
         router::navigate(Route::Register);
     };
 
+    let go_forgot = move || {
+        router::navigate(Route::ForgotPassword);
+    };
+
     let submit_id = __scope.register_handler(on_submit);
 
     let page = rsx! {
@@ -105,7 +109,17 @@ pub fn login_page() -> NodeHandle {
                     checked_fn: move || remember_me.get(),
                     onchange: move || remember_me.update(|v| *v = !*v),
                 }
-                Space { h: "xl" }
+                Space { h: "xs" }
+                div {
+                    style: "text-align: right;",
+                    Button {
+                        variant: "subtle",
+                        size: "xs",
+                        onclick: go_forgot,
+                        "Forgot password?"
+                    }
+                }
+                Space { h: "lg" }
                 Button {
                     full_width: true,
                     onclick: on_submit,

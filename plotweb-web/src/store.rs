@@ -40,6 +40,10 @@ impl AppStore {
 pub enum Route {
     Login,
     Register,
+    /// Request a password-reset link (enter email).
+    ForgotPassword,
+    /// Redeem a reset token from an emailed link (`/reset-password/{token}`).
+    ResetPassword(String),
     Dashboard,
     Book(String),
     Reader(String),
@@ -55,6 +59,8 @@ impl Route {
             Route::Dashboard => "/".into(),
             Route::Login => "/login".into(),
             Route::Register => "/register".into(),
+            Route::ForgotPassword => "/forgot-password".into(),
+            Route::ResetPassword(token) => format!("/reset-password/{}", token),
             Route::Book(id) => format!("/book/{}", id),
             Route::Reader(token) => format!("/read/{}", token),
             Route::ReaderPreview(book_id) => format!("/preview/{}", book_id),
@@ -68,7 +74,16 @@ impl Route {
             "" | "/" => Route::Dashboard,
             "/login" => Route::Login,
             "/register" => Route::Register,
+            "/forgot-password" => Route::ForgotPassword,
             "/theme" => Route::ThemePreview,
+            _ if path.starts_with("/reset-password/") => {
+                let token = &path[16..];
+                if token.is_empty() {
+                    Route::Login
+                } else {
+                    Route::ResetPassword(token.to_string())
+                }
+            }
             _ if path.starts_with("/book/") => {
                 let id = &path[6..];
                 if id.is_empty() {

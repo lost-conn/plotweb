@@ -57,6 +57,19 @@ impl EmailService {
         }
     }
 
+    /// Email a user a password-reset link. `token` is the raw (unhashed) token;
+    /// the link points at the SPA reset page, which POSTs it back to redeem it.
+    pub async fn send_password_reset(&self, to: &str, token: &str) {
+        let subject = "Reset your PlotWeb password";
+        let link = format!("{}/reset-password/{}", self.app_url, token);
+        let html = format!(
+            r#"<p>We received a request to reset your PlotWeb password.</p>
+<p><a href="{link}">Choose a new password</a>. This link expires in 1 hour.</p>
+<p>If you didn't request this, you can safely ignore this email — your password won't change.</p>"#
+        );
+        self.send_email(to, subject, &html).await;
+    }
+
     /// Notify the book author that a reader left new feedback.
     pub async fn notify_new_feedback(
         &self,

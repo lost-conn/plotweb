@@ -36,6 +36,19 @@ pub struct RegisterRequest {
     pub password: String,
 }
 
+/// Body for `POST /api/auth/forgot-password` — request a reset link by email.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForgotPasswordRequest {
+    pub email: String,
+}
+
+/// Body for `POST /api/auth/reset-password` — redeem a token for a new password.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetPasswordRequest {
+    pub token: String,
+    pub new_password: String,
+}
+
 // ── Font Settings ──
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

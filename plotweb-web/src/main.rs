@@ -29,7 +29,12 @@ fn app() -> NodeHandle {
         .map(|p| Route::from_path(&p))
         .unwrap_or(Route::Dashboard);
 
-    if matches!(initial_route, Route::Reader(_)) {
+    if matches!(
+        initial_route,
+        Route::Reader(_) | Route::ForgotPassword | Route::ResetPassword(_)
+    ) {
+        // Public, no-auth pages — set directly without the session check that
+        // would otherwise redirect a logged-out visitor to Login.
         store.current_route.set(initial_route.clone());
         router::replace_state(&initial_route);
         store.loading.set(false);

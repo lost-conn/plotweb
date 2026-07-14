@@ -7,6 +7,9 @@ plotweb-web/dist/
 data/
 deploy.log
 
+# Local secrets / env (docker-compose reads this; never commit it)
+.env
+
 # Claude Code — local machine state (per-user settings + agent git worktrees)
 .claude/settings.local.json
 .claude/worktrees/

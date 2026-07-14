@@ -4,8 +4,9 @@ use axum::http::request::Parts;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use password_hash::SaltString;
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tower_sessions::Session;
 
 const USER_ID_KEY: &str = "user_id";
@@ -15,6 +16,21 @@ pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Er
     let argon2 = Argon2::default();
     let hash = argon2.hash_password(password.as_bytes(), &salt)?;
     Ok(hash.to_string())
+}
+
+/// Generate a high-entropy password-reset token: 32 random bytes (256 bits) from
+/// the OS CSPRNG, hex-encoded to a URL-safe 64-char string. This raw token is
+/// only ever emailed — never stored (see [`hash_token`]).
+pub fn generate_token() -> String {
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// Deterministic SHA-256 (hex) of a reset token, for storage and lookup. The DB
+/// holds only this hash, so a store leak can't be turned into a valid token.
+pub fn hash_token(token: &str) -> String {
+    hex::encode(Sha256::digest(token.as_bytes()))
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {

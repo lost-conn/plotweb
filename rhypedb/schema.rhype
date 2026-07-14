@@ -38,6 +38,22 @@ type Book {
     created_at: String
 }
 
+// password_reset_tokens — email-based password reset flow.
+//
+// Stores ONLY the SHA-256 hash of the emailed token (the raw token never
+// touches the store), so a store leak can't be used to seize accounts. Tokens
+// are single-use and time-limited: a row is deleted when redeemed, when it
+// expires, or when a newer one is issued for the same user (one active per
+// user). expires_at uses the same "%Y-%m-%d %H:%M:%S" string as created_at and
+// is compared lexicographically (fixed-width → chronological order).
+type PasswordReset {
+    uuid: String @unique
+    user_id: String @indexed
+    token_hash: String @indexed
+    expires_at: String
+    created_at: String
+}
+
 // beta_reader_links (migrations 004 + 005 pinned_commit + 006 user_id)
 //
 // last_chapter_id / last_page (improved reader mode) auto-track where the reader

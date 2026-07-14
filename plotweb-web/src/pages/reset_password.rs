@@ -1,0 +1,138 @@
+use rinch::prelude::*;
+use rinch_core::use_store;
+use plotweb_common::ResetPasswordRequest;
+
+use crate::api;
+use crate::router;
+use crate::store::{AppStore, Route};
+
+#[component]
+pub fn reset_password_page(token: String) -> NodeHandle {
+    let _store = use_store::<AppStore>();
+    // Held in a Signal (which is Copy) so `on_submit` stays a `Copy` closure —
+    // capturing the `String` directly would make it `FnOnce`.
+    let token = Signal::new(token);
+    let password = Signal::new(String::new());
+    let password_visible = Signal::new(false);
+    let confirm = Signal::new(String::new());
+    let confirm_visible = Signal::new(false);
+    let error = Signal::new(Option::<String>::None);
+    let submitting = Signal::new(false);
+    let done = Signal::new(false);
+
+    let on_submit = move || {
+        if submitting.get() || done.get() {
+            return;
+        }
+        let p = password.get();
+        let cp = confirm.get();
+        if p.is_empty() {
+            error.set(Some("Please choose a new password".into()));
+            return;
+        }
+        if p != cp {
+            error.set(Some("Passwords do not match".into()));
+            return;
+        }
+        submitting.set(true);
+        error.set(None);
+        let token = token.get();
+        wasm_bindgen_futures::spawn_local(async move {
+            let req = ResetPasswordRequest {
+                token,
+                new_password: p,
+            };
+            match api::post::<_, serde_json::Value>("/api/auth/reset-password", &req).await {
+                Ok(_) => done.set(true),
+                Err(e) => error.set(Some(e.message)),
+            }
+            submitting.set(false);
+        });
+    };
+
+    let go_login = move || {
+        router::navigate(Route::Login);
+    };
+
+    let submit_id = __scope.register_handler(on_submit);
+
+    let page = rsx! {
+        div {
+            class: "auth-page",
+            Paper {
+                shadow: "md",
+                p: "xl",
+                radius: "md",
+                w: "400px",
+
+                Center {
+                    img {
+                        src: "/assets/logo.png",
+                        alt: "PlotWeb",
+                        style: "width: 72px; height: 72px;",
+                    }
+                }
+                Space { h: "md" }
+                Title { order: 2, "Choose a new password" }
+                Space { h: "lg" }
+
+                if done.get() {
+                    Alert {
+                        color: "teal",
+                        title: "Password updated",
+                        "Your password has been reset. You can now sign in with your new password."
+                    }
+                    Space { h: "md" }
+                    Button {
+                        full_width: true,
+                        onclick: go_login,
+                        "Go to sign in"
+                    }
+                } else {
+                    if error.get().is_some() {
+                        Alert {
+                            color: "red",
+                            title: "Error",
+                            {error.get().unwrap_or_default()}
+                        }
+                        Space { h: "md" }
+                    }
+
+                    PasswordInput {
+                        label: "New password",
+                        placeholder: "Choose a password",
+                        value_fn: move || password.get(),
+                        visible_fn: move || password_visible.get(),
+                        oninput: move |v: String| password.set(v),
+                        ontoggle: move || password_visible.update(|v| *v = !*v),
+                    }
+                    Space { h: "md" }
+                    PasswordInput {
+                        label: "Confirm new password",
+                        placeholder: "Repeat your password",
+                        value_fn: move || confirm.get(),
+                        visible_fn: move || confirm_visible.get(),
+                        oninput: move |v: String| confirm.set(v),
+                        ontoggle: move || confirm_visible.update(|v| *v = !*v),
+                    }
+                    Space { h: "xl" }
+                    Button {
+                        full_width: true,
+                        onclick: on_submit,
+                        "Reset password"
+                    }
+                    Space { h: "md" }
+                    Center {
+                        Button {
+                            variant: "subtle",
+                            onclick: go_login,
+                            "Back to sign in"
+                        }
+                    }
+                }
+            }
+        }
+    };
+    page.set_attribute("data-onsubmit", &submit_id.0.to_string());
+    page
+}
