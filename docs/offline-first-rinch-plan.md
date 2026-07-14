@@ -300,6 +300,93 @@ scoped: `rinch-storage` (with the OPFS/`web_sys_unstable_apis` rinch fix),
 `rinch-http`, and the `rinch-editor-collab` lists projection. Next: **lock the
 Automerge doc schema** (the last Phase-0 card), then Phase 1.
 
+## Locked Automerge schema (v1)
+
+Finalized after the Phase-0 spikes. This supersedes the sketch in "Data model"
+above with concrete shapes. **Sync unit = one Automerge document**; each has a
+stable **doc-id** `"{type}:{uuid}"` (uuids stay v4, as today — they're already
+the keys in URLs, blob paths, and rhypedb). Four doc types:
+
+### 1. `user:{user_id}` — the account index (offline dashboard)
+```
+{
+  books: Map<book_id, {
+    title:      String,     // cached for the dashboard (authoritative in book-index)
+    cover_ref:  String?,    // content-addressed image hash
+    updated_at: String,     // "YYYY-MM-DD HH:MM:SS", lexicographically sortable
+  }>
+}
+```
+One per account. Lets the dashboard list the user's books with no network.
+
+### 2. `book:{book_id}` — book structure & metadata
+```
+{
+  meta: {
+    title:         String,
+    description:   String,
+    font_settings: String,   // JSON blob (v1: whole-value; → Map for per-field merge later)
+    cover_ref:     String?,  // content-addressed image hash
+    created_at:    String,
+  },
+  chapters:        List<chapter_id>,          // AUTHORITATIVE order
+  chapter_titles:  Map<chapter_id, String>,   // title per chapter
+  notes: {
+    root_order:  List<note_id>,
+    children:    Map<note_id, List<note_id>>, // parent → ordered child ids
+    collapsed:   Map<note_id, bool>,
+    titles:      Map<note_id, String>,
+    colors:      Map<note_id, String>,
+  }
+}
+```
+**Titles/colors/order live here, not in the body docs.** Rationale: the
+sidebar, reorder, and notes-tree must render and mutate from *one* doc without
+loading every body; and keeping order (a `List<id>`) decoupled from titles (a
+`Map`) lets a concurrent reorder and a title edit merge cleanly. The editor's
+**inline title field** is a plain text control bound to
+`chapter_titles[chapter_id]` — it is *not* part of the rich-text CRDT.
+
+### 3. `chapter:{chapter_id}` — the chapter body
+A **`rinch-editor-collab` CRDT** (blocks list · per-block Automerge `Text` ·
+marks). We do **not** hand-roll this projection — the editor owns it (the same
+one Spike ② snapshotted / Spike ③ synced). Holds prose only. Inline images are
+`image` nodes referencing a content-addressed **hash** (not bytes). Requires the
+`rinch-editor-collab` **lists** extension before real prose adopts it.
+
+### 4. `note:{note_id}` — the note body
+Same body-CRDT as a chapter. Its title/color/tree-position live in the parent
+`book:` doc (structure), so the notes pane renders without loading note bodies.
+
+### Images — content-addressed blobs (not CRDTs)
+An image is `sha256(bytes)` → bytes, stored in the local blob store and synced
+to the server blob store as an **opaque, immutable, deduplicated** blob (upload-
+by-hash). Referenced by hash from `meta.cover_ref` and from `image` nodes inside
+body docs. Never embedded in an Automerge doc.
+
+### Lifecycle / deletion
+Automerge has no "delete doc". Deleting a chapter = remove it from the `book:`
+doc's `chapters` list + `chapter_titles`, and mark its `chapter:` doc for
+removal (dropped locally + a tombstone told to the server, which GCs the blob).
+Notes delete recursively over `children`. A doc referenced by no index is
+collectable.
+
+### Server side (unchanged split, new content form)
+- **Canonical Automerge bytes** per doc-id → filesystem/rhypedb blob store.
+- **rhypedb** keeps the index (which docs belong to which book/user), ownership,
+  auth, and beta metadata — as today.
+- **Beta "frozen snapshot"** = pin the Automerge **heads** of the `book:` doc +
+  its `chapter:` docs on the `BetaLink`; the server materializes at those heads.
+- **Export / beta read / history** materialize a body doc → `DocNode` →
+  markdown/HTML/DOCX (history = diff two `heads`).
+
+### v1 simplifications (revisit later)
+- `font_settings` as a JSON string (whole-value LWW) rather than a merged `Map`.
+- `user:` `books` as a `Map` (no user-defined dashboard order) — sort by
+  `updated_at`.
+- Task-list / table blocks exist in the editor but ride on the
+  `rinch-editor-collab` lists/nested extension landing first.
+
 ## The web_sys elimination target
 
 The frontend's ~163 `web_sys` sites resolve as: the **69 DOM/`set_inner_html`
