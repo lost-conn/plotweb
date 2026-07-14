@@ -4234,7 +4234,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             }
 
                             div { class: "chapter-list",
-                                for (i, chapter) in store.chapters.get().into_iter().enumerate() {
+                                for (i, is_last, chapter) in ({
+                                    let chapters = store.chapters.get();
+                                    let n = chapters.len();
+                                    chapters.into_iter().enumerate().map(move |(i, c)| (i, i + 1 == n, c))
+                                }) {
                                     Paper {
                                         key: chapter.id.clone(),
                                         shadow: "xs",
@@ -4274,7 +4278,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                                 ActionIcon {
                                                     variant: "subtle",
                                                     size: "sm",
-                                                    disabled: i == store.chapters.get().len() - 1,
+                                                    disabled: is_last,
                                                     onclick: move_chapter(chapter.id.clone(), 1),
                                                     {render_tabler_icon(
                                                         __scope,
