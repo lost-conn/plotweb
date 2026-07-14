@@ -2014,13 +2014,37 @@ fn do_switch_chapter_inner(
         auto_save_timer_id.set(0);
     }
 
-    // Clear any pending chapter-title save timer
+    // Flush, then clear, any pending chapter-title save. The debounced title PUT
+    // (save_chapter_title_inline) hasn't fired yet; cancelling its timer without
+    // saving would drop a title edit made just before switching. Persist the
+    // leaving chapter's current title now via its own PUT (mirroring the debounce).
     let prev_title = chapter_title_save_timer_id.get();
     if prev_title != 0 {
         if let Some(w) = web_sys::window() {
             w.clear_timeout_with_handle(prev_title);
         }
         chapter_title_save_timer_id.set(0);
+        if let BookPane::Editor(leaving_cid) = active_pane.get() {
+            let title = chapter_title.get();
+            store.chapters.update(|chapters| {
+                if let Some(ch) = chapters.iter_mut().find(|c| c.id == leaving_cid) {
+                    ch.title = title.clone();
+                }
+            });
+            let bid = bid.to_string();
+            wasm_bindgen_futures::spawn_local(async move {
+                let req = UpdateChapterRequest {
+                    title: Some(title),
+                    content: None,
+                };
+                api::put::<_, serde_json::Value>(
+                    &format!("/api/books/{}/chapters/{}", bid, leaving_cid),
+                    &req,
+                )
+                .await
+                .ok();
+            });
+        }
     }
 
     // Save the chapter we're leaving — but ONLY if its content was actually loaded

@@ -32,9 +32,13 @@ test("editor: switching chapters after editing a title updates the title field",
   await openChapter(page, "Beta");
   await expect(page.locator(titleInput)).toHaveValue("Beta");
 
-  // And Beta's field is itself editable + reactive after the switch.
-  await page.locator(titleInput).fill("Beta EDITED");
-  await expect(page.locator(titleInput)).toHaveValue("Beta EDITED");
+  // Switching flushes the pending (debounced) title save, so Alpha's edit
+  // persists: switching back shows the edited title, not the original.
   await openChapter(page, "Alpha");
-  await expect(page.locator(titleInput)).toHaveValue("Alpha");
+  await expect(page.locator(titleInput)).toHaveValue("Alpha EDITED");
+
+  // And it really hit the server: a fresh load resumes the edited title.
+  await page.reload();
+  await openChapter(page, "Alpha");
+  await expect(page.locator(titleInput)).toHaveValue("Alpha EDITED");
 });
