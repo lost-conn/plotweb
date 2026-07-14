@@ -53,6 +53,8 @@ pub enum Route {
     ThemePreview,
     /// Phase-0 dev spike: the rinch-editor-view rich-text editor (`/editor-spike`).
     EditorSpike,
+    /// Phase-0 dev spike: OPFS + Automerge persistence (`/opfs-spike`).
+    OpfsSpike,
 }
 
 impl Route {
@@ -68,6 +70,7 @@ impl Route {
             Route::ReaderPreview(book_id) => format!("/preview/{}", book_id),
             Route::ThemePreview => "/theme".into(),
             Route::EditorSpike => "/editor-spike".into(),
+            Route::OpfsSpike => "/opfs-spike".into(),
         }
     }
 
@@ -80,6 +83,7 @@ impl Route {
             "/forgot-password" => Route::ForgotPassword,
             "/theme" => Route::ThemePreview,
             "/editor-spike" => Route::EditorSpike,
+            "/opfs-spike" => Route::OpfsSpike,
             _ if path.starts_with("/reset-password/") => {
                 let token = &path[16..];
                 if token.is_empty() {
