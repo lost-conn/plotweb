@@ -273,6 +273,33 @@ Validated at `/opfs-spike` (commit `d2f8a82`):
   bundle. Gate both Phase-0 spike routes behind a cargo feature (or remove them)
   once Phase 1/2 subsumes them.
 
+## Spike ③ results (Automerge sync over HTTP) — 2026-07-14
+
+Validated at `/sync-spike` (commit `3eae484`):
+
+- **The sync transport works.** Editor A projected its doc onto a CRDT
+  (`start_collaboration_host`) and pushed a **506-byte Automerge snapshot** to a
+  dumb relay server over `fetch`; "Pull into B" fetched it and reconstructed A's
+  document in editor B (`start_collaboration_guest`). Verified in-browser: "B
+  converged to A." Confirms the C→S→C round-trip carrying opaque CRDT bytes both
+  directions.
+- **The server can be a dumb relay.** It stores a snapshot + append-only delta
+  log per doc id and never runs Automerge — the clients merge. The real server
+  will *persist* canonical Automerge (blob store), but the transport shape (post
+  bytes / fetch bytes) is exactly this. Good news for `rinch-http`: the existing
+  `fetch`-based JSON transport already carried the (hex-encoded) CRDT bytes.
+- **Delta relay is wired** through the same proven POST path (`outbound` →
+  `POST /api/sync/{id}/delta`); live-edit deltas travel identically to the
+  snapshot. (Driving the model-first editor's keyboard input via the test
+  harness proved finicky, so the in-browser demo exercised the snapshot path;
+  the delta path shares the same transport.)
+
+**Phase-0 verdict: all three spikes green.** The editor, offline persistence,
+and HTTP sync are each validated end-to-end. The upstream gaps are now precisely
+scoped: `rinch-storage` (with the OPFS/`web_sys_unstable_apis` rinch fix),
+`rinch-http`, and the `rinch-editor-collab` lists projection. Next: **lock the
+Automerge doc schema** (the last Phase-0 card), then Phase 1.
+
 ## The web_sys elimination target
 
 The frontend's ~163 `web_sys` sites resolve as: the **69 DOM/`set_inner_html`
