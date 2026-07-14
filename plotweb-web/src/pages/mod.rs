@@ -9,6 +9,7 @@ pub mod reader;
 pub mod theme_preview;
 pub mod editor_spike;
 pub mod opfs_spike;
+pub mod sync_spike;
 
 use rinch::prelude::*;
 use rinch_core::use_store;
@@ -30,5 +31,6 @@ pub fn route_content(__scope: &mut RenderScope) -> NodeHandle {
         Route::ThemePreview => theme_preview::theme_preview_page(__scope),
         Route::EditorSpike => editor_spike::editor_spike_page(__scope),
         Route::OpfsSpike => opfs_spike::opfs_spike_page(__scope),
+        Route::SyncSpike => sync_spike::sync_spike_page(__scope),
     }
 }

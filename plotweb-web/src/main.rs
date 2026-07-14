@@ -38,7 +38,7 @@ fn app() -> NodeHandle {
         store.current_route.set(initial_route.clone());
         router::replace_state(&initial_route);
         store.loading.set(false);
-    } else if matches!(initial_route, Route::ThemePreview | Route::EditorSpike | Route::OpfsSpike) {
+    } else if matches!(initial_route, Route::ThemePreview | Route::EditorSpike | Route::OpfsSpike | Route::SyncSpike) {
         // Dev preview routes — public, no session check.
         store.current_route.set(initial_route.clone());
         router::replace_state(&initial_route);

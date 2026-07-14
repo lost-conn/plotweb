@@ -8,6 +8,7 @@ pub mod history;
 pub mod images;
 pub mod import;
 pub mod notes;
+pub mod sync;
 
 use crate::rhype::quote;
 use crate::AppState;

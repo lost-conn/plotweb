@@ -110,6 +110,10 @@ pub fn api_router(state: AppState) -> Router {
             "/api/auth/reset-password",
             post(routes::auth::reset_password),
         )
+        // Phase-0 spike: dumb Automerge sync relay (no auth).
+        .route("/api/sync/{id}/snapshot", post(routes::sync::put_snapshot))
+        .route("/api/sync/{id}/delta", post(routes::sync::post_delta))
+        .route("/api/sync/{id}", get(routes::sync::get_state))
         .route("/api/fonts", get(routes::fonts::list))
         .route("/api/books", get(routes::books::list))
         .route("/api/books", post(routes::books::create))
