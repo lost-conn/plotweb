@@ -247,6 +247,32 @@ Validated at `/editor-spike` (flag-gated dev route, commit `6dadc2a`):
   is only in `rinch-editor-collab`'s Automerge projection, so it's a **Phase 2
   (sync)** concern, not a blocker for adopting the editor in Phase 1.
 
+## Spike ② results (Automerge persistence) — 2026-07-14
+
+Validated at `/opfs-spike` (commit `d2f8a82`):
+
+- **Automerge runs in the PlotWeb wasm build.** `automerge v0.5.12` compiled to
+  `wasm32-unknown-unknown` cleanly via rinch-web's `collaboration` feature; the
+  only extra plumbing is `uuid`'s `js` feature (actor-id randomness). No
+  getrandom config needed.
+- **The persistence round-trip works.** Editor doc →
+  `EditorHandle::start_collaboration_host` → a **720-byte Automerge snapshot** →
+  persisted → **page reload** → `start_collaboration_guest` → editor doc, with
+  content + marks intact. Verified in-browser ("Saved 720 bytes" → reload →
+  "Restored 720 bytes").
+- **OPFS via web-sys is blocked — actionable finding for `rinch-storage`.** OPFS
+  write handles (`FileSystemFileHandle`/`FileSystemWritableFileStream`) are
+  behind `web_sys_unstable_apis`, and enabling that cfg globally **fails to
+  compile rinch**: `rinch/src/render_surface.rs:1312` passes `f64` to
+  `put_image_data`, whose *unstable* web-sys signature wants `i32`. So the spike
+  uses **localStorage** as the sink (identical Automerge/persist/reload path).
+  `rinch-storage` must either (a) land the one-line rinch fix so the unstable
+  cfg compiles, or (b) bind OPFS through manual `wasm-bindgen`/`js-sys` (avoiding
+  the global cfg). Prefer (a) — it's trivial and OPFS is the right backend.
+- **Build-weight note:** the `collaboration` feature adds Automerge to the prod
+  bundle. Gate both Phase-0 spike routes behind a cargo feature (or remove them)
+  once Phase 1/2 subsumes them.
+
 ## The web_sys elimination target
 
 The frontend's ~163 `web_sys` sites resolve as: the **69 DOM/`set_inner_html`
