@@ -223,6 +223,30 @@ lossy hand-rolled converters and the `<u>/<mark>/<a>`-preservation hacks go away
 - **Migration** of existing books (git markdown → Automerge `DocNode`) — a
   one-time server-side import (parse markdown → editor model → Automerge).
 
+## Spike ① results (editor swap) — 2026-07-14
+
+Validated at `/editor-spike` (flag-gated dev route, commit `6dadc2a`):
+
+- **Zero new dependencies** — `rinch-web` already links `rinch-editor-view`/
+  `-core` and re-exports `Editor`/`EditorHandle`/`create_editor`. Compiled
+  clean in PlotWeb's Trunk build on the first try.
+- **Content path works** — a PlotWeb chapter (markdown → `markdown_to_html` →
+  the editor's `load_html`) rendered with full fidelity: bold/italic/`code`
+  marks, H1/H2, bullet + ordered lists, blockquote. No contenteditable, no
+  `set_inner_html`.
+- **Edit loop works** — caret placement + toolbar `handle.command(...)` →
+  model transform → re-render, verified in-browser (H1→H2 demotion).
+- **Parity is high.** Covered: bold/italic/underline/strike/code/**highlight**/
+  sub/sup marks; paragraph, H1–H6, code block, blockquote; **bullet/ordered/
+  task lists**; HR, tables, undo/redo — a superset of PlotWeb's current toolbar.
+- **Gaps for Phase 1:** (a) **text-alignment** has no editor command (schema
+  gap — PlotWeb's `{align:…}`); needs a paragraph-align attr + command upstream.
+  (b) **Links/images** are supported as a mark/node but via arg-based handle
+  calls, not bare command strings — wiring, not missing capability.
+- **Lists clarification:** lists edit fine *in the editor*; the flat-text limit
+  is only in `rinch-editor-collab`'s Automerge projection, so it's a **Phase 2
+  (sync)** concern, not a blocker for adopting the editor in Phase 1.
+
 ## The web_sys elimination target
 
 The frontend's ~163 `web_sys` sites resolve as: the **69 DOM/`set_inner_html`
