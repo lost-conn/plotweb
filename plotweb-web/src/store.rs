@@ -51,6 +51,8 @@ pub enum Route {
     /// paginated reader without feedback/progress persistence.
     ReaderPreview(String),
     ThemePreview,
+    /// Phase-0 dev spike: the rinch-editor-view rich-text editor (`/editor-spike`).
+    EditorSpike,
 }
 
 impl Route {
@@ -65,6 +67,7 @@ impl Route {
             Route::Reader(token) => format!("/read/{}", token),
             Route::ReaderPreview(book_id) => format!("/preview/{}", book_id),
             Route::ThemePreview => "/theme".into(),
+            Route::EditorSpike => "/editor-spike".into(),
         }
     }
 
@@ -76,6 +79,7 @@ impl Route {
             "/register" => Route::Register,
             "/forgot-password" => Route::ForgotPassword,
             "/theme" => Route::ThemePreview,
+            "/editor-spike" => Route::EditorSpike,
             _ if path.starts_with("/reset-password/") => {
                 let token = &path[16..];
                 if token.is_empty() {

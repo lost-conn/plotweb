@@ -141,6 +141,10 @@ pub fn app_shell() -> NodeHandle {
                     style: "height: 100dvh; overflow-y: auto; padding: 40px 48px; background: var(--rinch-color-body);",
                     {crate::pages::theme_preview::theme_preview_page(__scope)}
                 },
+                Route::EditorSpike => div {
+                    style: "height: 100dvh; overflow-y: auto; background: var(--rinch-color-body);",
+                    {crate::pages::editor_spike::editor_spike_page(__scope)}
+                },
                 Route::Dashboard => div {
                     style: "height: 100dvh; display: flex; flex-direction: column; overflow: hidden;",
                     {crate::pages::dashboard::dashboard_page(__scope)}
