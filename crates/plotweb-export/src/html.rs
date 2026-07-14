@@ -48,10 +48,11 @@ fn apply_align_markers(html: &str) -> String {
     out
 }
 
-/// Like [`markdown_to_html_fragment`] but coerces HTML5 void elements into
-/// self-closing XHTML form so the output is well-formed enough for EPUB.
-pub fn markdown_to_xhtml_fragment(markdown: &str) -> String {
-    let html = markdown_to_html_fragment(markdown);
+/// Coerce HTML5 void elements (`<br>`, `<hr>`) into self-closing XHTML form so
+/// the fragment is well-formed enough for EPUB. Applied on top of
+/// [`markdown_to_html_fragment`] (legacy) or `node_to_html` (DocNode) output by
+/// `content_to_xhtml_fragment`.
+pub fn coerce_void_elements_xhtml(html: &str) -> String {
     html.replace("<br>", "<br/>")
         .replace("<hr>", "<hr/>")
         .replace("<br />", "<br/>")

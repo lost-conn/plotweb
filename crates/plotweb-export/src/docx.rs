@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use crate::{ExportError, ExportInput, decode_entities};
+use crate::{ExportError, ExportInput, content_to_markdown, decode_entities};
 use docx_rs::{AlignmentType, BreakType, Docx, Paragraph, Run};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -17,7 +17,10 @@ pub fn render(input: &ExportInput) -> Result<Vec<u8>, ExportError> {
                 .style("Heading1")
                 .add_run(Run::new().add_text(title.trim())),
         );
-        docx = render_chapter_body(docx, &ch.content);
+        // DocNode content is normalized to Markdown first so the existing
+        // pulldown-cmark walker below is reused unchanged; legacy Markdown passes
+        // through `content_to_markdown` byte-for-byte.
+        docx = render_chapter_body(docx, &content_to_markdown(&ch.content));
     }
 
     let mut cursor = Cursor::new(Vec::new());

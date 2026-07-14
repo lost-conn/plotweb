@@ -41,6 +41,14 @@ plotweb-export = { path = "crates/plotweb-export" }
 rhypedb-engine = { git = "https://github.com/joeleaver/rhypedb", rev = "680de58d2d72e2b775b20677025de8a629d9cac8", default-features = false }
 rhypedb-query = { git = "https://github.com/joeleaver/rhypedb", rev = "680de58d2d72e2b775b20677025de8a629d9cac8", default-features = false }
 rhypedb-schema = { git = "https://github.com/joeleaver/rhypedb", rev = "680de58d2d72e2b775b20677025de8a629d9cac8" }
+# rinch-editor-core: the pure, renderer-agnostic document-model core of the rinch
+# rich-text editor. Pulled as a GIT dep (not a sibling path dep) for the same
+# reason as rhypedb — the jkbase/Docker build VM can't see sibling path deps but
+# CAN reach github.com during the fetch phase. default-features=false plus the
+# `serde` (DocNode wire shape) and `markdown` (pulldown-cmark I/O) features is all
+# import/export need; no rinch-dom/winit/web_sys is pulled in. rev must match the
+# Dockerfile RINCH_COMMIT pin.
+rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "d8295a47bda417906b5422446748c0f755f09e1e", default-features = false, features = ["serde", "markdown"] }
 git2 = "0.20"
 thiserror = "2"
 chrono = "0.4"

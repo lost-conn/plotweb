@@ -1,4 +1,4 @@
-use crate::{ExportInput, decode_entities};
+use crate::{ExportInput, content_to_markdown, decode_entities};
 
 /// Render the manuscript as a single Markdown document: one `# Title` heading
 /// per chapter, followed by its entity-decoded body.
@@ -16,7 +16,9 @@ pub fn render(input: &ExportInput) -> String {
         out.push_str("# ");
         out.push_str(decode_entities(&ch.title).trim());
         out.push_str("\n\n");
-        out.push_str(strip_align_markers(&decode_entities(&ch.content)).trim_end());
+        out.push_str(
+            strip_align_markers(&decode_entities(&content_to_markdown(&ch.content))).trim_end(),
+        );
     }
     out.push('\n');
     out

@@ -138,7 +138,7 @@ pub async fn confirm(
         .into_iter()
         .map(|ch| ImportChapter {
             title: ch.title,
-            content: ch.content,
+            content: plotweb_import::markdown_to_docnode_json(&ch.content),
         })
         .collect();
 

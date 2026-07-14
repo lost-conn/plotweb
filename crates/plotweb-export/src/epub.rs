@@ -1,4 +1,4 @@
-use crate::{ExportError, ExportInput, decode_entities, html};
+use crate::{ExportError, ExportInput, content_to_xhtml_fragment, decode_entities};
 use epub_builder::{EpubBuilder, EpubContent, ReferenceType, ZipLibrary};
 
 impl From<epub_builder::Error> for ExportError {
@@ -20,7 +20,7 @@ pub fn render(input: &ExportInput) -> Result<Vec<u8>, ExportError> {
     for (i, ch) in input.chapters.iter().enumerate() {
         let title = decode_entities(&ch.title);
         let title = title.trim();
-        let body = html::markdown_to_xhtml_fragment(&ch.content);
+        let body = content_to_xhtml_fragment(&ch.content);
         let doc = wrap_xhtml(title, &body);
         let content = EpubContent::new(format!("chapter_{}.xhtml", i + 1), doc.as_bytes())
             .title(title)

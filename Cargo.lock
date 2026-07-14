@@ -22,6 +22,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1747,7 +1756,9 @@ dependencies = [
  "docx-rs",
  "epub-builder",
  "html-escape",
- "pulldown-cmark",
+ "pulldown-cmark 0.13.4",
+ "rinch-editor-core",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 
@@ -1772,6 +1783,8 @@ name = "plotweb-import"
 version = "0.1.0"
 dependencies = [
  "quick-xml 0.37.5",
+ "rinch-editor-core",
+ "serde_json",
  "thiserror 2.0.18",
  "zip 2.4.2",
 ]
@@ -1863,6 +1876,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86ba2052aebccc42cbbb3ed234b8b13ce76f75c3551a303cb2bcffcff12bb14"
+dependencies = [
+ "bitflags",
+ "memchr",
+ "unicase",
 ]
 
 [[package]]
@@ -2013,6 +2037,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a0e75113e14dc5acb068cd0786884f214f1312650a3d36d269f5c4f3cdee8a2"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f388202e4b80542a0921078cc23b6333bcf1409c1e3f86404cae4766a6131db"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2137,6 +2190,17 @@ dependencies = [
  "parking_lot",
  "rand 0.9.2",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "rinch-editor-core"
+version = "0.1.0"
+source = "git+https://github.com/joeleaver/rinch?rev=d8295a47bda417906b5422446748c0f755f09e1e#d8295a47bda417906b5422446748c0f755f09e1e"
+dependencies = [
+ "pulldown-cmark 0.12.2",
+ "regex",
+ "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
