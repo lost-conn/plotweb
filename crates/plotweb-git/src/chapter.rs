@@ -33,9 +33,47 @@ pub struct ChapterData {
     pub updated_at: String,
 }
 
-/// Count words in text content, stripping HTML tags first.
+/// Count words in chapter/note content.
+///
+/// Content is an opaque string the frontend owns. New content is `DocNode` JSON
+/// (the editor's durable save shape); legacy content is chapter Markdown / note
+/// HTML. If the content parses as a JSON object, walk it and count words in every
+/// `"text"` string field (the DocNode text-node shape); otherwise fall back to the
+/// legacy tag-strip logic.
 fn count_words(content: &str) -> u64 {
-    // Strip HTML tags for word counting
+    let trimmed = content.trim_start();
+    if trimmed.starts_with('{') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return count_json_text_words(&value);
+        }
+    }
+    count_stripped_words(content)
+}
+
+/// Recursively sum whitespace-separated words across every `"text"` string field
+/// in a DocNode JSON tree.
+fn count_json_text_words(value: &serde_json::Value) -> u64 {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut count = 0;
+            for (key, val) in map {
+                if key == "text" {
+                    if let Some(s) = val.as_str() {
+                        count += s.split_whitespace().count() as u64;
+                    }
+                } else {
+                    count += count_json_text_words(val);
+                }
+            }
+            count
+        }
+        serde_json::Value::Array(items) => items.iter().map(count_json_text_words).sum(),
+        _ => 0,
+    }
+}
+
+/// Legacy word count: strip HTML/Markdown tags, then count whitespace-separated words.
+fn count_stripped_words(content: &str) -> u64 {
     let mut in_tag = false;
     let text: String = content
         .chars()
@@ -479,6 +517,39 @@ mod tests {
         let git_repo = git2::Repository::open(&ms_dir).unwrap();
         let oid = repo::head_oid(&git_repo).unwrap();
         git_repo.find_commit(oid).unwrap().tree_id()
+    }
+
+    #[test]
+    fn count_words_handles_docnode_json_and_legacy() {
+        // DocNode JSON: only `"text"` fields count; type/attr/mark keys are ignored.
+        let docnode = r#"{
+            "type": "doc",
+            "content": [
+                {"type": "heading", "attrs": {"level": 1}, "content": [
+                    {"type": "text", "text": "Chapter One"}
+                ]},
+                {"type": "paragraph", "content": [
+                    {"type": "text", "text": "The lantern ", "marks": [{"type": "bold"}]},
+                    {"type": "text", "text": "guttered against the fog."}
+                ]}
+            ]
+        }"#;
+        // "Chapter One" (2) + "The lantern " (2) + "guttered against the fog." (4) = 8
+        assert_eq!(count_words(docnode), 8);
+
+        // Legacy Markdown (chapters): tag-strip path.
+        assert_eq!(count_words("# Title\n\nOne two three four."), 6);
+
+        // Legacy HTML (notes): tags stripped, text words counted.
+        assert_eq!(count_words("<p>hello <strong>brave</strong> world</p>"), 3);
+
+        // Not JSON (leading brace matters): falls back to the legacy path.
+        assert_eq!(count_words("plain prose here"), 3);
+
+        // A string that starts with '{' but isn't valid JSON also falls back.
+        assert_eq!(count_words("{not json} but four words"), 5);
+
+        assert_eq!(count_words(""), 0);
     }
 
     #[test]

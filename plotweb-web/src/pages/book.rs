@@ -3,6 +3,7 @@ use wasm_bindgen::JsCast;
 use rinch::prelude::*;
 use rinch_core::use_store;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use rinch_web::{Editor, EditorHandle, create_editor};
 use plotweb_common::{
     BetaFeedback, BetaReaderLink, Book, Chapter, CommitDiff, CommitInfo, CreateBetaLinkRequest,
     CreateBetaReplyRequest, CreateChapterRequest, CreateNoteRequest, FontSettings,
@@ -1972,17 +1973,17 @@ fn do_switch_chapter(
     chapter_title_save_timer_id: Signal<i32>,
     save_status: Signal<&'static str>,
     editor_word_count: Signal<u64>,
-    editor_loaded: Signal<bool>,
+    loaded_chapter_id: Signal<Option<String>>,
+    chapter_handle: Signal<EditorHandle>,
     chapter_title: Signal<String>,
     store: AppStore,
     bid: &str,
     new_chapter_id: &str,
 ) {
-    do_switch_chapter_inner(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, editor_loaded, chapter_title, store, bid, new_chapter_id, None);
+    do_switch_chapter_inner(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_handle, chapter_title, store, bid, new_chapter_id, None);
 }
 
 thread_local! {
-    static SWITCH_GEN: Cell<u32> = Cell::new(0);
     /// Incremented each time `book_page()` is created so that leaked timer
     /// closures from a previous page instance can detect they are stale.
     static PAGE_GEN: Cell<u32> = Cell::new(0);
@@ -1994,17 +1995,14 @@ fn do_switch_chapter_inner(
     chapter_title_save_timer_id: Signal<i32>,
     save_status: Signal<&'static str>,
     editor_word_count: Signal<u64>,
-    editor_loaded: Signal<bool>,
+    loaded_chapter_id: Signal<Option<String>>,
+    chapter_handle: Signal<EditorHandle>,
     chapter_title: Signal<String>,
     store: AppStore,
     bid: &str,
     new_chapter_id: &str,
     pending_scroll: Option<Signal<Option<(String, String)>>>,
 ) {
-    // Increment switch generation to cancel any in-flight loads
-    SWITCH_GEN.with(|g| g.set(g.get().wrapping_add(1)));
-    let switch_gen = SWITCH_GEN.with(|g| g.get());
-
     // Clear any pending auto-save timer
     let prev = auto_save_timer_id.get();
     if prev != 0 {
@@ -2047,26 +2045,24 @@ fn do_switch_chapter_inner(
         }
     }
 
-    // Save the chapter we're leaving — but ONLY if its content was actually loaded
-    // into the editor. While a switch is still loading (editor_loaded == false), the
-    // DOM holds the *previous* chapter's HTML; reading it here and writing it to
-    // `current_id` would overwrite that chapter with another chapter's content
-    // (the chapter-overwrite bug when switching quickly between chapters).
+    // Save the chapter we're leaving — but ONLY if its content is the one currently
+    // loaded in the editor model. While a switch is still loading (loaded_chapter_id
+    // != the pane's chapter), the model holds the *previous* chapter's content;
+    // reading it here and writing it to `current_id` would overwrite that chapter
+    // with another chapter's content (the chapter-overwrite bug when switching
+    // quickly between chapters).
     let leaving_id = match active_pane.get() {
-        BookPane::Editor(id) if editor_loaded.get() => Some(id),
+        BookPane::Editor(id) if loaded_chapter_id.get().as_deref() == Some(id.as_str()) => Some(id),
         _ => None,
     };
     if let Some(current_id) = leaving_id {
         let bid = bid.to_string();
-        let content = web_sys::window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.query_selector("#editor-main").ok().flatten())
-            .map(|el| el.inner_html());
-        if let Some(content) = content {
-            let markdown = editor_utils::html_to_markdown(&content);
+        // Read the durable save shape straight from the editor model (synchronous,
+        // no DOM race): the model always reflects the loaded chapter.
+        if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
             save_status.set("saving");
             wasm_bindgen_futures::spawn_local(async move {
-                let req = UpdateChapterRequest { title: None, content: Some(markdown) };
+                let req = UpdateChapterRequest { title: None, content: Some(content) };
                 if api::put::<_, serde_json::Value>(
                     &format!("/api/books/{}/chapters/{}", bid, current_id),
                     &req,
@@ -2081,73 +2077,55 @@ fn do_switch_chapter_inner(
         }
     }
 
-    // Disable editor to prevent typing during the transition window
-    if let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.query_selector("#editor-main").ok().flatten())
-    {
-        el.set_attribute("contenteditable", "false").ok();
-    }
-
     // Switch pane
     let new_cid = new_chapter_id.to_string();
     active_pane.set(BookPane::Editor(new_cid.clone()));
     save_status.set("saved");
     store.sidebar_open.set(false);
 
-    // Load new chapter
-    editor_loaded.set(false);
+    // Mark the editor as not-yet-loaded for the new chapter so a save can't fire
+    // against `new_cid` while the model still holds the previous chapter.
+    loaded_chapter_id.set(None);
     let bid = bid.to_string();
     wasm_bindgen_futures::spawn_local(async move {
         if let Ok(chapter) = api::get::<Chapter>(
             &format!("/api/books/{}/chapters/{}", bid, new_cid),
         ).await {
-            // Bail if a newer switch happened while this fetch was in flight, so a
-            // slow stale response can't overwrite the current title/word count.
-            if SWITCH_GEN.with(|g| g.get()) != switch_gen {
+            // Bail if the user switched away while this fetch was in flight, so a
+            // slow stale response can't clobber the now-current chapter's editor.
+            if active_pane.get() != BookPane::Editor(new_cid.clone()) {
                 return;
             }
             chapter_title.set(chapter.title.clone());
             editor_word_count.set(chapter.word_count);
 
-            let content = chapter.content.clone();
-            // Inject as soon as the editor node is present (deterministic), rather
-            // than guessing with a fixed setTimeout.
-            editor_utils::with_element_when_ready("#editor-main".to_string(), move |el| {
-                // Bail if another switch happened since we started
-                if SWITCH_GEN.with(|g| g.get()) != switch_gen {
-                    return;
-                }
-                if content.is_empty() {
-                    el.set_inner_html("<p></p>");
-                } else {
-                    el.set_inner_html(&editor_utils::sanitize_html(&editor_utils::markdown_to_html(&content)));
-                }
-                // Re-enable editing now that the new content is loaded
-                el.set_attribute("contenteditable", "true").ok();
+            // Load into the editor model (synchronous). Legacy-tolerant: DocNode JSON
+            // if it parses, else the legacy Markdown → HTML path.
+            let handle = chapter_handle.get();
+            editor_utils::load_chapter_content(&handle, &chapter.content);
+            handle.set_dark_mode(store.dark_mode.get());
 
-                // The DOM now truly reflects the current chapter — only now is it
-                // safe for save-on-leave paths to read #editor-main and persist it.
-                editor_loaded.set(true);
+            // The model now reflects the current chapter — save-on-leave / autosave
+            // may safely persist it.
+            loaded_chapter_id.set(Some(new_cid.clone()));
 
-                // Execute pending feedback scroll if any
-                if let Some(scroll_signal) = pending_scroll {
-                    if let Some((selected_text, context_block)) = scroll_signal.get() {
-                        scroll_signal.set(None);
-                        // Delay slightly to let the DOM settle after innerHTML
-                        let closure2 = wasm_bindgen::closure::Closure::once(move || {
-                            scroll_to_text_in_editor(&selected_text, &context_block);
-                        });
-                        if let Some(w) = web_sys::window() {
-                            w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                                closure2.as_ref().unchecked_ref(),
-                                50,
-                            ).ok();
-                        }
-                        closure2.forget();
+            // Execute pending feedback scroll if any (walks the editor's rendered
+            // text nodes under #editor-main). Delay a tick to let the view settle.
+            if let Some(scroll_signal) = pending_scroll {
+                if let Some((selected_text, context_block)) = scroll_signal.get() {
+                    scroll_signal.set(None);
+                    let closure2 = wasm_bindgen::closure::Closure::once(move || {
+                        scroll_to_text_in_editor(&selected_text, &context_block);
+                    });
+                    if let Some(w) = web_sys::window() {
+                        w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                            closure2.as_ref().unchecked_ref(),
+                            50,
+                        ).ok();
                     }
+                    closure2.forget();
                 }
-            });
+            }
         }
     });
 }
@@ -2385,6 +2363,7 @@ fn render_note_card(
     show_note_modal: Signal<bool>,
     note_editor_title: Signal<String>,
     note_editor_color: Signal<Option<String>>,
+    note_handle: Signal<EditorHandle>,
     dragging_note_id: Signal<Option<String>>,
     drop_target: Signal<Option<(Option<String>, usize)>>,
     ghost_visible: Signal<bool>,
@@ -2487,20 +2466,12 @@ fn render_note_card(
                                 note_editor_color.set(note.color);
                                 active_pane.set(BookPane::NoteEditor(n.clone()));
 
-                                let content = note.content;
-                                let closure = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
-                                    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
-                                        if let Some(el) = doc.get_element_by_id("note-editor-main") {
-                                            el.set_inner_html(&content);
-                                        }
-                                    }
-                                }) as Box<dyn FnMut()>);
-                                if let Some(w) = web_sys::window() {
-                                    w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                                        closure.as_ref().unchecked_ref(), 50,
-                                    ).ok();
-                                }
-                                closure.forget();
+                                // Load into the note editor model (synchronous).
+                                // Legacy-tolerant: DocNode JSON if it parses, else the
+                                // legacy raw-HTML path (notes were stored as HTML).
+                                let handle = note_handle.get();
+                                editor_utils::load_note_content(&handle, &note.content);
+                                handle.set_dark_mode(store.dark_mode.get());
                             }
                         });
                         store.sidebar_open.set(false);
@@ -2630,6 +2601,7 @@ fn render_note_card(
                                     show_note_modal,
                                     note_editor_title,
                                     note_editor_color,
+                                    note_handle,
                                     dragging_note_id,
                                     drop_target,
                                     ghost_visible,
@@ -2658,8 +2630,26 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let chapter_title = Signal::new(String::new());
     let save_status = Signal::new("saved");
     let editor_word_count: Signal<u64> = Signal::new(0);
-    let editor_loaded = Signal::new(false);
+    // The chapter id whose content is currently loaded in the editor model. `None`
+    // during the fetch window of a chapter switch — save-on-leave / autosave only
+    // persist when this matches the target chapter, so a not-yet-loaded editor
+    // (still holding the previous chapter) can't overwrite the wrong chapter.
+    let loaded_chapter_id: Signal<Option<String>> = Signal::new(None);
     let auto_save_timer_id = Signal::new(0_i32);
+
+    // Model-first prose editors (rinch-editor-view), one per prose surface. Stored in
+    // Signals so the (Copy) save/switch closures can grab a clone via `.get()`.
+    let chapter_handle: Signal<EditorHandle> = Signal::new(create_editor());
+    let note_handle: Signal<EditorHandle> = Signal::new(create_editor());
+
+    // Keep the editors' color scheme in sync with the app theme. `set_dark_mode` is a
+    // no-op before mount; the load paths (chapter/note open) also set it, so the
+    // initial state is applied once an editor is actually shown.
+    __scope.create_effect(move || {
+        let dark = store.dark_mode.get();
+        chapter_handle.get().set_dark_mode(dark);
+        note_handle.get().set_dark_mode(dark);
+    });
 
     let bid_signal = Signal::new(book_id.clone());
     PAGE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
@@ -2812,29 +2802,22 @@ pub fn book_page(book_id: String) -> NodeHandle {
         if PAGE_GEN.with(|g| g.get()) != page_gen {
             return;
         }
-        // If the editor is still loading a chapter, the DOM holds the previous
-        // chapter's content — saving now would overwrite the wrong chapter.
-        if !editor_loaded.get() {
+        // Only save if this chapter's content is the one currently loaded in the
+        // editor model — otherwise the model still holds a previous chapter and we'd
+        // overwrite the wrong one.
+        if loaded_chapter_id.get().as_deref() != Some(chapter_id_to_save.as_str()) {
             return;
         }
+        // Serialize the durable save shape (DocNode JSON) straight from the model.
+        let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) else {
+            return;
+        };
         let bid = bid_signal.get();
         save_status.set("saving");
         wasm_bindgen_futures::spawn_local(async move {
-            let content = match web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.query_selector("#editor-main").ok().flatten())
-            {
-                Some(el) => el.inner_html(),
-                None => {
-                    save_status.set("saved");
-                    return;
-                }
-            };
-
-            let markdown = editor_utils::html_to_markdown(&content);
             let req = UpdateChapterRequest {
                 title: None,
-                content: Some(markdown),
+                content: Some(content),
             };
             if api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
@@ -2849,153 +2832,74 @@ pub fn book_page(book_id: String) -> NodeHandle {
         });
     };
 
-    // Chapter switching is handled by do_switch_chapter() free function
+    // Schedule a debounced chapter autosave (3s). Called on editor keystrokes and
+    // after toolbar formatting actions (via the toolbar's `on_edit`). The model-first
+    // editor emits no DOM `input` event (no `contenteditable`), so typing is detected
+    // via a document-level `keyup` listener below.
+    let schedule_chapter_autosave = move || {
+        if !matches!(active_pane.get(), BookPane::Editor(_)) {
+            return;
+        }
+        save_status.set("unsaved");
+        let prev = auto_save_timer_id.get();
+        if prev != 0 {
+            if let Some(w) = web_sys::window() {
+                w.clear_timeout_with_handle(prev);
+            }
+        }
+        let captured_cid = match active_pane.get() {
+            BookPane::Editor(cid) => cid,
+            _ => return,
+        };
+        let closure = wasm_bindgen::closure::Closure::once(move || {
+            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            // Recompute the word count from the model (debounced, not per-keystroke).
+            editor_word_count.set(editor_utils::editor_word_count(&chapter_handle.get()));
+            if let BookPane::Editor(ref current_cid) = active_pane.get() {
+                if *current_cid == captured_cid {
+                    save_content(captured_cid.clone());
+                }
+            }
+        });
+        let id = web_sys::window()
+            .and_then(|w| {
+                w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    closure.as_ref().unchecked_ref(),
+                    3000,
+                ).ok()
+            })
+            .unwrap_or(0);
+        closure.forget();
+        auto_save_timer_id.set(id);
+    };
 
     // ── Set up Ctrl+S and auto-save (once, on mount) ────────────
     {
-        let save = save_content.clone();
         let window = web_sys::window().unwrap();
 
-        // Ctrl+S
-        let save_for_key = save.clone();
+        // Ctrl+S — immediate save of the current chapter.
         let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
             if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
                 event.prevent_default();
                 if let BookPane::Editor(ref cid) = active_pane.get() {
-                    save_for_key(cid.clone());
+                    save_content(cid.clone());
                 }
             }
         }) as Box<dyn FnMut(_)>);
         window.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
         keydown.forget();
 
-        // Auto-save on input with 3s debounce
-        let save_for_input = save;
-        let input_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::Event| {
-            let dominated_by_editor = event
-                .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .and_then(|el| el.closest(".editor-content[contenteditable]").ok().flatten())
-                .is_some();
-            if !dominated_by_editor {
-                return;
+        // Auto-save on typing: the editor consumes keydown at capture phase, but keyup
+        // still bubbles to the document. Gate on the chapter editor being active.
+        let keyup = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::KeyboardEvent| {
+            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            if matches!(active_pane.get(), BookPane::Editor(_)) {
+                schedule_chapter_autosave();
             }
-
-            save_status.set("unsaved");
-            let prev = auto_save_timer_id.get();
-            if prev != 0 {
-                web_sys::window().unwrap().clear_timeout_with_handle(prev);
-            }
-            // Capture context now; validate it still matches when the timer fires
-            let captured_cid = if let BookPane::Editor(ref cid) = active_pane.get() {
-                cid.clone()
-            } else {
-                return;
-            };
-            let save_fn = save_for_input.clone();
-            let closure = wasm_bindgen::closure::Closure::once(move || {
-                // Bail if this page instance is stale (user navigated away and back)
-                if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
-                // Update word count (debounced here instead of every keystroke)
-                if let Some(el) = web_sys::window()
-                    .and_then(|w| w.document())
-                    .and_then(|d| d.query_selector("#editor-main").ok().flatten())
-                {
-                    let text = el.text_content().unwrap_or_default();
-                    editor_word_count.set(text.split_whitespace().count() as u64);
-                }
-                // Verify we're still on the same chapter
-                if let BookPane::Editor(ref current_cid) = active_pane.get() {
-                    if *current_cid == captured_cid {
-                        save_fn(captured_cid);
-                    }
-                }
-            });
-            let id = web_sys::window().unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(
-                    closure.as_ref().unchecked_ref(),
-                    3000,
-                ).unwrap_or(0);
-            closure.forget();
-            auto_save_timer_id.set(id);
         }) as Box<dyn FnMut(_)>);
         let doc = window.document().unwrap();
-        doc.add_event_listener_with_callback("input", input_closure.as_ref().unchecked_ref()).ok();
-        input_closure.forget();
-    }
-
-    // ── Paste/drop image upload ────────────────────────────────
-    {
-        let bid = book_id.clone();
-        let doc = web_sys::window().unwrap().document().unwrap();
-
-        // Paste handler — intercept image paste in contenteditable areas
-        let bid_paste = bid.clone();
-        let paste_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::ClipboardEvent| {
-            // Bail if this page instance is stale (user navigated away and back),
-            // otherwise leaked handlers from old page instances stack up.
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
-            let in_editor = event
-                .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .and_then(|el| el.closest("[contenteditable=\"true\"]").ok().flatten())
-                .is_some();
-            if !in_editor { return; }
-
-            let Some(dt) = event.clipboard_data() else { return; };
-            let Some(items) = dt.files() else { return; };
-            for i in 0..items.length() {
-                let Some(file) = items.get(i) else { continue; };
-                if !file.type_().starts_with("image/") { continue; }
-                event.prevent_default();
-                let bid = bid_paste.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(resp) = crate::api::upload_image(&bid, &file).await {
-                        editor_utils::exec_cmd_val(
-                            "insertHTML",
-                            &format!("<img src=\"{}\" alt=\"\">", resp.url),
-                        );
-                    }
-                });
-                return;
-            }
-        }) as Box<dyn FnMut(_)>);
-        doc.add_event_listener_with_callback("paste", paste_handler.as_ref().unchecked_ref()).ok();
-        paste_handler.forget();
-
-        // Drop handler — intercept image drop in contenteditable areas
-        let bid_drop = bid;
-        let drop_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::DragEvent| {
-            // Bail if this page instance is stale (user navigated away and back),
-            // otherwise leaked handlers from old page instances stack up.
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
-            let in_editor = event
-                .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .and_then(|el| el.closest("[contenteditable=\"true\"]").ok().flatten())
-                .is_some();
-            if !in_editor { return; }
-
-            let Some(dt) = event.data_transfer() else { return; };
-            let Some(files) = dt.files() else { return; };
-            for i in 0..files.length() {
-                let Some(file) = files.get(i) else { continue; };
-                if !file.type_().starts_with("image/") { continue; }
-                event.prevent_default();
-                let bid = bid_drop.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(resp) = crate::api::upload_image(&bid, &file).await {
-                        editor_utils::exec_cmd_val(
-                            "insertHTML",
-                            &format!("<img src=\"{}\" alt=\"\">", resp.url),
-                        );
-                    }
-                });
-                return;
-            }
-        }) as Box<dyn FnMut(_)>);
-        doc.add_event_listener_with_callback("drop", drop_handler.as_ref().unchecked_ref()).ok();
-        drop_handler.forget();
+        doc.add_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref()).ok();
+        keyup.forget();
     }
 
     // ── Chapter actions ─────────────────────────────────────────
@@ -3543,7 +3447,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Factory closures capture only Copy types (Signals) so they are Copy themselves.
     // This lets the rsx macro use them in multiple for-loops without move issues.
     let open_chapter = move |chapter_id: String| {
-        move || do_switch_chapter(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, editor_loaded, chapter_title, store, &bid_signal.get(), &chapter_id)
+        move || do_switch_chapter(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_handle, chapter_title, store, &bid_signal.get(), &chapter_id)
     };
 
     // Navigate to a feedback item: switch to the chapter editor, open the feedback
@@ -3562,7 +3466,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             pending_feedback_scroll.set(Some((selected_text.clone(), context_block.clone())));
             show_feedback_sidebar.set(true);
             do_switch_chapter_inner(
-                active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, editor_loaded,
+                active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_handle,
                 chapter_title, store, &bid_signal.get(), &chapter_id,
                 Some(pending_feedback_scroll),
             );
@@ -3782,22 +3686,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 }
                 auto_save_timer_id.set(0);
             }
-            // Don't flush while the chapter is still loading: the DOM holds the
-            // previous chapter's HTML, so saving it to `current_id` would overwrite
+            // Don't flush while the chapter is still loading: the model holds the
+            // previous chapter's content, so saving it to `current_id` would overwrite
             // this chapter with another chapter's content.
-            if !editor_loaded.get() {
+            if loaded_chapter_id.get().as_deref() != Some(current_id.as_str()) {
                 return;
             }
             let bid = bid_signal.get();
-            let content = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.query_selector("#editor-main").ok().flatten())
-                .map(|el| el.inner_html());
-            if let Some(content) = content {
-                let markdown = editor_utils::html_to_markdown(&content);
+            if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
                 save_status.set("saving");
                 wasm_bindgen_futures::spawn_local(async move {
-                    let req = UpdateChapterRequest { title: None, content: Some(markdown) };
+                    let req = UpdateChapterRequest { title: None, content: Some(content) };
                     if api::put::<_, serde_json::Value>(
                         &format!("/api/books/{}/chapters/{}", bid, current_id),
                         &req,
@@ -3900,11 +3799,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
             let title_val = note_editor_title.get();
             let color_val = note_editor_color.get();
 
-            let content = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.get_element_by_id("note-editor-main"))
-                .map(|el| el.inner_html())
-                .unwrap_or_default();
+            // Serialize the durable save shape (DocNode JSON) from the note editor model.
+            let content = editor_utils::editor_content_json(&note_handle.get()).unwrap_or_default();
 
             note_save_status.set("saving");
             wasm_bindgen_futures::spawn_local(async move {
@@ -3943,6 +3839,23 @@ pub fn book_page(book_id: String) -> NodeHandle {
         cb.forget();
         note_save_timer_id.set(id);
     };
+
+    // Note-editor autosave on typing. Like the chapter editor, the model-first note
+    // editor emits no DOM `input` event, so detect keystrokes via a document-level
+    // `keyup` listener gated on the note editor being active. (Toolbar formatting and
+    // color changes call `schedule_note_save` directly.)
+    {
+        let keyup = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::KeyboardEvent| {
+            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            if matches!(active_pane.get(), BookPane::NoteEditor(_)) {
+                schedule_note_save();
+            }
+        }) as Box<dyn FnMut(_)>);
+        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            doc.add_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref()).ok();
+        }
+        keyup.forget();
+    }
 
     let go_back_to_notes = move || {
         // Save before navigating back
@@ -4391,16 +4304,21 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             }
                         }
 
-                        {editor_utils::editor_toolbar(__scope, book_id.clone())}
+                        {editor_utils::editor_toolbar(__scope, chapter_handle.get(), book_id.clone(), schedule_chapter_autosave)}
 
                         div {
                             style: "display: flex; flex: 1; overflow: hidden;",
                             div { class: "editor-scroll",
+                                // Wrapper keeps the `#editor-main` id the feedback
+                                // scroll-to-text feature queries; the model-first
+                                // editor renders its text nodes inside it.
                                 div {
-                                    contenteditable: "true",
                                     class: "editor-content",
                                     id: "editor-main",
-                                    p { "Start writing..." }
+                                    Editor {
+                                        editor: chapter_handle.get(),
+                                        content: String::new(),
+                                    }
                                 }
                             }
 
@@ -4591,6 +4509,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                             show_note_modal,
                                             note_editor_title,
                                             note_editor_color,
+                                            note_handle,
                                             dragging_note_id,
                                             drop_target,
                                             ghost_visible,
@@ -4690,14 +4609,16 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             Text { size: "sm", weight: "500", "Content" }
                             Space { h: "xs" }
 
-                            {editor_utils::editor_toolbar(__scope, book_id.clone())}
+                            {editor_utils::editor_toolbar(__scope, note_handle.get(), book_id.clone(), schedule_note_save)}
 
                             div {
-                                contenteditable: "true",
                                 class: "editor-content",
                                 id: "note-editor-main",
                                 style: "min-height: 200px; padding: 12px; border: 1px solid var(--rinch-color-border); border-radius: var(--rinch-radius-sm);",
-                                oninput: move |_: String| schedule_note_save(),
+                                Editor {
+                                    editor: note_handle.get(),
+                                    content: String::new(),
+                                }
                             }
                         }
                     }

@@ -1,28 +1,104 @@
+use std::rc::Rc;
+
 use rinch::prelude::*;
 use rinch_core::Signal;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
+use rinch_web::EditorHandle;
+use rinch_editor_core::serialize::DocNode;
 
 use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
-extern "C" {
-    /// Call document.execCommand(command, false, value) via JS.
-    #[wasm_bindgen(js_namespace = document, js_name = execCommand, catch)]
-    fn exec_command_js(command: &str, show_ui: bool, value: &str) -> Result<bool, JsValue>;
+// ── Model-first editor (rinch-editor-view) content bridge ──────────────────
+//
+// Chapters/notes are stored as an **opaque String** the frontend owns. New saves
+// are `DocNode` JSON (the editor's durable wire shape); legacy content is still
+// chapter Markdown / note HTML. Loads are legacy-tolerant: try DocNode JSON first,
+// fall back to the pre-8a HTML path. A later card bulk-migrates legacy content.
 
-    #[wasm_bindgen(js_namespace = document, js_name = queryCommandState, catch)]
-    fn query_command_state_js(command: &str) -> Result<bool, JsValue>;
-
-    #[wasm_bindgen(js_namespace = document, js_name = queryCommandValue, catch)]
-    fn query_command_value_js(command: &str) -> Result<String, JsValue>;
+/// Load stored chapter content into `handle`. Tries `DocNode` JSON (new format),
+/// falling back to the legacy Markdown → HTML path (`markdown_to_html`).
+pub fn load_chapter_content(handle: &EditorHandle, content: &str) {
+    if load_docnode(handle, content) {
+        return;
+    }
+    // Legacy: chapters were stored as Markdown. `markdown_to_html` yields `<p></p>`
+    // for empty input, which `load_html` turns into a single empty paragraph.
+    handle.load_html(&markdown_to_html(content));
 }
 
-fn query_cmd_state(cmd: &str) -> bool {
-    query_command_state_js(cmd).unwrap_or(false)
+/// Load stored note content into `handle`. Tries `DocNode` JSON (new format),
+/// falling back to the legacy raw-HTML path (notes were already HTML).
+pub fn load_note_content(handle: &EditorHandle, content: &str) {
+    if load_docnode(handle, content) {
+        return;
+    }
+    if content.trim().is_empty() {
+        handle.load_html("<p></p>");
+    } else {
+        handle.load_html(content);
+    }
 }
 
-fn query_cmd_value(cmd: &str) -> String {
-    query_command_value_js(cmd).unwrap_or_default()
+/// Try to parse `content` as `DocNode` JSON and load it via the schema. Returns
+/// `false` (leaving the editor untouched) when `content` isn't DocNode JSON, so
+/// callers can fall back to the legacy HTML path.
+fn load_docnode(handle: &EditorHandle, content: &str) -> bool {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    let Ok(docnode) = serde_json::from_str::<DocNode>(trimmed) else {
+        return false;
+    };
+    let state = handle.state();
+    match state.schema().node_from_doc(&docnode) {
+        Ok(node) => {
+            handle.load_doc(node);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Serialize the editor's current document to `DocNode` JSON for saving, or `None`
+/// if the document can't be serialized (never expected for a live editor).
+pub fn editor_content_json(handle: &EditorHandle) -> Option<String> {
+    match handle.doc().to_doc() {
+        Ok(docnode) => serde_json::to_string(&docnode).ok(),
+        Err(_) => None,
+    }
+}
+
+/// Count words in the editor's current document (whitespace-separated words across
+/// all text nodes).
+pub fn editor_word_count(handle: &EditorHandle) -> u64 {
+    match handle.doc().to_doc() {
+        Ok(docnode) => count_docnode_words(&docnode),
+        Err(_) => 0,
+    }
+}
+
+fn count_docnode_words(node: &DocNode) -> u64 {
+    let mut count = node
+        .text
+        .as_deref()
+        .map(|t| t.split_whitespace().count() as u64)
+        .unwrap_or(0);
+    for child in &node.content {
+        count += count_docnode_words(child);
+    }
+    count
+}
+
+/// The heading level (1-6) the cursor is in, or `None` when not in a heading —
+/// drives the H1/H2/H3 toolbar active states.
+fn current_heading_level(handle: &EditorHandle) -> Option<i64> {
+    if handle.current_block_type().as_deref() != Some("heading") {
+        return None;
+    }
+    let state = handle.state();
+    let resolved = state.doc.resolve(state.selection.head()).ok()?;
+    resolved.parent().attrs().get_int("level")
 }
 
 /// Invoke `action` with the element matching `selector` as soon as it exists in
@@ -63,16 +139,6 @@ pub fn with_element_when_ready(
     }
     // ~1s at 60fps; the target node normally exists within a frame or two.
     attempt(selector, 60, Box::new(action));
-}
-
-/// Execute a browser execCommand on the document (for contenteditable formatting).
-pub fn exec_cmd(command: &str) {
-    exec_command_js(command, false, "").ok();
-}
-
-/// Execute a browser execCommand with a value argument.
-pub fn exec_cmd_val(command: &str, value: &str) {
-    exec_command_js(command, false, value).ok();
 }
 
 /// Editor CSS — focused writing environment with semantic colors.
@@ -287,210 +353,158 @@ pub fn toolbar_button(icon: TablerIcon, tooltip: &str, on_click: impl Fn() + 'st
 fn fmt_button(
     __scope: &mut RenderScope,
     icon: TablerIcon,
-    on_click: impl Fn() + 'static + Copy,
+    on_click: impl Fn() + 'static + Clone,
     active: Signal<bool>,
 ) -> NodeHandle {
     rsx! {
         ActionIcon {
             variant: {move || if active.get() { "light".to_string() } else { "subtle".to_string() }},
             size: "sm",
-            onclick: on_click,
+            onclick: on_click.clone(),
             {render_tabler_icon(__scope, icon, TablerIconStyle::Outline)}
         }
     }
 }
 
-#[component]
-pub fn editor_toolbar(book_id: String) -> NodeHandle {
-    // Active state signals for formatting buttons
+/// The editor toolbar, driving `handle` (a `rinch-editor-view` [`EditorHandle`])
+/// through `handle.command(...)` — the same model-first API desktop uses. `on_edit`
+/// is called after any content-mutating action so the caller can schedule an
+/// autosave. Text alignment is intentionally omitted (no editor command yet — a
+/// separate upstream card adds it).
+///
+/// A plain function (not `#[component]`) so it can take the non-`Copy` `EditorHandle`
+/// and the `on_edit` closure directly.
+pub fn editor_toolbar(
+    __scope: &mut RenderScope,
+    handle: EditorHandle,
+    book_id: String,
+    on_edit: impl Fn() + 'static + Copy,
+) -> NodeHandle {
+    // Active-state signals for formatting buttons (toolbar "on" highlight).
     let s_bold: Signal<bool> = Signal::new(false);
     let s_italic: Signal<bool> = Signal::new(false);
     let s_underline: Signal<bool> = Signal::new(false);
     let s_strike: Signal<bool> = Signal::new(false);
+    let s_code: Signal<bool> = Signal::new(false);
     let s_h1: Signal<bool> = Signal::new(false);
     let s_h2: Signal<bool> = Signal::new(false);
     let s_h3: Signal<bool> = Signal::new(false);
     let s_bquote: Signal<bool> = Signal::new(false);
     let s_ul: Signal<bool> = Signal::new(false);
     let s_ol: Signal<bool> = Signal::new(false);
-    let s_jl: Signal<bool> = Signal::new(false);
-    let s_jc: Signal<bool> = Signal::new(false);
-    let s_jr: Signal<bool> = Signal::new(false);
-    let s_jf: Signal<bool> = Signal::new(false);
 
-    let refresh = move || {
-        s_bold.set(query_cmd_state("bold"));
-        s_italic.set(query_cmd_state("italic"));
-        s_underline.set(query_cmd_state("underline"));
-        s_strike.set(query_cmd_state("strikeThrough"));
-        let block = query_cmd_value("formatBlock");
-        s_h1.set(block.eq_ignore_ascii_case("h1"));
-        s_h2.set(block.eq_ignore_ascii_case("h2"));
-        s_h3.set(block.eq_ignore_ascii_case("h3"));
-        s_bquote.set(block.eq_ignore_ascii_case("blockquote"));
-        s_ul.set(query_cmd_state("insertUnorderedList"));
-        s_ol.set(query_cmd_state("insertOrderedList"));
-        s_jl.set(query_cmd_state("justifyLeft"));
-        s_jc.set(query_cmd_state("justifyCenter"));
-        s_jr.set(query_cmd_state("justifyRight"));
-        s_jf.set(query_cmd_state("justifyFull"));
+    // Recompute active states from the editor model. Shared (Rc) so every button
+    // closure and the document listeners can call it.
+    let refresh: Rc<dyn Fn()> = {
+        let h = handle.clone();
+        Rc::new(move || {
+            s_bold.set(h.is_mark_active("bold"));
+            s_italic.set(h.is_mark_active("italic"));
+            s_underline.set(h.is_mark_active("underline"));
+            s_strike.set(h.is_mark_active("strike"));
+            s_code.set(h.is_mark_active("code"));
+            let level = current_heading_level(&h);
+            s_h1.set(level == Some(1));
+            s_h2.set(level == Some(2));
+            s_h3.set(level == Some(3));
+            s_bquote.set(h.in_node_type("blockquote"));
+            s_ul.set(h.in_node_type("bullet_list"));
+            s_ol.set(h.in_node_type("ordered_list"));
+        })
     };
 
-    // Update toolbar state on selection changes
+    // Keep the highlight roughly in sync with the caret/selection. The model editor
+    // consumes keydown at capture phase (no `contenteditable`, no native
+    // `execCommand`), but keyup / mouseup / selectionchange still bubble to the
+    // document, so refreshing on those keeps the toolbar state fresh.
     if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        let r = refresh.clone();
         let listener = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
-            refresh();
+            r();
         }) as Box<dyn FnMut(_)>);
-        doc.add_event_listener_with_callback("selectionchange", listener.as_ref().unchecked_ref()).ok();
-
-        // Override Ctrl+B/I/U so they work in Firefox (which otherwise
-        // opens bookmarks / page-info / view-source).
-        let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |e: web_sys::KeyboardEvent| {
-            if !(e.ctrl_key() || e.meta_key()) { return; }
-            let cmd: &'static str = match e.key().as_str() {
-                "b" | "B" => "bold",
-                "i" | "I" => "italic",
-                "u" | "U" => "underline",
-                _ => return,
-            };
-            // Only intercept when focus is inside a contenteditable
-            let in_editor = e.target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .and_then(|el| el.closest("[contenteditable=\"true\"]").ok().flatten())
-                .is_some();
-            if !in_editor { return; }
-            // Snapshot state before the browser's native handling runs.
-            let was_active = query_cmd_state(cmd);
-            e.prevent_default();
-            // Defer check: if the browser already toggled the format (Chrome
-            // applies bold via beforeinput despite keydown.preventDefault),
-            // don't double-toggle. Only call execCommand when the native
-            // handler didn't fire (Firefox).
-            let deferred = wasm_bindgen::closure::Closure::once(move || {
-                if query_cmd_state(cmd) == was_active {
-                    exec_cmd(cmd);
-                }
-                refresh();
-            });
-            web_sys::window().unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(
-                    deferred.as_ref().unchecked_ref(), 0,
-                ).ok();
-            deferred.forget();
-        }) as Box<dyn FnMut(_)>);
-        doc.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
-
-        // Previously both closures were .forget()'d, leaking a pair of document
-        // listeners every time the toolbar mounted (chapter + note editors, and
-        // per navigation). Instead, keep them alive and tear them down when this
-        // component's scope is disposed, so they don't stack.
+        for ev in ["selectionchange", "keyup", "mouseup"] {
+            doc.add_event_listener_with_callback(ev, listener.as_ref().unchecked_ref()).ok();
+        }
         let cleanup_doc = doc.clone();
         __scope.on_cleanup(move || {
-            cleanup_doc
-                .remove_event_listener_with_callback(
-                    "selectionchange",
-                    listener.as_ref().unchecked_ref(),
-                )
-                .ok();
-            cleanup_doc
-                .remove_event_listener_with_callback(
-                    "keydown",
-                    keydown.as_ref().unchecked_ref(),
-                )
-                .ok();
-            // Closures dropped here, after the listeners are detached.
+            for ev in ["selectionchange", "keyup", "mouseup"] {
+                cleanup_doc
+                    .remove_event_listener_with_callback(ev, listener.as_ref().unchecked_ref())
+                    .ok();
+            }
             drop(listener);
-            drop(keydown);
         });
+    }
+
+    // Build a mark/block button closure: run `cmd`, refresh actives, notify on_edit.
+    macro_rules! cmd_click {
+        ($cmd:expr) => {{
+            let h = handle.clone();
+            let r = refresh.clone();
+            move || {
+                h.command($cmd);
+                r();
+                on_edit();
+            }
+        }};
     }
 
     rsx! {
         div { class: "toolbar",
-            // Inline formatting
-            {fmt_button(__scope, TablerIcon::Bold,
-                move || { exec_cmd("bold"); refresh(); }, s_bold)}
-            {fmt_button(__scope, TablerIcon::Italic,
-                move || { exec_cmd("italic"); refresh(); }, s_italic)}
-            {fmt_button(__scope, TablerIcon::Underline,
-                move || { exec_cmd("underline"); refresh(); }, s_underline)}
-            {fmt_button(__scope, TablerIcon::Strikethrough,
-                move || { exec_cmd("strikeThrough"); refresh(); }, s_strike)}
-            {toolbar_button(__scope, TablerIcon::Code, "Code", move || {
-                // Wrap selection in <code> using insertHTML
-                if let Some(win) = web_sys::window() {
-                    if let Some(doc) = win.document() {
-                        if let Ok(Some(sel)) = doc.get_selection() {
-                            if sel.range_count() > 0 {
-                                if let Ok(range) = sel.get_range_at(0) {
-                                    let text = range.to_string();
-                                    let _ = range.delete_contents();
-                                    exec_cmd_val("insertHTML", &format!("<code>{}</code>", text.as_string().unwrap_or_default()));
-                                }
-                            }
-                        }
-                    }
-                }
-            })}
+            // Inline formatting marks
+            {fmt_button(__scope, TablerIcon::Bold, cmd_click!("toggleBold"), s_bold)}
+            {fmt_button(__scope, TablerIcon::Italic, cmd_click!("toggleItalic"), s_italic)}
+            {fmt_button(__scope, TablerIcon::Underline, cmd_click!("toggleUnderline"), s_underline)}
+            {fmt_button(__scope, TablerIcon::Strikethrough, cmd_click!("toggleStrike"), s_strike)}
+            {fmt_button(__scope, TablerIcon::Code, cmd_click!("toggleCode"), s_code)}
 
             {separator(__scope)}
 
-            // Block types
-            {fmt_button(__scope, TablerIcon::H1,
-                move || { exec_cmd_val("formatBlock", "h1"); refresh(); }, s_h1)}
-            {fmt_button(__scope, TablerIcon::H2,
-                move || { exec_cmd_val("formatBlock", "h2"); refresh(); }, s_h2)}
-            {fmt_button(__scope, TablerIcon::H3,
-                move || { exec_cmd_val("formatBlock", "h3"); refresh(); }, s_h3)}
+            // Headings
+            {fmt_button(__scope, TablerIcon::H1, cmd_click!("setHeading1"), s_h1)}
+            {fmt_button(__scope, TablerIcon::H2, cmd_click!("setHeading2"), s_h2)}
+            {fmt_button(__scope, TablerIcon::H3, cmd_click!("setHeading3"), s_h3)}
 
             {separator(__scope)}
 
             // Block elements
-            {fmt_button(__scope, TablerIcon::Blockquote,
-                move || { exec_cmd_val("formatBlock", "blockquote"); refresh(); }, s_bquote)}
-            {fmt_button(__scope, TablerIcon::List,
-                move || { exec_cmd("insertUnorderedList"); refresh(); }, s_ul)}
-            {fmt_button(__scope, TablerIcon::ListNumbers,
-                move || { exec_cmd("insertOrderedList"); refresh(); }, s_ol)}
+            {fmt_button(__scope, TablerIcon::Blockquote, cmd_click!("wrapInBlockquote"), s_bquote)}
+            {fmt_button(__scope, TablerIcon::List, cmd_click!("toggleBulletList"), s_ul)}
+            {fmt_button(__scope, TablerIcon::ListNumbers, cmd_click!("toggleOrderedList"), s_ol)}
 
             {separator(__scope)}
 
-            // Indent / Outdent
-            {toolbar_button(__scope, TablerIcon::IndentIncrease, "Indent", move || exec_cmd("indent"))}
-            {toolbar_button(__scope, TablerIcon::IndentDecrease, "Outdent", move || exec_cmd("outdent"))}
+            // Indent / Outdent (no active state)
+            {toolbar_button(__scope, TablerIcon::IndentIncrease, "Indent", cmd_click!("indent"))}
+            {toolbar_button(__scope, TablerIcon::IndentDecrease, "Outdent", cmd_click!("outdent"))}
 
             {separator(__scope)}
 
-            // Text alignment
-            {fmt_button(__scope, TablerIcon::AlignLeft,
-                move || { exec_cmd("justifyLeft"); refresh(); }, s_jl)}
-            {fmt_button(__scope, TablerIcon::AlignCenter,
-                move || { exec_cmd("justifyCenter"); refresh(); }, s_jc)}
-            {fmt_button(__scope, TablerIcon::AlignRight,
-                move || { exec_cmd("justifyRight"); refresh(); }, s_jr)}
-            {fmt_button(__scope, TablerIcon::AlignJustified,
-                move || { exec_cmd("justifyFull"); refresh(); }, s_jf)}
-
-            {separator(__scope)}
+            // TODO(8a): link button — no name-only link command; needs a Transaction
+            // adding the "link" mark with an href attr via handle.update(...).
 
             // Undo / Redo
-            {toolbar_button(__scope, TablerIcon::ArrowBackUp, "Undo (Ctrl+Z)", move || exec_cmd("undo"))}
-            {toolbar_button(__scope, TablerIcon::ArrowForwardUp, "Redo (Ctrl+Shift+Z)", move || exec_cmd("redo"))}
+            {toolbar_button(__scope, TablerIcon::ArrowBackUp, "Undo (Ctrl+Z)", cmd_click!("undo"))}
+            {toolbar_button(__scope, TablerIcon::ArrowForwardUp, "Redo (Ctrl+Shift+Z)", cmd_click!("redo"))}
 
             {separator(__scope)}
 
-            // Image insert
+            // Image insert (keeps the server-upload flow; inserts via handle.insert_image)
             {toolbar_button(__scope, TablerIcon::Photo, "Insert Image", {
+                let h = handle.clone();
                 let book_id = book_id.clone();
                 move || {
-                    insert_image_via_picker(&book_id);
+                    insert_image_via_picker(h.clone(), &book_id, on_edit);
                 }
             })}
         }
     }
 }
 
-/// Opens a file picker and uploads the selected image, inserting it at the cursor.
-fn insert_image_via_picker(book_id: &str) {
+/// Opens a file picker, uploads the selected image (producing a server URL), and
+/// inserts it into `handle` via `insert_image`. `on_edit` fires after insertion so
+/// the caller can schedule an autosave.
+fn insert_image_via_picker(handle: EditorHandle, book_id: &str, on_edit: impl Fn() + 'static + Copy) {
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return; };
     let Ok(input) = doc.create_element("input") else { return; };
     let input: web_sys::HtmlInputElement = input.unchecked_into();
@@ -507,13 +521,12 @@ fn insert_image_via_picker(book_id: &str) {
         let Some(files) = input.files() else { return; };
         let Some(file) = files.get(0) else { return; };
         let bid = book_id.clone();
+        let handle = handle.clone();
         wasm_bindgen_futures::spawn_local(async move {
             match crate::api::upload_image(&bid, &file).await {
                 Ok(resp) => {
-                    exec_cmd_val(
-                        "insertHTML",
-                        &format!("<img src=\"{}\" alt=\"\">", resp.url),
-                    );
+                    handle.insert_image(&resp.url, "");
+                    on_edit();
                 }
                 Err(e) => {
                     web_sys::console::error_1(&format!("Image upload failed: {}", e.message).into());
@@ -796,197 +809,3 @@ fn parse_md_image(text: &str) -> Option<String> {
     Some(format!("<img src=\"{}\" alt=\"{}\">", url, alt))
 }
 
-/// Extract an HTML attribute value from a tag's attribute string.
-fn extract_attr(tag_attrs: &str, attr_name: &str) -> Option<String> {
-    // Look for attr_name="value" or attr_name='value'
-    let pattern = format!("{}=\"", attr_name);
-    if let Some(start) = tag_attrs.find(&pattern) {
-        let rest = &tag_attrs[start + pattern.len()..];
-        if let Some(end) = rest.find('"') {
-            return Some(rest[..end].to_string());
-        }
-    }
-    let pattern = format!("{}='", attr_name);
-    if let Some(start) = tag_attrs.find(&pattern) {
-        let rest = &tag_attrs[start + pattern.len()..];
-        if let Some(end) = rest.find('\'') {
-            return Some(rest[..end].to_string());
-        }
-    }
-    None
-}
-
-/// Extract text-align value from a tag's attributes string.
-/// Checks both `style="text-align: center"` and `align="center"` (legacy).
-fn extract_text_align(tag_attrs: &str) -> Option<&'static str> {
-    // Check style attribute
-    if let Some(style_start) = tag_attrs.find("text-align:") {
-        let rest = &tag_attrs[style_start + 11..];
-        let rest = rest.trim_start();
-        if rest.starts_with("center") {
-            return Some("center");
-        } else if rest.starts_with("right") {
-            return Some("right");
-        } else if rest.starts_with("justify") {
-            return Some("justify");
-        }
-    }
-    // Check legacy align attribute: align="center"
-    if let Some(align_start) = tag_attrs.find("align=\"") {
-        let rest = &tag_attrs[align_start + 7..];
-        if rest.starts_with("center") {
-            return Some("center");
-        } else if rest.starts_with("right") {
-            return Some("right");
-        } else if rest.starts_with("justify") {
-            return Some("justify");
-        }
-    }
-    None
-}
-
-/// Simple HTML to markdown converter for saving content.
-pub fn html_to_markdown(html: &str) -> String {
-    let mut md = String::new();
-    let mut chars = html.chars().peekable();
-    let mut in_tag = false;
-    let mut tag_name = String::new();
-    let mut is_closing = false;
-    let mut text_buffer = String::new();
-    let mut list_stack: Vec<&str> = Vec::new();
-
-    while let Some(ch) = chars.next() {
-        if ch == '<' {
-            // Flush text
-            if !text_buffer.is_empty() {
-                md.push_str(&text_buffer);
-                text_buffer.clear();
-            }
-            in_tag = true;
-            tag_name.clear();
-            is_closing = false;
-            if chars.peek() == Some(&'/') {
-                is_closing = true;
-                chars.next();
-            }
-        } else if ch == '>' && in_tag {
-            in_tag = false;
-            // trim_end_matches('/') so self-closing void tags like `<br/>` and
-            // `<hr/>` are recognized the same as `<br>` / `<hr>`.
-            let tag = tag_name
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .trim_end_matches('/')
-                .to_lowercase();
-
-            if !is_closing {
-                // Check for text-align in tag attributes
-                if let Some(align) = extract_text_align(&tag_name) {
-                    md.push_str(&format!("{{align:{}}}\n", align));
-                }
-
-                match tag.as_str() {
-                    "h1" => md.push_str("# "),
-                    "h2" => md.push_str("## "),
-                    "h3" => md.push_str("### "),
-                    "h4" => md.push_str("#### "),
-                    "h5" => md.push_str("##### "),
-                    "h6" => md.push_str("###### "),
-                    "strong" | "b" => md.push_str("**"),
-                    "em" | "i" => md.push('*'),
-                    "code" => md.push('`'),
-                    "s" | "del" => md.push_str("~~"),
-                    "blockquote" => md.push_str("> "),
-                    "li" => {
-                        if list_stack.last() == Some(&"ol") {
-                            md.push_str("1. ");
-                        } else {
-                            md.push_str("- ");
-                        }
-                    }
-                    "ul" => list_stack.push("ul"),
-                    "ol" => list_stack.push("ol"),
-                    "hr" => md.push_str("---\n"),
-                    "br" => md.push('\n'),
-                    "img" => {
-                        let src = extract_attr(&tag_name, "src").unwrap_or_default();
-                        let alt = extract_attr(&tag_name, "alt").unwrap_or_default();
-                        md.push_str(&format!("![{}]({})\n", alt, src));
-                    }
-                    // Inline formatting with no markdown equivalent — preserve the
-                    // tag verbatim so it round-trips (markdown_to_html passes raw
-                    // HTML through unchanged). Without this, the toolbar's
-                    // underline button and pasted links/highlights were silently
-                    // dropped on every save. `a` keeps its attributes (href).
-                    "a" => {
-                        md.push('<');
-                        md.push_str(tag_name.trim_end_matches('/'));
-                        md.push('>');
-                    }
-                    "u" | "mark" | "ins" | "sub" | "sup" => {
-                        md.push('<');
-                        md.push_str(&tag);
-                        md.push('>');
-                    }
-                    _ => {}
-                }
-            } else {
-                match tag.as_str() {
-                    "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "p" | "div" | "blockquote" | "li" => {
-                        md.push('\n');
-                    }
-                    "strong" | "b" => md.push_str("**"),
-                    "em" | "i" => md.push('*'),
-                    "code" => md.push('`'),
-                    "s" | "del" => md.push_str("~~"),
-                    "ul" | "ol" => {
-                        list_stack.pop();
-                        md.push('\n');
-                    }
-                    // Closing counterparts of the preserved inline tags above.
-                    "a" | "u" | "mark" | "ins" | "sub" | "sup" => {
-                        md.push_str("</");
-                        md.push_str(&tag);
-                        md.push('>');
-                    }
-                    _ => {}
-                }
-            }
-        } else if in_tag {
-            tag_name.push(ch);
-        } else {
-            text_buffer.push(ch);
-        }
-    }
-
-    if !text_buffer.is_empty() {
-        md.push_str(&text_buffer);
-    }
-
-    // Collapse runs of 3+ newlines down to 2, in a single pass. The previous
-    // `while md.contains("\n\n\n") { md.replace(...) }` was O(n²) — each pass
-    // rescanned and reallocated the whole document, and long blank-line runs
-    // needed many passes.
-    collapse_blank_lines(&md).trim().to_string()
-}
-
-/// Cap any run of consecutive newlines at two, in one O(n) pass. Other
-/// whitespace resets the run, so newlines separated by spaces are left alone —
-/// identical to the old repeated `"\n\n\n" -> "\n\n"` replacement.
-fn collapse_blank_lines(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut newline_run = 0u32;
-    for ch in s.chars() {
-        if ch == '\n' {
-            newline_run += 1;
-            if newline_run <= 2 {
-                out.push('\n');
-            }
-        } else {
-            newline_run = 0;
-            out.push(ch);
-        }
-    }
-    out
-}

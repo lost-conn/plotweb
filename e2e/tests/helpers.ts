@@ -217,17 +217,32 @@ export async function openFeedbackSidebar(page: Page) {
 }
 
 /**
- * Open a chapter in the editor by its sidebar name; waits until it's editable.
+ * Open a chapter in the editor by its sidebar name; waits until it's ready.
  *
- * The editor node always exists but only flips to `contenteditable=true` once a
- * chapter switch has loaded its content. Immediately after a chapter is created
- * the click handler can briefly miss, so retry the click until the editor is
- * actually editable.
+ * The prose editor is the model-first `rinch-editor-view` (not a
+ * `contenteditable`): it mounts a `[data-pm-editor]` surface inside `#editor-main`,
+ * and the whole editor pane (`.editor-layout`) is `display:none` until a chapter
+ * pane is active — so the surface becoming *visible* is the "chapter loaded" signal.
  */
 export async function openChapter(page: Page, title: string) {
   const item = page.locator(".sidebar-chapter-item", { hasText: title });
   await expect(item).toBeVisible();
   await item.click();
-  // Wait for the chapter switch to load and flip the editor editable.
-  await page.locator('#editor-main[contenteditable="true"]').waitFor({ timeout: 15_000 });
+  // Wait for the chapter's editor pane to become active (visible).
+  await page
+    .locator("#editor-main [data-pm-editor]")
+    .waitFor({ state: "visible", timeout: 15_000 });
+}
+
+/**
+ * Type prose into the model-first editor. It is deliberately **not** a
+ * `contenteditable`, so Playwright's `.fill()` (which needs a native editable)
+ * does nothing — focus the surface with a real click and send real keystrokes,
+ * which the editor's global key handler turns into document edits.
+ */
+export async function typeInEditor(page: Page, text: string) {
+  const surface = page.locator("#editor-main [data-pm-editor]");
+  await surface.waitFor({ state: "visible", timeout: 15_000 });
+  await surface.click();
+  await page.keyboard.type(text);
 }

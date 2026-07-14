@@ -17,6 +17,9 @@ rinch = { git = "https://github.com/joeleaver/rinch", rev = "d8295a47bda417906b5
 rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "d8295a47bda417906b5422446748c0f755f09e1e", features = ["theme"] }
 rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "d8295a47bda417906b5422446748c0f755f09e1e" }
 rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "d8295a47bda417906b5422446748c0f755f09e1e", features = ["collaboration"] }
+# Shared with the copy rinch-web already pulls; `serde` lights up DocNode
+# (durable JSON save shape) + `Schema::node_from_doc` / `Node::to_doc`.
+rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "d8295a47bda417906b5422446748c0f755f09e1e", features = ["serde"] }
 
 # Browser randomness for the transitive automerge → uuid (Automerge actor ids).
 # Without a randomness feature, uuid refuses to compile on wasm32-unknown-unknown.

@@ -31,11 +31,25 @@ const PROSE =
   "The moonlight fell across the silver lake and nobody spoke a single word that night.";
 const TARGET_PHRASE = "silver lake";
 
-/** Write known prose into the open editor and wait past the 3s autosave debounce. */
-async function writeChapterProse(page: Page, prose: string) {
-  await page.locator("#editor-main").fill(prose);
-  // Let the autosave debounce (3s) flush the content to git-backed storage.
-  await page.waitForTimeout(4000);
+/**
+ * Seed known prose into the book's first chapter via the authenticated API.
+ *
+ * Uses the API (markdown, which the reader renders) rather than driving the
+ * model-first editor: it's deterministic, and it avoids the editor-open →
+ * flush-on-leave path clobbering the seed with an empty document. (Card 8b moves
+ * the reader onto DocNode; until then the reader renders markdown.)
+ */
+async function writeChapterProse(page: Page, bookId: string, prose: string) {
+  const list = (await (
+    await page.request.get(`/api/books/${bookId}/chapters`)
+  ).json()) as Array<{ id: string }>;
+  const chapterId = list[0]?.id;
+  if (!chapterId) throw new Error("no chapter to seed prose into");
+  const put = await page.request.put(
+    `/api/books/${bookId}/chapters/${chapterId}`,
+    { data: { content: prose } },
+  );
+  if (!put.ok()) throw new Error(`failed to seed chapter prose: ${put.status()}`);
 }
 
 /**
@@ -94,8 +108,7 @@ test("beta reader submits feedback on a selected text range, and it persists", a
   await registerNewUser(page);
   const bookId = await createBook(page, "Beta Feedback Novel");
   await addChapter(page, "Chapter One");
-  await openChapter(page, "Chapter One");
-  await writeChapterProse(page, PROSE);
+  await writeChapterProse(page, bookId, PROSE);
 
   const token = await createBetaLink(page, bookId, "Alice");
 
@@ -161,8 +174,7 @@ test("author reply: Enter sends, Shift+Enter inserts a newline", async ({ page }
   await registerNewUser(page);
   const bookId = await createBook(page, "Reply Keys Novel");
   await addChapter(page, "Chapter One");
-  await openChapter(page, "Chapter One");
-  await writeChapterProse(page, PROSE);
+  await writeChapterProse(page, bookId, PROSE);
 
   const token = await createBetaLink(page, bookId, "Bob");
 

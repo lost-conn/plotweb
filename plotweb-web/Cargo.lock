@@ -380,6 +380,7 @@ dependencies = [
  "plotweb-common",
  "rinch",
  "rinch-core",
+ "rinch-editor-core",
  "rinch-tabler-icons",
  "rinch-web",
  "serde",
@@ -513,6 +514,7 @@ version = "0.1.0"
 source = "git+https://github.com/joeleaver/rinch?rev=d8295a47bda417906b5422446748c0f755f09e1e#d8295a47bda417906b5422446748c0f755f09e1e"
 dependencies = [
  "regex",
+ "serde",
  "thiserror",
 ]
 

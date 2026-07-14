@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { addChapter, createBook, openChapter, registerNewUser } from "./helpers";
+import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } from "./helpers";
 
 test("create a book and see it on the dashboard", async ({ page }) => {
   await registerNewUser(page);
@@ -17,7 +17,7 @@ test("add a chapter, write content, and it persists across reload", async ({ pag
   await openChapter(page, "Chapter One");
 
   const prose = "The quick brown fox jumped over the lazy dog.";
-  await page.locator("#editor-main").fill(prose);
+  await typeInEditor(page, prose);
 
   // Wait past the autosave debounce (3s) so the chapter is PUT to the server.
   await page.waitForTimeout(4000);
@@ -37,7 +37,7 @@ test("leaving the editor immediately after typing does not lose the edit", async
   await openChapter(page, "Chapter One");
 
   const prose = "An edit made right before navigating away.";
-  await page.locator("#editor-main").fill(prose);
+  await typeInEditor(page, prose);
 
   // Immediately leave the editor pane (no debounce wait) via a sidebar section,
   // which must flush the pending save.
