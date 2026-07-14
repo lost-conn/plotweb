@@ -40,6 +40,37 @@ async fn register_login_me_logout_flow() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn session_survives_server_restart() {
+    let mut app = TestApp::new().await;
+
+    // Register — session is now authenticated.
+    let uid = app.register("frank", "hunter2hunter2").await;
+    let me = app.get("/api/auth/me").await;
+    assert_eq!(me.status, StatusCode::OK);
+    assert_eq!(me.json["id"], uid);
+
+    // Simulate a server restart: rebuild the app over the SAME on-disk stores,
+    // keeping the client's cookie. The SQLite-backed session store must return
+    // the still-valid session.
+    app.restart().await;
+
+    let me2 = app.get("/api/auth/me").await;
+    assert_eq!(
+        me2.status,
+        StatusCode::OK,
+        "session should survive restart: {}",
+        me2.json
+    );
+    assert_eq!(me2.json["id"], uid, "same user after restart");
+
+    // Negative control: dropping the cookie + restart is unauthenticated.
+    app.logout_local();
+    app.restart().await;
+    let me3 = app.get("/api/auth/me").await;
+    assert_eq!(me3.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn register_validates_required_fields() {
     let mut app = TestApp::new().await;
     let r = app

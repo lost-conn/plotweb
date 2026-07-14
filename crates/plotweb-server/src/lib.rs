@@ -24,7 +24,8 @@ use axum::Router;
 use plotweb_git::BookStore;
 use sqlx::SqlitePool;
 use tower_sessions::cookie::SameSite;
-use tower_sessions::{Expiry, MemoryStore, SessionManagerLayer};
+use tower_sessions::{Expiry, SessionManagerLayer};
+use tower_sessions_sqlx_store::SqliteStore;
 
 use crate::auth::AuthSession;
 use crate::email::EmailService;
@@ -76,10 +77,16 @@ pub async fn build_state(
     }
 }
 
-/// The session layer (cookie-based, in-memory store). Sessions are lost on
-/// restart, which is acceptable for this app.
-pub fn session_layer() -> SessionManagerLayer<MemoryStore> {
-    SessionManagerLayer::new(MemoryStore::default())
+/// The session layer (cookie-based, SQLite-backed store over the shared DB
+/// pool). Sessions persist to disk, so a signed-in user stays signed in across
+/// server restarts. `migrate()` creates the session table if it doesn't exist.
+pub async fn session_layer(pool: sqlx::SqlitePool) -> SessionManagerLayer<SqliteStore> {
+    let store = SqliteStore::new(pool);
+    store
+        .migrate()
+        .await
+        .expect("failed to migrate session store");
+    SessionManagerLayer::new(store)
         .with_same_site(SameSite::Lax)
         .with_expiry(Expiry::OnInactivity(
             tower_sessions::cookie::time::Duration::days(30),
@@ -238,8 +245,9 @@ pub fn api_router(state: AppState) -> Router {
 
 /// A complete, ready-to-serve router for tests: api routes + session layer, no
 /// static-file serving.
-pub fn test_router(state: AppState) -> Router {
-    api_router(state).layer(session_layer())
+pub async fn test_router(state: AppState) -> Router {
+    let layer = session_layer(state.db.clone()).await;
+    api_router(state).layer(layer)
 }
 
 /// Liveness probe — returns 200 OK. Used by the jkbase health check.

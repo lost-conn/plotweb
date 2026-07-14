@@ -25,10 +25,11 @@ async fn main() {
     let index_path = format!("{}/index.html", dist_path);
     let serve_dir = ServeDir::new(&dist_path).not_found_service(ServeFile::new(&index_path));
 
+    let session = session_layer(state.db.clone()).await;
     let app = Router::new()
         .merge(api_router(state))
         .fallback_service(serve_dir)
-        .layer(session_layer());
+        .layer(session);
 
     let addr = "0.0.0.0:3000";
     println!("PlotWeb server running on http://{}", addr);

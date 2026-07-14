@@ -7,6 +7,7 @@
 //! Not every test binary uses every helper, so silence per-binary dead-code.
 #![allow(dead_code)]
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::body::Body;
@@ -20,9 +21,13 @@ use plotweb_server::{build_state, test_router};
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub struct TestApp {
-    // Built once so the in-memory session store is shared across requests.
     router: axum::Router,
     cookie: Option<String>,
+    // On-disk store paths, kept so the app can be rebuilt over the SAME stores
+    // to simulate a server restart (see `restart`).
+    db_url: String,
+    book_dir: PathBuf,
+    rhype_dir: PathBuf,
     // Held for the lifetime of the test so the tempdir isn't deleted early.
     _dir: tempfile::TempDir,
 }
@@ -52,12 +57,27 @@ impl TestApp {
         let book_dir = dir.path().join("books");
         let rhype_dir = dir.path().join("rhype");
 
-        let state = build_state(&db_url, book_dir, &rhype_dir, None).await;
+        let state = build_state(&db_url, book_dir.clone(), &rhype_dir, None).await;
         TestApp {
-            router: test_router(state),
+            router: test_router(state).await,
             cookie: None,
+            db_url,
+            book_dir,
+            rhype_dir,
             _dir: dir,
         }
+    }
+
+    /// Rebuild the app over the SAME on-disk stores (simulating a server
+    /// restart), keeping the client's session cookie. The SQLite-backed session
+    /// store must return the still-valid session afterwards.
+    pub async fn restart(&mut self) {
+        // Drop the old app first: its `RhypeStore` holds an exclusive lock on the
+        // rhype data dir, so the new `build_state` can't open it until the old
+        // one is released.
+        self.router = axum::Router::new();
+        let state = build_state(&self.db_url, self.book_dir.clone(), &self.rhype_dir, None).await;
+        self.router = test_router(state).await;
     }
 
     async fn send(&mut self, mut req: Request<Body>) -> Resp {
