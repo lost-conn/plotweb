@@ -1830,6 +1830,10 @@ fn render_chapter_diff(
     __scope: &mut RenderScope,
     ch_diff: plotweb_common::ChapterDiff,
 ) -> NodeHandle {
+    // NOTE: this renders the server's raw git line-diff of the stored content
+    // string. Now that content is DocNode JSON, that diff is a JSON line-diff
+    // (functional but not prose-friendly). A prose-aware / CRDT-native diff is
+    // owned by the Phase-3 "CRDT-native history / diff / restore" card.
     // Pre-render all diff lines as HTML
     let mut diff_html = String::new();
     for hunk in &ch_diff.hunks {
@@ -1930,7 +1934,7 @@ fn render_history_chapter_preview(
                                 if let Ok(full_ch) = api::get::<Chapter>(
                                     &format!("/api/books/{}/history/{}/chapters/{}", bid, commit, ch_id),
                                 ).await {
-                                    let html = super::editor_utils::sanitize_html(&super::editor_utils::markdown_to_html(&full_ch.content));
+                                    let html = super::editor_utils::sanitize_html(&super::editor_utils::content_to_display_html(&full_ch.content));
                                     preview_content.set(Some(full_ch));
                                     // Set inner HTML imperatively after a tick
                                     let closure = wasm_bindgen::closure::Closure::once(move || {

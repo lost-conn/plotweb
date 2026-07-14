@@ -839,7 +839,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                 let content_html = if ch.content.is_empty() {
                     "<p><em>This chapter is empty.</em></p>".to_string()
                 } else {
-                    editor_utils::markdown_to_html(&ch.content)
+                    editor_utils::content_to_display_html(&ch.content)
                 };
                 let guard_cid = cid.clone();
                 editor_utils::with_element_when_ready("#reader-content".to_string(), move |el| {

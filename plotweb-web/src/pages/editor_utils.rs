@@ -69,6 +69,27 @@ pub fn editor_content_json(handle: &EditorHandle) -> Option<String> {
     }
 }
 
+/// Render stored chapter/note content to display HTML for read-only views (the
+/// reader, the history preview).
+///
+/// New content is `DocNode` JSON (the editor's durable save shape): deserialize
+/// it against the starter-kit schema and project it with `node_to_html` — the
+/// same HTML the editor renders. Legacy content (chapter Markdown / note HTML)
+/// falls back to `markdown_to_html`. Callers still pass the result through
+/// [`sanitize_html`] before injecting it into the DOM.
+pub fn content_to_display_html(content: &str) -> String {
+    let trimmed = content.trim_start();
+    if trimmed.starts_with('{') {
+        if let Ok(docnode) = serde_json::from_str::<DocNode>(trimmed) {
+            let schema = rinch_editor_core::Schema::starter_kit();
+            if let Ok(node) = schema.node_from_doc(&docnode) {
+                return rinch_editor_core::serialize::node_to_html(&node);
+            }
+        }
+    }
+    markdown_to_html(content)
+}
+
 /// Count words in the editor's current document (whitespace-separated words across
 /// all text nodes).
 pub fn editor_word_count(handle: &EditorHandle) -> u64 {
