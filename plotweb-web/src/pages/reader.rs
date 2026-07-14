@@ -552,6 +552,24 @@ fn selection_is_empty() -> bool {
         .unwrap_or(true)
 }
 
+/// The id of the chapter `delta` positions from the active one in reading order
+/// (`-1` = previous, `+1` = next), or `None` at the ends. Lets paging past a
+/// chapter boundary flip into the adjacent chapter.
+fn adjacent_chapter_id(
+    view_data: Signal<Option<BetaReaderView>>,
+    active_chapter_id: Signal<Option<String>>,
+    delta: i32,
+) -> Option<String> {
+    let view = view_data.get()?;
+    let current = active_chapter_id.get()?;
+    let idx = view.chapters.iter().position(|c| c.id == current)?;
+    let target = idx as i32 + delta;
+    if target < 0 || target as usize >= view.chapters.len() {
+        return None;
+    }
+    Some(view.chapters[target as usize].id.clone())
+}
+
 fn reader_bookmark_item<F, D, DO>(
     __scope: &mut RenderScope,
     bm: BetaBookmark,
@@ -846,9 +864,24 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         });
     };
 
-    // ── Turn to a page (clamped to the valid range) ──────────────────────────
+    // ── Turn to a page; paging off either end flips to the adjacent chapter ───
     let go_to_page = move |page: i32| {
         let total = total_pages.get();
+        // Past the last page → open the next chapter at its first page.
+        if page > total - 1 {
+            if let Some(next_id) = adjacent_chapter_id(view_data, active_chapter_id, 1) {
+                open_chapter(next_id, 0);
+            }
+            return;
+        }
+        // Before the first page → open the previous chapter at its last page
+        // (a large target page is clamped to the last by repaginate).
+        if page < 0 {
+            if let Some(prev_id) = adjacent_chapter_id(view_data, active_chapter_id, -1) {
+                open_chapter(prev_id, i32::MAX);
+            }
+            return;
+        }
         let clamped = page.max(0).min((total - 1).max(0));
         if clamped == current_page.get() {
             return;
