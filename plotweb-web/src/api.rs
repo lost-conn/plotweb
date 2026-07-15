@@ -25,17 +25,10 @@ impl std::fmt::Display for ApiError {
     }
 }
 
-// The result callback bound mirrors `rinch_http::HttpCallback`: it must be `Send`
-// on native (the result crosses from the request thread to the UI thread) and
-// need not be on wasm (single-threaded; JS captures aren't `Send`).
-#[cfg(not(target_arch = "wasm32"))]
-pub trait ApiCallback<T>: FnOnce(Result<T, ApiError>) + Send + 'static {}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T, F> ApiCallback<T> for F where F: FnOnce(Result<T, ApiError>) + Send + 'static {}
-
-#[cfg(target_arch = "wasm32")]
+// Mirrors `rinch_http::HttpCallback`: invoked on the UI thread on both targets and
+// never crosses a thread boundary, so it need not be `Send` — letting callbacks
+// capture `!Send` UI state such as the Rc-based editor handles.
 pub trait ApiCallback<T>: FnOnce(Result<T, ApiError>) + 'static {}
-#[cfg(target_arch = "wasm32")]
 impl<T, F> ApiCallback<T> for F where F: FnOnce(Result<T, ApiError>) + 'static {}
 
 /// Turn a raw [`rinch_http`] result into the deserialized `T` or an [`ApiError`].
@@ -285,3 +278,39 @@ mod web_files {
 
 #[cfg(target_arch = "wasm32")]
 pub use web_files::{download_file, upload_file, upload_image};
+
+// Native stubs: file upload/download need OS file dialogs / filesystem I/O
+// (Phase 3, "fonts + images on native"). For now they fail cleanly so the call
+// sites compile for desktop.
+#[cfg(not(target_arch = "wasm32"))]
+mod native_files {
+    use super::ApiError;
+    use serde::de::DeserializeOwned;
+
+    pub async fn download_file(_url: &str, _fallback_name: &str) -> Result<(), ApiError> {
+        Err(ApiError {
+            message: "file download is not supported on native yet".into(),
+        })
+    }
+
+    pub async fn upload_image(
+        _book_id: &str,
+        _file: &web_sys::File,
+    ) -> Result<plotweb_common::ImageUploadResponse, ApiError> {
+        Err(ApiError {
+            message: "image upload is not supported on native yet".into(),
+        })
+    }
+
+    pub async fn upload_file<T: DeserializeOwned>(
+        _url: &str,
+        _file: &web_sys::File,
+    ) -> Result<T, ApiError> {
+        Err(ApiError {
+            message: "file upload is not supported on native yet".into(),
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use native_files::{download_file, upload_file, upload_image};

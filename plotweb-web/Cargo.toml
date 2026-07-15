@@ -13,16 +13,16 @@ plotweb-common = { path = "../crates/plotweb-common" }
 # RINCH_COMMIT). For local rinch co-dev, add an UNCOMMITTED [patch] (see DEPLOY.md).
 # plotweb-common stays a path dep — it's in-repo and resolves via jkbase.toml's
 # `context = "."` (the build VM mounts the whole repo).
-rinch = { git = "https://github.com/joeleaver/rinch", rev = "797bc907f0c83e8291500be4569fded82d3fa449", default-features = false, features = ["components", "theme"] }
-rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "797bc907f0c83e8291500be4569fded82d3fa449", features = ["theme"] }
-rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "797bc907f0c83e8291500be4569fded82d3fa449" }
-rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "797bc907f0c83e8291500be4569fded82d3fa449", features = ["collaboration"] }
+rinch = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", default-features = false, features = ["components", "theme"] }
+rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", features = ["theme"] }
+rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051" }
+rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", features = ["collaboration"] }
 # Shared with the copy rinch-web already pulls; `serde` lights up DocNode
 # (durable JSON save shape) + `Schema::node_from_doc` / `Node::to_doc`.
-rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "797bc907f0c83e8291500be4569fded82d3fa449", features = ["serde"] }
+rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", features = ["serde"] }
 # Cross-platform HTTP client (web fetch / native ureq); replaces the web-only
 # fetch in api.rs so the frontend compiles for desktop too.
-rinch-http = { git = "https://github.com/joeleaver/rinch", rev = "797bc907f0c83e8291500be4569fded82d3fa449" }
+rinch-http = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051" }
 
 # Browser randomness for the transitive automerge → uuid (Automerge actor ids).
 # Without a randomness feature, uuid refuses to compile on wasm32-unknown-unknown.
