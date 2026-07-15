@@ -537,6 +537,8 @@ fn reader_content_node(
 /// Apply the multi-column styling to `#reader-content` (sized to the live
 /// viewport) and return the resulting total page count. Reading `scroll_width`
 /// forces the synchronous reflow we need before counting pages.
+// Web-only: pagination is measured out of the DOM's multi-column layout.
+#[cfg(target_arch = "wasm32")]
 fn measure_and_style() -> i32 {
     let Some(el) = reader_content_el() else { return 1 };
     let vw = el.client_width() as f64;
@@ -570,6 +572,8 @@ fn apply_page_transform(page: i32) {
 
 /// True if the current document selection is empty (used so a text-selection
 /// drag for feedback isn't mistaken for a page swipe).
+// Web-only: reads the DOM selection; only the (web-only) swipe pager needs it.
+#[cfg(target_arch = "wasm32")]
 fn selection_is_empty() -> bool {
     crate::platform::window()
         .and_then(|w| w.document())
@@ -843,21 +847,31 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
 
     // ── Pagination: (re)measure the column layout and place a page ───────────
     // Deferred to a rAF because inner_html fills / reflows asynchronously.
+    //
+    // Native: inert. Pagination is measured out of the DOM's column layout
+    // (`measure_and_style` / `apply_page_transform`), which has no native
+    // equivalent yet, so desktop shows the chapter as one continuously-rendered
+    // column. `total_pages` stays at its initialised 1 and `current_page` at 0 —
+    // consistent with a single unpaginated page — so callers below still read
+    // sane values.
     let repaginate = move |target_page: i32| {
-        let closure = wasm_bindgen::closure::Closure::once(move || {
-            let total = measure_and_style();
-            total_pages.set(total);
-            let clamped = target_page.max(0).min((total - 1).max(0));
-            current_page.set(clamped);
-            apply_page_transform(clamped);
-            if let Some(cid) = active_chapter_id.get() {
-                save_progress(cid, clamped);
+        let _ = target_page;
+        crate::web_only! {
+            let closure = wasm_bindgen::closure::Closure::once(move || {
+                let total = measure_and_style();
+                total_pages.set(total);
+                let clamped = target_page.max(0).min((total - 1).max(0));
+                current_page.set(clamped);
+                apply_page_transform(clamped);
+                if let Some(cid) = active_chapter_id.get() {
+                    save_progress(cid, clamped);
+                }
+            });
+            if let Some(w) = crate::platform::window() {
+                w.request_animation_frame(closure.as_ref().unchecked_ref()).ok();
             }
-        });
-        if let Some(w) = crate::platform::window() {
-            w.request_animation_frame(closure.as_ref().unchecked_ref()).ok();
+            closure.forget();
         }
-        closure.forget();
     };
 
     // ── Open a chapter, optionally resuming at `target_page` ─────────────────
@@ -895,16 +909,20 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                     el.set_inner_html(&editor_utils::sanitize_html(&content_html));
                     repaginate(target_page);
                     // A second pass catches late reflow (e.g. images loading).
-                    let closure = wasm_bindgen::closure::Closure::once(move || {
-                        repaginate(current_page.get());
-                    });
-                    if let Some(w) = crate::platform::window() {
-                        w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                            closure.as_ref().unchecked_ref(),
-                            250,
-                        ).ok();
+                    // Web-only: there is no reflow to catch without a DOM, and
+                    // `repaginate` is already inert on native.
+                    crate::web_only! {
+                        let closure = wasm_bindgen::closure::Closure::once(move || {
+                            repaginate(current_page.get());
+                        });
+                        if let Some(w) = crate::platform::window() {
+                            w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                closure.as_ref().unchecked_ref(),
+                                250,
+                            ).ok();
+                        }
+                        closure.forget();
                     }
-                    closure.forget();
                 }
             }
         });
@@ -1229,7 +1247,10 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     } // end if !is_preview (feedback selection)
 
     // ── Keyboard paging (Arrow left/right), ignoring text inputs ─────────────
-    {
+    // Native: inert — this hangs off a document-level `keydown` listener. Porting
+    // it needs rinch's key handling, and with pagination itself inert on desktop
+    // there are no pages to flip between yet.
+    crate::web_only! {
         let keydown_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
             if let Some(t) = event.target() {
                 if let Ok(el) = t.dyn_into::<web_sys::Element>() {
@@ -1254,7 +1275,9 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     }
 
     // ── Touch swipe paging (skipped while text is selected for feedback) ─────
-    {
+    // Native: inert — document-level touch listeners, and the desktop shell has
+    // no touch input.
+    crate::web_only! {
         let swipe_start = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
         {
             let s = swipe_start.clone();
@@ -1301,7 +1324,8 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     }
 
     // ── Re-flow pages on window resize ───────────────────────────────────────
-    {
+    // Native: inert — there is nothing to re-flow while pagination is web-only.
+    crate::web_only! {
         let resize_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
             repaginate(current_page.get());
         }) as Box<dyn FnMut(_)>);

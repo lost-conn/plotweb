@@ -925,6 +925,9 @@ const BOOK_WORKSPACE_CSS: &str = r#"
 }
 "#;
 
+// Web-only: serves the typography picker, which builds itself by injecting
+// HTML into the DOM (see `setup_font_pickers`).
+#[cfg(target_arch = "wasm32")]
 /// Slot definitions for font pickers
 const SLOTS: &[(&str, &str, &str, &str)] = &[
     ("h1", "Heading 1", "Macondo Swash Caps", ""),
@@ -935,6 +938,9 @@ const SLOTS: &[(&str, &str, &str, &str)] = &[
     ("code", "Code", "monospace", "monospace"),
 ];
 
+// Web-only: serves the typography picker, which builds itself by injecting
+// HTML into the DOM (see `setup_font_pickers`).
+#[cfg(target_arch = "wasm32")]
 const SPACING_OPTIONS: &[(f64, &str)] = &[
     (0.0, "None"),
     (4.0, "Tight"),
@@ -943,6 +949,9 @@ const SPACING_OPTIONS: &[(f64, &str)] = &[
     (24.0, "Loose"),
 ];
 
+// Web-only: serves the typography picker, which builds itself by injecting
+// HTML into the DOM (see `setup_font_pickers`).
+#[cfg(target_arch = "wasm32")]
 const INDENT_OPTIONS: &[(f64, &str)] = &[
     (0.0, "None"),
     (16.0, "Small"),
@@ -951,6 +960,9 @@ const INDENT_OPTIONS: &[(f64, &str)] = &[
     (48.0, "Extra"),
 ];
 
+// Web-only: serves the typography picker, which builds itself by injecting
+// HTML into the DOM (see `setup_font_pickers`).
+#[cfg(target_arch = "wasm32")]
 /// Build the HTML for the font picker grid.
 fn build_font_grid_html(fs: &FontSettings) -> String {
     let mut html = String::new();
@@ -981,6 +993,9 @@ fn build_font_grid_html(fs: &FontSettings) -> String {
     html
 }
 
+// Web-only: serves the typography picker, which builds itself by injecting
+// HTML into the DOM (see `setup_font_pickers`).
+#[cfg(target_arch = "wasm32")]
 fn build_select_html(id: &str, options: &[(f64, &str)], current: f64) -> String {
     let mut html = format!("<select id='{id}' class='pw-typo-select'>");
     for &(val, label) in options {
@@ -991,6 +1006,9 @@ fn build_select_html(id: &str, options: &[(f64, &str)], current: f64) -> String 
     html
 }
 
+// Web-only: serves the typography picker, which builds itself by injecting
+// HTML into the DOM (see `setup_font_pickers`).
+#[cfg(target_arch = "wasm32")]
 /// Build the HTML for the spacing settings grid.
 fn build_spacing_grid_html(fs: &FontSettings) -> String {
     let mut html = String::new();
@@ -1007,6 +1025,9 @@ fn build_spacing_grid_html(fs: &FontSettings) -> String {
     html
 }
 
+// Web-only: serves the typography picker, which builds itself by injecting
+// HTML into the DOM (see `setup_font_pickers`).
+#[cfg(target_arch = "wasm32")]
 /// Update the font preview box styles.
 fn update_preview(fs: &FontSettings) {
     let document = match crate::platform::window().and_then(|w| w.document()) {
@@ -1313,7 +1334,10 @@ fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
     }
 
     // Remove marks after animation (2s)
+    // Web-only: `marks` are DOM nodes this function found by querying the
+    // document, so on native it is always empty and there is nothing to unwind.
     if !marks.is_empty() {
+        crate::web_only! {
         let closure = wasm_bindgen::closure::Closure::once(move || {
             for mark in &marks {
                 if let Some(parent) = mark.parent_node() {
@@ -1337,6 +1361,7 @@ fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
             ).ok();
         }
         closure.forget();
+        }
     }
 }
 
@@ -1546,18 +1571,22 @@ where
             div { class: "feedback-quote", style: quote_style,
                 onclick: move || {
                     let data = scroll_data.get();
-                    // Set the signal (for cross-chapter navigation)
+                    // Set the signal (for cross-chapter navigation). This half
+                    // works on both targets and must stay outside `web_only!`.
                     scroll_target.set(Some(data.clone()));
-                    // Also immediately scroll (for same-chapter clicks)
-                    let closure = wasm_bindgen::closure::Closure::once(move || {
-                        scroll_to_text_in_editor(&data.0, &data.1);
-                    });
-                    if let Some(w) = crate::platform::window() {
-                        w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                            closure.as_ref().unchecked_ref(), 50,
-                        ).ok();
+                    // Also immediately scroll (for same-chapter clicks).
+                    // Web-only: `scroll_to_text_in_editor` walks the DOM editor.
+                    crate::web_only! {
+                        let closure = wasm_bindgen::closure::Closure::once(move || {
+                            scroll_to_text_in_editor(&data.0, &data.1);
+                        });
+                        if let Some(w) = crate::platform::window() {
+                            w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                closure.as_ref().unchecked_ref(), 50,
+                            ).ok();
+                        }
+                        closure.forget();
                     }
-                    closure.forget();
                 },
                 {quote_line}
             }
@@ -2130,17 +2159,23 @@ fn do_switch_chapter_inner(
             // text nodes under #editor-main). Delay a tick to let the view settle.
             if let Some(scroll_signal) = pending_scroll {
                 if let Some((selected_text, context_block)) = scroll_signal.get() {
+                    // Clearing the pending scroll is target-independent.
                     scroll_signal.set(None);
-                    let closure2 = wasm_bindgen::closure::Closure::once(move || {
-                        scroll_to_text_in_editor(&selected_text, &context_block);
-                    });
-                    if let Some(w) = crate::platform::window() {
-                        w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                            closure2.as_ref().unchecked_ref(),
-                            50,
-                        ).ok();
+                    // Web-only: `scroll_to_text_in_editor` walks the DOM editor's
+                    // rendered text nodes, so the scroll itself can't run natively.
+                    let _ = (&selected_text, &context_block);
+                    crate::web_only! {
+                        let closure2 = wasm_bindgen::closure::Closure::once(move || {
+                            scroll_to_text_in_editor(&selected_text, &context_block);
+                        });
+                        if let Some(w) = crate::platform::window() {
+                            w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                closure2.as_ref().unchecked_ref(),
+                                50,
+                            ).ok();
+                        }
+                        closure2.forget();
                     }
-                    closure2.forget();
                 }
             }
         }
@@ -2689,6 +2724,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
     PAGE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     let page_gen = PAGE_GEN.with(|g| g.get());
     let font_settings = Signal::new(FontSettings::default());
+    // Debounce handle for font-settings saves. Only the typography picker writes
+    // font settings, and that picker is web-only (see `setup_font_pickers`).
+    #[cfg(target_arch = "wasm32")]
     let font_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>> = Signal::new(None);
     let listeners_attached = Signal::new(false);
 
@@ -3123,7 +3161,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     // ── Typography font picker setup ────────────────────────────
+    // Native: inert. The whole picker is built imperatively — `set_inner_html`
+    // into `#font-selector-grid`, then `input`/`focus`/`blur`/`change` listeners
+    // attached to the resulting DOM nodes. Nothing here has a native equivalent
+    // yet, so desktop has no font/typography picker. (This block is also what
+    // encloses the nested handler closures further down, so gating it here keeps
+    // all of them off the native path.)
     let setup_font_pickers = move || {
+        crate::web_only! {
         let bid_for_save = bid_signal.get();
         let closure = wasm_bindgen::closure::Closure::once(move || {
             if listeners_attached.get() {
@@ -3444,6 +3489,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 .ok();
         }
         closure.forget();
+        }
     };
 
     // Factory closures capture only Copy types (Signals) so they are Copy themselves.
