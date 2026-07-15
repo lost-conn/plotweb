@@ -3879,14 +3879,27 @@ pub fn book_page(book_id: String) -> NodeHandle {
                          .book-workspace .editor-topbar .editor-title-input input {{ font-family: '{h1}', cursive; }}
                          .book-workspace .sidebar-chapter-item,
                          .book-workspace .chapter-item {{ font-family: '{body}', serif; }}
+                         /* The book's body font sits on the wrapper; the editor's
+                            own container inherits it (EDITOR_CSS sets
+                            `font-family: inherit` there). Everything below has to
+                            out-specify rinch-editor-view's injected defaults,
+                            which style `[data-pm-editor]` directly and would
+                            otherwise win — hence the wrapper ids. */
                          .editor-content {{ font-family: '{body}', serif; }}
-                         .editor-content p {{ margin: 0 0 {p_spacing}px 0; text-indent: {p_indent}px; }}
-                         .editor-content h1 {{ font-family: '{h1}', cursive; text-indent: {h_indent}px; }}
-                         .editor-content h2 {{ font-family: '{h2}', cursive; text-indent: {h_indent}px; }}
-                         .editor-content h3, .editor-content h4,
-                         .editor-content h5, .editor-content h6 {{ font-family: '{h3}', cursive; text-indent: {h_indent}px; }}
-                         .editor-content blockquote {{ font-family: '{quote}', serif; }}
-                         .editor-content code, .editor-content pre {{ font-family: '{code}', monospace; }}"
+                         #editor-main [data-pm-editor] p,
+                         #note-editor-main [data-pm-editor] p {{ margin: 0 0 {p_spacing}px 0; text-indent: {p_indent}px; }}
+                         #editor-main [data-pm-editor] h1,
+                         #note-editor-main [data-pm-editor] h1 {{ font-family: '{h1}', cursive; text-indent: {h_indent}px; }}
+                         #editor-main [data-pm-editor] h2,
+                         #note-editor-main [data-pm-editor] h2 {{ font-family: '{h2}', cursive; text-indent: {h_indent}px; }}
+                         #editor-main [data-pm-editor] h3, #editor-main [data-pm-editor] h4,
+                         #editor-main [data-pm-editor] h5, #editor-main [data-pm-editor] h6,
+                         #note-editor-main [data-pm-editor] h3, #note-editor-main [data-pm-editor] h4,
+                         #note-editor-main [data-pm-editor] h5, #note-editor-main [data-pm-editor] h6 {{ font-family: '{h3}', cursive; text-indent: {h_indent}px; }}
+                         #editor-main [data-pm-editor] blockquote,
+                         #note-editor-main [data-pm-editor] blockquote {{ font-family: '{quote}', serif; }}
+                         #editor-main [data-pm-editor] code, #editor-main [data-pm-editor] pre,
+                         #note-editor-main [data-pm-editor] code, #note-editor-main [data-pm-editor] pre {{ font-family: '{code}', monospace; }}"
                     )
                 }}
             }

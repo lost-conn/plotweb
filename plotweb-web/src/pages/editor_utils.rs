@@ -213,29 +213,77 @@ pub const EDITOR_CSS: &str = r#"
     background: var(--rinch-color-body);
 }
 
+/* The wrapper we own: page layout only. Typography lives on the editor's own
+   container below — see the note there. */
 .editor-content {
     min-height: 100%;
     max-width: 720px;
     margin: 0 auto;
     padding: 48px 48px;
+    outline: none;
+    cursor: text;
+}
+
+/* ── Prose inside the editor ─────────────────────────────────────────────────
+   rinch-editor-view injects a batteries-included stylesheet scoped to
+   `[data-pm-editor]` (system sans, GitHub-ish palette, its own margins). It
+   styles that container *directly*, so our typography cannot simply cascade in
+   from `.editor-content` — inheritance stops at its container — and its
+   `p`/heading rules tie ours on specificity and win on source order (it injects
+   later, on first mount).
+
+   rinch's documented contract is "override with higher-specificity styles" (a
+   full opt-out isn't viable: its stylesheet is load-bearing for tables, which
+   rinch-dom lays out with flexbox). So these rules go through the wrapper
+   **ids** — (1,1,0) — which also beats its dark rules
+   (`[data-pm-editor][data-pm-theme="dark"]`, (0,2,0)). Anything we don't
+   restate keeps rinch's default, which is what we want.
+
+   `font-family: inherit` pulls the app font — and the per-book Typography
+   setting, which targets `.editor-content` — down into the prose. */
+#editor-main [data-pm-editor],
+#note-editor-main [data-pm-editor] {
+    font-family: inherit;
     font-size: 16px;
     line-height: 1.8;
     color: var(--rinch-color-text);
-    outline: none;
-    cursor: text;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+
+    /* rinch's default container is a bordered "card" (white/#0d1117 background,
+       1px border, 10px radius, its own padding) — right for a standalone editor,
+       wrong here: our wrapper already supplies the page's surface, width and
+       padding, so the writing area must be seamless.
+
+       Only the chrome is reset. rinch's container also carries `white-space:
+       pre-wrap` / `overflow-wrap` (load-bearing: without them the rendered text
+       stops matching the model 1:1 and the caret's DOM-offset → model-byte
+       mapping breaks) and `position: relative` / `z-index` (the caret and
+       selection overlays are absolutely positioned against it). Those must be
+       left alone. */
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
 }
 
-.editor-content p { margin: 0 0 8px 0; }
-.editor-content h1 { font-size: 2em; font-weight: 700; margin: 32px 0 12px 0; color: var(--rinch-color-text); }
-.editor-content h2 { font-size: 1.5em; font-weight: 700; margin: 28px 0 10px 0; color: var(--rinch-color-text); }
-.editor-content h3 { font-size: 1.25em; font-weight: 600; margin: 24px 0 8px 0; color: var(--rinch-color-text); }
-.editor-content h4 { font-size: 1.1em; font-weight: 600; margin: 16px 0 6px 0; color: var(--rinch-color-text); }
-.editor-content h5 { font-size: 1em; font-weight: 600; margin: 12px 0 4px 0; color: var(--rinch-color-dimmed); }
-.editor-content h6 { font-size: 0.9em; font-weight: 600; margin: 12px 0 4px 0; color: var(--rinch-color-dimmed); }
+#editor-main [data-pm-editor] p,
+#note-editor-main [data-pm-editor] p { margin: 0 0 8px 0; }
+#editor-main [data-pm-editor] h1,
+#note-editor-main [data-pm-editor] h1 { font-size: 2em; font-weight: 700; margin: 32px 0 12px 0; color: var(--rinch-color-text); }
+#editor-main [data-pm-editor] h2,
+#note-editor-main [data-pm-editor] h2 { font-size: 1.5em; font-weight: 700; margin: 28px 0 10px 0; color: var(--rinch-color-text); }
+#editor-main [data-pm-editor] h3,
+#note-editor-main [data-pm-editor] h3 { font-size: 1.25em; font-weight: 600; margin: 24px 0 8px 0; color: var(--rinch-color-text); }
+#editor-main [data-pm-editor] h4,
+#note-editor-main [data-pm-editor] h4 { font-size: 1.1em; font-weight: 600; margin: 16px 0 6px 0; color: var(--rinch-color-text); }
+#editor-main [data-pm-editor] h5,
+#note-editor-main [data-pm-editor] h5 { font-size: 1em; font-weight: 600; margin: 12px 0 4px 0; color: var(--rinch-color-dimmed); }
+#editor-main [data-pm-editor] h6,
+#note-editor-main [data-pm-editor] h6 { font-size: 0.9em; font-weight: 600; margin: 12px 0 4px 0; color: var(--rinch-color-dimmed); }
 
-.editor-content img {
+#editor-main [data-pm-editor] img,
+#note-editor-main [data-pm-editor] img {
     max-width: 100%;
     height: auto;
     border-radius: var(--rinch-radius-sm);
@@ -243,14 +291,16 @@ pub const EDITOR_CSS: &str = r#"
     display: block;
 }
 
-.editor-content blockquote {
+#editor-main [data-pm-editor] blockquote,
+#note-editor-main [data-pm-editor] blockquote {
     border-left: 3px solid var(--rinch-color-teal-8);
     padding-left: 16px;
     margin: 16px 0;
     color: var(--rinch-color-dimmed);
 }
 
-.editor-content pre {
+#editor-main [data-pm-editor] pre,
+#note-editor-main [data-pm-editor] pre {
     background: var(--pw-color-deep);
     border: 1px solid var(--rinch-color-border);
     border-radius: var(--rinch-radius-sm);
@@ -261,7 +311,8 @@ pub const EDITOR_CSS: &str = r#"
     overflow-x: auto;
 }
 
-.editor-content code {
+#editor-main [data-pm-editor] code,
+#note-editor-main [data-pm-editor] code {
     background: var(--rinch-color-surface);
     border: 1px solid var(--rinch-color-border);
     padding: 2px 5px;
@@ -270,7 +321,8 @@ pub const EDITOR_CSS: &str = r#"
     color: var(--rinch-color-teal-4);
 }
 
-.editor-content pre code {
+#editor-main [data-pm-editor] pre code,
+#note-editor-main [data-pm-editor] pre code {
     background: none;
     border: none;
     padding: 0;
@@ -278,31 +330,42 @@ pub const EDITOR_CSS: &str = r#"
     color: inherit;
 }
 
-.editor-content ul, .editor-content ol {
+#editor-main [data-pm-editor] ul,
+#note-editor-main [data-pm-editor] ul,
+#editor-main [data-pm-editor] ol,
+#note-editor-main [data-pm-editor] ol {
     margin: 8px 0;
     padding-left: 24px;
 }
 
-.editor-content li { margin: 4px 0; }
+#editor-main [data-pm-editor] li,
+#note-editor-main [data-pm-editor] li { margin: 4px 0; }
 
-.editor-content hr {
+#editor-main [data-pm-editor] hr,
+#note-editor-main [data-pm-editor] hr {
     border: none;
     border-top: 1px solid var(--rinch-color-border);
     margin: 24px 0;
 }
 
-.editor-content strong { font-weight: 700; }
-.editor-content em { font-style: italic; }
-.editor-content u { text-decoration: underline; }
-.editor-content s { text-decoration: line-through; color: var(--rinch-color-dimmed); }
+#editor-main [data-pm-editor] strong,
+#note-editor-main [data-pm-editor] strong { font-weight: 700; }
+#editor-main [data-pm-editor] em,
+#note-editor-main [data-pm-editor] em { font-style: italic; }
+#editor-main [data-pm-editor] u,
+#note-editor-main [data-pm-editor] u { text-decoration: underline; }
+#editor-main [data-pm-editor] s,
+#note-editor-main [data-pm-editor] s { text-decoration: line-through; color: var(--rinch-color-dimmed); }
 
-.editor-content a {
+#editor-main [data-pm-editor] a,
+#note-editor-main [data-pm-editor] a {
     color: var(--rinch-color-teal-4);
     text-decoration: underline;
     text-decoration-color: var(--rinch-color-teal-8);
 }
 
-.editor-content mark {
+#editor-main [data-pm-editor] mark,
+#note-editor-main [data-pm-editor] mark {
     background: var(--rinch-color-teal-9);
     color: var(--rinch-color-teal-2);
     padding: 1px 2px;
