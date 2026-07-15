@@ -39,7 +39,7 @@ const SPIKE_CSS: &str = r#"
 "#;
 
 fn local_storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.local_storage().ok().flatten()
+    crate::platform::window()?.local_storage().ok().flatten()
 }
 
 fn to_hex(bytes: &[u8]) -> String {

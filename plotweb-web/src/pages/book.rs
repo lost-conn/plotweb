@@ -1009,7 +1009,7 @@ fn build_spacing_grid_html(fs: &FontSettings) -> String {
 
 /// Update the font preview box styles.
 fn update_preview(fs: &FontSettings) {
-    let document = match web_sys::window().and_then(|w| w.document()) {
+    let document = match crate::platform::window().and_then(|w| w.document()) {
         Some(d) => d,
         None => return,
     };
@@ -1106,7 +1106,7 @@ fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
         return;
     }
 
-    let doc = match web_sys::window().and_then(|w| w.document()) {
+    let doc = match crate::platform::window().and_then(|w| w.document()) {
         Some(d) => d,
         None => { log::warn!("scroll_to_text: no document"); return; }
     };
@@ -1324,13 +1324,13 @@ fn scroll_to_text_in_editor(selected_text: &str, context_block: &str) {
                 }
             }
             // Normalize to merge split text nodes back together
-            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
                 if let Ok(Some(editor)) = doc.query_selector("#editor-main") {
                     editor.normalize();
                 }
             }
         });
-        if let Some(window) = web_sys::window() {
+        if let Some(window) = crate::platform::window() {
             window.set_timeout_with_callback_and_timeout_and_arguments_0(
                 closure.as_ref().unchecked_ref(),
                 2000,
@@ -1541,7 +1541,7 @@ where
                     let closure = wasm_bindgen::closure::Closure::once(move || {
                         scroll_to_text_in_editor(&data.0, &data.1);
                     });
-                    if let Some(w) = web_sys::window() {
+                    if let Some(w) = crate::platform::window() {
                         w.set_timeout_with_callback_and_timeout_and_arguments_0(
                             closure.as_ref().unchecked_ref(), 50,
                         ).ok();
@@ -1869,13 +1869,13 @@ fn render_chapter_diff(
     let html_clone = diff_html.clone();
     wasm_bindgen_futures::spawn_local(async move {
         let closure = wasm_bindgen::closure::Closure::once(move || {
-            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
                 if let Ok(Some(el)) = doc.query_selector(&format!("#{}", diff_el_id_copy)) {
                     el.set_inner_html(&html_clone);
                 }
             }
         });
-        if let Some(w) = web_sys::window() {
+        if let Some(w) = crate::platform::window() {
             w.set_timeout_with_callback_and_timeout_and_arguments_0(
                 closure.as_ref().unchecked_ref(),
                 50,
@@ -1940,13 +1940,13 @@ fn render_history_chapter_preview(
                                     preview_content.set(Some(full_ch));
                                     // Set inner HTML imperatively after a tick
                                     let closure = wasm_bindgen::closure::Closure::once(move || {
-                                        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                                        if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
                                             if let Ok(Some(el)) = doc.query_selector(&format!("#{}", el_id)) {
                                                 el.set_inner_html(&html);
                                             }
                                         }
                                     });
-                                    if let Some(w) = web_sys::window() {
+                                    if let Some(w) = crate::platform::window() {
                                         w.set_timeout_with_callback_and_timeout_and_arguments_0(
                                             closure.as_ref().unchecked_ref(),
                                             50,
@@ -2013,7 +2013,7 @@ fn do_switch_chapter_inner(
     // Clear any pending auto-save timer
     let prev = auto_save_timer_id.get();
     if prev != 0 {
-        if let Some(w) = web_sys::window() {
+        if let Some(w) = crate::platform::window() {
             w.clear_timeout_with_handle(prev);
         }
         auto_save_timer_id.set(0);
@@ -2025,7 +2025,7 @@ fn do_switch_chapter_inner(
     // leaving chapter's current title now via its own PUT (mirroring the debounce).
     let prev_title = chapter_title_save_timer_id.get();
     if prev_title != 0 {
-        if let Some(w) = web_sys::window() {
+        if let Some(w) = crate::platform::window() {
             w.clear_timeout_with_handle(prev_title);
         }
         chapter_title_save_timer_id.set(0);
@@ -2122,7 +2122,7 @@ fn do_switch_chapter_inner(
                     let closure2 = wasm_bindgen::closure::Closure::once(move || {
                         scroll_to_text_in_editor(&selected_text, &context_block);
                     });
-                    if let Some(w) = web_sys::window() {
+                    if let Some(w) = crate::platform::window() {
                         w.set_timeout_with_callback_and_timeout_and_arguments_0(
                             closure2.as_ref().unchecked_ref(),
                             50,
@@ -2866,7 +2866,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         save_status.set("unsaved");
         let prev = auto_save_timer_id.get();
         if prev != 0 {
-            if let Some(w) = web_sys::window() {
+            if let Some(w) = crate::platform::window() {
                 w.clear_timeout_with_handle(prev);
             }
         }
@@ -2884,7 +2884,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 }
             }
         });
-        let id = web_sys::window()
+        let id = crate::platform::window()
             .and_then(|w| {
                 w.set_timeout_with_callback_and_timeout_and_arguments_0(
                     closure.as_ref().unchecked_ref(),
@@ -2897,9 +2897,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     // ── Set up Ctrl+S and auto-save (once, on mount) ────────────
-    {
-        let window = web_sys::window().unwrap();
-
+    if let Some(window) = crate::platform::window() {
         // Ctrl+S — immediate save of the current chapter.
         let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
             if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
@@ -3017,7 +3015,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         chapter_title.set(new_title.clone());
         let prev = chapter_title_save_timer_id.get();
         if prev != 0 {
-            if let Some(w) = web_sys::window() {
+            if let Some(w) = crate::platform::window() {
                 w.clear_timeout_with_handle(prev);
             }
         }
@@ -3054,12 +3052,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 },
             );
         });
-        let id = web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                save_closure.as_ref().unchecked_ref(),
-                1000,
-            )
+        let id = crate::platform::window()
+            .and_then(|w| {
+                w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    save_closure.as_ref().unchecked_ref(),
+                    1000,
+                ).ok()
+            })
             .unwrap_or(0);
         save_closure.forget();
         chapter_title_save_timer_id.set(id);
@@ -3127,7 +3126,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             if listeners_attached.get() {
                 return;
             }
-            let document = web_sys::window().unwrap().document().unwrap();
+            let Some(document) = crate::platform::document() else { return; };
 
             let fs = font_settings.get();
             if let Ok(Some(grid)) = document.query_selector("#font-selector-grid") {
@@ -3191,7 +3190,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
                         let prev = font_save_timer_id.get();
                         if prev != 0 {
-                            if let Some(w) = web_sys::window() {
+                            if let Some(w) = crate::platform::window() {
                                 w.clear_timeout_with_handle(prev);
                             }
                         }
@@ -3209,12 +3208,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 move |_result| {},
                             );
                         });
-                        let id = web_sys::window()
-                            .unwrap()
-                            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                                save_closure.as_ref().unchecked_ref(),
-                                500,
-                            )
+                        let id = crate::platform::window()
+                            .and_then(|w| {
+                                w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                    save_closure.as_ref().unchecked_ref(),
+                                    500,
+                                ).ok()
+                            })
                             .unwrap_or(0);
                         save_closure.forget();
                         font_save_timer_id.set(id);
@@ -3379,7 +3379,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     });
                     let prev = font_save_timer_id.get();
                     if prev != 0 {
-                        if let Some(w) = web_sys::window() {
+                        if let Some(w) = crate::platform::window() {
                             w.clear_timeout_with_handle(prev);
                         }
                     }
@@ -3397,12 +3397,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             move |_result| {},
                         );
                     });
-                    let id = web_sys::window()
-                        .unwrap()
-                        .set_timeout_with_callback_and_timeout_and_arguments_0(
-                            save_closure.as_ref().unchecked_ref(),
-                            500,
-                        )
+                    let id = crate::platform::window()
+                        .and_then(|w| {
+                            w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                                save_closure.as_ref().unchecked_ref(),
+                                500,
+                            ).ok()
+                        })
                         .unwrap_or(0);
                     save_closure.forget();
                     font_save_timer_id.set(id);
@@ -3457,13 +3458,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
             listeners_attached.set(true);
         });
-        web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                closure.as_ref().unchecked_ref(),
-                100,
-            )
-            .ok();
+        if let Some(window) = crate::platform::window() {
+            window
+                .set_timeout_with_callback_and_timeout_and_arguments_0(
+                    closure.as_ref().unchecked_ref(),
+                    100,
+                )
+                .ok();
+        }
         closure.forget();
     };
 
@@ -3664,7 +3666,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
     let author_reply = move |feedback_id: String| {
         move || {
-            let doc = web_sys::window().unwrap().document().unwrap();
+            let Some(doc) = crate::platform::document() else { return; };
             let selector = format!("#author-reply-{}", feedback_id);
             let input: web_sys::HtmlTextAreaElement = match doc.query_selector(&selector).ok().flatten() {
                 Some(el) => el.dyn_into().unwrap(),
@@ -3695,11 +3697,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
     let copy_beta_link = move |token: String| {
         move || {
-            let origin = web_sys::window()
+            let origin = crate::platform::window()
                 .and_then(|w| w.location().origin().ok())
                 .unwrap_or_default();
             let url = format!("{}/read/{}", origin, token);
-            if let Some(window) = web_sys::window() {
+            if let Some(window) = crate::platform::window() {
                 if let Ok(clipboard) = js_sys::Reflect::get(&window.navigator(), &"clipboard".into()) {
                     let clipboard: web_sys::Clipboard = clipboard.unchecked_into();
                     let _ = clipboard.write_text(&url);
@@ -3718,7 +3720,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             // Clear the pending debounce timer so it doesn't fire a redundant/stale save.
             let prev = auto_save_timer_id.get();
             if prev != 0 {
-                if let Some(w) = web_sys::window() {
+                if let Some(w) = crate::platform::window() {
                     w.clear_timeout_with_handle(prev);
                 }
                 auto_save_timer_id.set(0);
@@ -3867,17 +3869,20 @@ pub fn book_page(book_id: String) -> NodeHandle {
         note_save_status.set("unsaved");
         let old_id = note_save_timer_id.get();
         if old_id != 0 {
-            web_sys::window().unwrap().clear_timeout_with_handle(old_id);
+            if let Some(w) = crate::platform::window() {
+                w.clear_timeout_with_handle(old_id);
+            }
         }
         let cb = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
             save_note_content();
         }) as Box<dyn FnMut()>);
-        let id = web_sys::window()
-            .unwrap()
-            .set_timeout_with_callback_and_timeout_and_arguments_0(
-                cb.as_ref().unchecked_ref(),
-                800,
-            )
+        let id = crate::platform::window()
+            .and_then(|w| {
+                w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    cb.as_ref().unchecked_ref(),
+                    800,
+                ).ok()
+            })
             .unwrap_or(0);
         cb.forget();
         note_save_timer_id.set(id);
@@ -3894,7 +3899,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 schedule_note_save();
             }
         }) as Box<dyn FnMut(_)>);
-        if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
             doc.add_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref()).ok();
         }
         keyup.forget();
@@ -4913,14 +4918,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         let bid_for_cover = book_id.clone();
                         move || {
                             let bid = bid_for_cover.clone();
-                            let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return; };
+                            let Some(doc) = crate::platform::window().and_then(|w| w.document()) else { return; };
                             let Ok(input) = doc.create_element("input") else { return; };
                             let input: web_sys::HtmlInputElement = input.unchecked_into();
                             input.set_type("file");
                             input.set_accept("image/*");
                             input.set_id("__pw_cover_input");
                             let onchange = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
-                                let input: web_sys::HtmlInputElement = web_sys::window()
+                                let input: web_sys::HtmlInputElement = crate::platform::window()
                                     .and_then(|w| w.document())
                                     .and_then(|d| d.get_element_by_id("__pw_cover_input"))
                                     .map(|e| e.unchecked_into())
@@ -5053,7 +5058,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     Button {
                         onclick: move || {
                             // Read max chapter input
-                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
                                 if let Ok(Some(el)) = doc.query_selector("#beta-max-chapter-input") {
                                     let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
                                     let val = input.value();
@@ -5139,7 +5144,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     Button {
                         onclick: move || {
                             // Read max chapter input
-                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
                                 if let Ok(Some(el)) = doc.query_selector("#beta-edit-max-chapter-input") {
                                     let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
                                     let val = input.value();
@@ -5183,7 +5188,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             // listener, and click it.  rinch's onchange passes
                             // a String (the input value) which is useless for
                             // file inputs, so we use the raw DOM API instead.
-                            let doc = match web_sys::window().and_then(|w| w.document()) {
+                            let doc = match crate::platform::window().and_then(|w| w.document()) {
                                 Some(d) => d,
                                 None => return,
                             };

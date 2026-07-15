@@ -499,7 +499,7 @@ fn side_pad(vw: f64) -> f64 {
 }
 
 fn reader_content_el() -> Option<web_sys::HtmlElement> {
-    web_sys::window()?
+    crate::platform::window()?
         .document()?
         .query_selector("#reader-content")
         .ok()
@@ -545,7 +545,7 @@ fn apply_page_transform(page: i32) {
 /// True if the current document selection is empty (used so a text-selection
 /// drag for feedback isn't mistaken for a page swipe).
 fn selection_is_empty() -> bool {
-    web_sys::window()
+    crate::platform::window()
         .and_then(|w| w.document())
         .and_then(|d| d.get_selection().ok().flatten())
         .map(|s| s.to_string().as_string().unwrap_or_default().trim().is_empty())
@@ -769,7 +769,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         if is_preview {
             return;
         }
-        let window = match web_sys::window() {
+        let window = match crate::platform::window() {
             Some(w) => w,
             None => return,
         };
@@ -808,7 +808,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                 save_progress(cid, clamped);
             }
         });
-        if let Some(w) = web_sys::window() {
+        if let Some(w) = crate::platform::window() {
             w.request_animation_frame(closure.as_ref().unchecked_ref()).ok();
         }
         closure.forget();
@@ -851,7 +851,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                     let closure = wasm_bindgen::closure::Closure::once(move || {
                         repaginate(current_page.get());
                     });
-                    if let Some(w) = web_sys::window() {
+                    if let Some(w) = crate::platform::window() {
                         w.set_timeout_with_callback_and_timeout_and_arguments_0(
                             closure.as_ref().unchecked_ref(),
                             250,
@@ -1074,7 +1074,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     if !is_preview {
     // Shared selection handler for both mouse and touch
     let handle_selection = std::rc::Rc::new(move |client_x: i32, client_y: i32| {
-        let doc = web_sys::window().unwrap().document().unwrap();
+        let Some(doc) = crate::platform::document() else { return; };
         let sel = match doc.get_selection().ok().flatten() {
             Some(s) => s,
             None => return,
@@ -1123,8 +1123,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     });
 
     // Set up text selection listener for feedback tooltip (mouse)
-    {
-        let window = web_sys::window().unwrap();
+    if let Some(document) = crate::platform::document() {
         let handle = handle_selection.clone();
         let mouseup_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
             let target = match event.target() {
@@ -1140,15 +1139,14 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
             }
             handle(event.client_x(), event.client_y() - 10);
         }) as Box<dyn FnMut(_)>);
-        window.document().unwrap()
+        document
             .add_event_listener_with_callback("mouseup", mouseup_closure.as_ref().unchecked_ref())
             .ok();
         mouseup_closure.forget();
     }
 
     // Set up text selection listener for feedback tooltip (touch)
-    {
-        let window = web_sys::window().unwrap();
+    if let Some(document) = crate::platform::document() {
         let handle = handle_selection.clone();
         let touchend_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::TouchEvent| {
             let target: web_sys::EventTarget = match event.target() {
@@ -1167,14 +1165,16 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
             let closure = wasm_bindgen::closure::Closure::once(move || {
                 handle(0, 0);
             });
-            web_sys::window().unwrap()
-                .set_timeout_with_callback_and_timeout_and_arguments_0(
-                    closure.as_ref().unchecked_ref(),
-                    100,
-                ).ok();
+            if let Some(window) = crate::platform::window() {
+                window
+                    .set_timeout_with_callback_and_timeout_and_arguments_0(
+                        closure.as_ref().unchecked_ref(),
+                        100,
+                    ).ok();
+            }
             closure.forget();
         }) as Box<dyn FnMut(_)>);
-        window.document().unwrap()
+        document
             .add_event_listener_with_callback("touchend", touchend_closure.as_ref().unchecked_ref())
             .ok();
         touchend_closure.forget();
@@ -1198,9 +1198,11 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                 _ => {}
             }
         }) as Box<dyn FnMut(_)>);
-        web_sys::window().unwrap().document().unwrap()
-            .add_event_listener_with_callback("keydown", keydown_closure.as_ref().unchecked_ref())
-            .ok();
+        if let Some(document) = crate::platform::document() {
+            document
+                .add_event_listener_with_callback("keydown", keydown_closure.as_ref().unchecked_ref())
+                .ok();
+        }
         keydown_closure.forget();
     }
 
@@ -1214,9 +1216,11 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                     s.set(t.client_x() as f64);
                 }
             }) as Box<dyn FnMut(_)>);
-            web_sys::window().unwrap().document().unwrap()
-                .add_event_listener_with_callback("touchstart", touchstart_closure.as_ref().unchecked_ref())
-                .ok();
+            if let Some(document) = crate::platform::document() {
+                document
+                    .add_event_listener_with_callback("touchstart", touchstart_closure.as_ref().unchecked_ref())
+                    .ok();
+            }
             touchstart_closure.forget();
         }
         {
@@ -1240,9 +1244,11 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                     }
                 }
             }) as Box<dyn FnMut(_)>);
-            web_sys::window().unwrap().document().unwrap()
-                .add_event_listener_with_callback("touchend", touchend_closure.as_ref().unchecked_ref())
-                .ok();
+            if let Some(document) = crate::platform::document() {
+                document
+                    .add_event_listener_with_callback("touchend", touchend_closure.as_ref().unchecked_ref())
+                    .ok();
+            }
             touchend_closure.forget();
         }
     }
@@ -1252,9 +1258,11 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         let resize_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
             repaginate(current_page.get());
         }) as Box<dyn FnMut(_)>);
-        web_sys::window().unwrap()
-            .add_event_listener_with_callback("resize", resize_closure.as_ref().unchecked_ref())
-            .ok();
+        if let Some(window) = crate::platform::window() {
+            window
+                .add_event_listener_with_callback("resize", resize_closure.as_ref().unchecked_ref())
+                .ok();
+        }
         resize_closure.forget();
     }
 
@@ -1296,7 +1304,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     // Reply to feedback
     let reply_to_feedback = move |feedback_id: String| {
         move || {
-            let doc = web_sys::window().unwrap().document().unwrap();
+            let Some(doc) = crate::platform::document() else { return; };
             let selector = format!("#reply-input-{}", feedback_id);
             let input: web_sys::HtmlTextAreaElement = match doc.query_selector(&selector).ok().flatten() {
                 Some(el) => el.dyn_into().unwrap(),
@@ -1604,7 +1612,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                 class: {move || if tooltip_visible.get() { "feedback-tooltip visible" } else { "feedback-tooltip" }},
                 style: {move || format!(
                     "left: {}px; top: {}px;",
-                    tooltip_x.get().max(10).min(web_sys::window().map(|w| w.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(800.0) as i32 - 310).unwrap_or(500)),
+                    tooltip_x.get().max(10).min(crate::platform::window().map(|w| w.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(800.0) as i32 - 310).unwrap_or(500)),
                     tooltip_y.get().max(10),
                 )},
                 textarea {
@@ -1622,7 +1630,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                         size: "xs",
                         onclick: move || {
                             // Read textarea value
-                            if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+                            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
                                 if let Ok(Some(el)) = doc.query_selector("#feedback-tooltip-textarea") {
                                     let textarea: web_sys::HtmlTextAreaElement = el.dyn_into().unwrap();
                                     tooltip_comment.set(textarea.value());

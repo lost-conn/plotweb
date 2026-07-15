@@ -140,7 +140,7 @@ pub fn with_element_when_ready(
     action: impl FnOnce(&web_sys::Element) + 'static,
 ) {
     fn attempt(selector: String, frames_left: u32, action: Box<dyn FnOnce(&web_sys::Element)>) {
-        if let Some(el) = web_sys::window()
+        if let Some(el) = crate::platform::window()
             .and_then(|w| w.document())
             .and_then(|d| d.query_selector(&selector).ok().flatten())
         {
@@ -153,7 +153,7 @@ pub fn with_element_when_ready(
         let closure = wasm_bindgen::closure::Closure::once(move || {
             attempt(selector, frames_left - 1, action);
         });
-        if let Some(w) = web_sys::window() {
+        if let Some(w) = crate::platform::window() {
             w.request_animation_frame(closure.as_ref().unchecked_ref()).ok();
         }
         closure.forget();
@@ -438,7 +438,7 @@ pub fn editor_toolbar(
     // consumes keydown at capture phase (no `contenteditable`, no native
     // `execCommand`), but keyup / mouseup / selectionchange still bubble to the
     // document, so refreshing on those keeps the toolbar state fresh.
-    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+    if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
         let r = refresh.clone();
         let listener = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
             r();
@@ -526,7 +526,7 @@ pub fn editor_toolbar(
 /// inserts it into `handle` via `insert_image`. `on_edit` fires after insertion so
 /// the caller can schedule an autosave.
 fn insert_image_via_picker(handle: EditorHandle, book_id: &str, on_edit: impl Fn() + 'static + Copy) {
-    let Some(doc) = web_sys::window().and_then(|w| w.document()) else { return; };
+    let Some(doc) = crate::platform::window().and_then(|w| w.document()) else { return; };
     let Ok(input) = doc.create_element("input") else { return; };
     let input: web_sys::HtmlInputElement = input.unchecked_into();
     input.set_type("file");
@@ -534,7 +534,7 @@ fn insert_image_via_picker(handle: EditorHandle, book_id: &str, on_edit: impl Fn
 
     let book_id = book_id.to_string();
     let onchange = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
-        let input: web_sys::HtmlInputElement = web_sys::window()
+        let input: web_sys::HtmlInputElement = crate::platform::window()
             .and_then(|w| w.document())
             .and_then(|d| d.get_element_by_id("__pw_image_input"))
             .map(|e| e.unchecked_into())
@@ -702,7 +702,7 @@ const ALLOWED_TAGS: &[&str] = &[
 /// and strip dangerous attributes (`on*` handlers, `javascript:` URLs). The
 /// cleaned element's innerHTML is returned.
 pub fn sanitize_html(raw: &str) -> String {
-    let doc = match web_sys::window().and_then(|w| w.document()) {
+    let doc = match crate::platform::window().and_then(|w| w.document()) {
         Some(d) => d,
         None => return String::new(),
     };

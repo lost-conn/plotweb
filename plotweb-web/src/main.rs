@@ -5,6 +5,7 @@ pub mod pages;
 pub mod components;
 pub mod fonts;
 pub mod ws;
+pub mod platform;
 pub mod rinch_backend;
 
 use std::rc::Rc;
