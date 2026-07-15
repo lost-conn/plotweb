@@ -778,13 +778,12 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         }
         let tok = token_signal.get();
         let closure = wasm_bindgen::closure::Closure::once(move || {
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = UpdateReadingProgressRequest { chapter_id, page: page as i64 };
-                let _ = api::put::<_, serde_json::Value>(
-                    &format!("/api/beta/{}/progress", tok),
-                    &req,
-                ).await;
-            });
+            let req = UpdateReadingProgressRequest { chapter_id, page: page as i64 };
+            api::put::<_, serde_json::Value>(
+                &format!("/api/beta/{}/progress", tok),
+                &req,
+                move |_result| {},
+            );
         });
         let handle = window
             .set_timeout_with_callback_and_timeout_and_arguments_0(
@@ -828,8 +827,8 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         } else {
             format!("/api/beta/{}/chapters/{}", token_signal.get(), cid)
         };
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(ch) = api::get::<Chapter>(&url).await {
+        api::get::<Chapter>(&url, move |result| {
+            if let Ok(ch) = result {
                 // Guard: a newer chapter may have been selected while this
                 // request was in flight. Don't inject stale content.
                 if active_chapter_id.get().as_deref() != Some(cid.as_str()) {
@@ -904,15 +903,16 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         let page = current_page.get();
         let label = format!("Ch. {} \u{b7} p.{}", ch.title, page + 1);
         let tok = token_signal.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = CreateBookmarkRequest { chapter_id: cid, page: page as i64, label };
-            if let Ok(bm) = api::post::<_, BetaBookmark>(
-                &format!("/api/beta/{}/bookmarks", tok),
-                &req,
-            ).await {
-                bookmarks.update(|list| list.push(bm));
-            }
-        });
+        let req = CreateBookmarkRequest { chapter_id: cid, page: page as i64, label };
+        api::post::<_, BetaBookmark>(
+            &format!("/api/beta/{}/bookmarks", tok),
+            &req,
+            move |result| {
+                if let Ok(bm) = result {
+                    bookmarks.update(|list| list.push(bm));
+                }
+            },
+        );
     };
 
     let delete_bookmark = move |id: String| {
@@ -922,13 +922,14 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
             }
             let tok = token_signal.get();
             let bid = id.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if api::delete_req::<serde_json::Value>(
-                    &format!("/api/beta/{}/bookmarks/{}", tok, bid),
-                ).await.is_ok() {
-                    bookmarks.update(|list| list.retain(|b| b.id != bid));
-                }
-            });
+            api::delete_req::<serde_json::Value>(
+                &format!("/api/beta/{}/bookmarks/{}", tok, bid),
+                move |result| {
+                    if result.is_ok() {
+                        bookmarks.update(|list| list.retain(|b| b.id != bid));
+                    }
+                },
+            );
         }
     };
 
@@ -936,8 +937,8 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     match source.clone() {
         ReaderSource::Beta(tok) => {
             let tok2 = tok.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                match api::get::<BetaReaderView>(&format!("/api/beta/{}", tok2)).await {
+            api::get::<BetaReaderView>(&format!("/api/beta/{}", tok2), move |result| {
+                match result {
                     Ok(data) => {
                         if let Some(ref fs) = data.font_settings {
                             fonts::load_book_fonts(fs);
@@ -959,8 +960,8 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
 
             // Fetch feedback
             let tokf = tok.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/beta/{}/feedback", tokf)).await {
+            api::get::<Vec<BetaFeedback>>(&format!("/api/beta/{}/feedback", tokf), move |result| {
+                if let Ok(fb) = result {
                     feedback_list.set(fb);
                 }
             });
@@ -971,16 +972,18 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
             {
                 let tokc = tok.clone();
                 let store = use_store::<AppStore>();
-                wasm_bindgen_futures::spawn_local(async move {
-                    if store.current_user.get().is_none() {
-                        if let Ok(user) = api::get::<plotweb_common::User>("/api/auth/me").await {
+                if store.current_user.get().is_none() {
+                    api::get::<plotweb_common::User>("/api/auth/me", move |result| {
+                        if let Ok(user) = result {
                             store.current_user.set(Some(user));
                         }
-                    }
-                    if store.current_user.get().is_some() {
-                        api::post::<_, serde_json::Value>(&format!("/api/beta/{}/claim", tokc), &serde_json::json!({})).await.ok();
-                    }
-                });
+                        if store.current_user.get().is_some() {
+                            api::post::<_, serde_json::Value>(&format!("/api/beta/{}/claim", tokc), &serde_json::json!({}), move |_result| {});
+                        }
+                    });
+                } else if store.current_user.get().is_some() {
+                    api::post::<_, serde_json::Value>(&format!("/api/beta/{}/claim", tokc), &serde_json::json!({}), move |_result| {});
+                }
             }
 
             // Connect WebSocket for real-time feedback
@@ -1021,9 +1024,9 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         ReaderSource::AuthorPreview(bid) => {
             // Build an equivalent in-memory view from the authenticated author
             // endpoints. No feedback / progress / bookmark writes in this mode.
-            wasm_bindgen_futures::spawn_local(async move {
-                let book = api::get::<Book>(&format!("/api/books/{}", bid)).await;
-                let chapters = api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid)).await;
+            let bid_ch = bid.clone();
+            api::get::<Book>(&format!("/api/books/{}", bid), move |book| {
+                api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid_ch), move |chapters| {
                 match (book, chapters) {
                     (Ok(book), Ok(chs)) => {
                         if let Some(fs) = &book.font_settings {
@@ -1055,6 +1058,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                         error_msg.set(Some(e.message));
                     }
                 }
+                });
             });
         }
     }
@@ -1270,18 +1274,21 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
 
         tooltip_visible.set(false);
 
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = CreateBetaFeedbackRequest {
-                chapter_id,
-                selected_text,
-                context_block,
-                comment,
-            };
-            if api::post::<_, serde_json::Value>(&format!("/api/beta/{}/feedback", tok), &req).await.is_ok() {
+        let req = CreateBetaFeedbackRequest {
+            chapter_id,
+            selected_text,
+            context_block,
+            comment,
+        };
+        let tok_refresh = tok.clone();
+        api::post::<_, serde_json::Value>(&format!("/api/beta/{}/feedback", tok), &req, move |result| {
+            if result.is_ok() {
                 // Refresh feedback list
-                if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/beta/{}/feedback", tok)).await {
-                    feedback_list.set(fb);
-                }
+                api::get::<Vec<BetaFeedback>>(&format!("/api/beta/{}/feedback", tok_refresh), move |fb_result| {
+                    if let Ok(fb) = fb_result {
+                        feedback_list.set(fb);
+                    }
+                });
             }
         });
     };
@@ -1302,18 +1309,22 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
             input.set_value("");
             let tok = token_signal.get();
             let fid = feedback_id.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = CreateBetaReplyRequest { content };
-                if api::post::<_, serde_json::Value>(
-                    &format!("/api/beta/{}/feedback/{}/replies", tok, fid),
-                    &req,
-                ).await.is_ok() {
-                    // Refresh
-                    if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/beta/{}/feedback", tok)).await {
-                        feedback_list.set(fb);
+            let req = CreateBetaReplyRequest { content };
+            let tok_refresh = tok.clone();
+            api::post::<_, serde_json::Value>(
+                &format!("/api/beta/{}/feedback/{}/replies", tok, fid),
+                &req,
+                move |result| {
+                    if result.is_ok() {
+                        // Refresh
+                        api::get::<Vec<BetaFeedback>>(&format!("/api/beta/{}/feedback", tok_refresh), move |fb_result| {
+                            if let Ok(fb) = fb_result {
+                                feedback_list.set(fb);
+                            }
+                        });
                     }
-                }
-            });
+                },
+            );
         }
     };
 

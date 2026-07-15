@@ -1767,20 +1767,22 @@ fn render_history_commit(
                                 history_diff.set(None);
                                 let oid2 = oid.clone();
                                 let bid2 = bid.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(chapters) = api::get::<Vec<Chapter>>(
-                                        &format!("/api/books/{}/history/{}/chapters", bid, oid),
-                                    ).await {
-                                        preview_chapters.set(chapters);
-                                    }
-                                });
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if let Ok(diff) = api::get::<CommitDiff>(
-                                        &format!("/api/books/{}/history/{}/diff", bid2, oid2),
-                                    ).await {
-                                        history_diff.set(Some(diff));
-                                    }
-                                });
+                                api::get::<Vec<Chapter>>(
+                                    &format!("/api/books/{}/history/{}/chapters", bid, oid),
+                                    move |result| {
+                                        if let Ok(chapters) = result {
+                                            preview_chapters.set(chapters);
+                                        }
+                                    },
+                                );
+                                api::get::<CommitDiff>(
+                                    &format!("/api/books/{}/history/{}/diff", bid2, oid2),
+                                    move |result| {
+                                        if let Ok(diff) = result {
+                                            history_diff.set(Some(diff));
+                                        }
+                                    },
+                                );
                             }
                         },
                         {move || if is_expanded() { "Hide" } else { "Preview" }}
@@ -1930,10 +1932,10 @@ fn render_history_chapter_preview(
                         let ch_id = cid_signal.get();
                         let el_id = preview_el_id_signal.get();
                         if let Some(commit) = preview_commit.get() {
-                            wasm_bindgen_futures::spawn_local(async move {
-                                if let Ok(full_ch) = api::get::<Chapter>(
-                                    &format!("/api/books/{}/history/{}/chapters/{}", bid, commit, ch_id),
-                                ).await {
+                            api::get::<Chapter>(
+                                &format!("/api/books/{}/history/{}/chapters/{}", bid, commit, ch_id),
+                                move |result| {
+                                if let Ok(full_ch) = result {
                                     let html = super::editor_utils::sanitize_html(&super::editor_utils::content_to_display_html(&full_ch.content));
                                     preview_content.set(Some(full_ch));
                                     // Set inner HTML imperatively after a tick
@@ -1952,7 +1954,8 @@ fn render_history_chapter_preview(
                                     }
                                     closure.forget();
                                 }
-                            });
+                                },
+                            );
                         }
                     }
                 },
@@ -2034,18 +2037,15 @@ fn do_switch_chapter_inner(
                 }
             });
             let bid = bid.to_string();
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = UpdateChapterRequest {
-                    title: Some(title),
-                    content: None,
-                };
-                api::put::<_, serde_json::Value>(
-                    &format!("/api/books/{}/chapters/{}", bid, leaving_cid),
-                    &req,
-                )
-                .await
-                .ok();
-            });
+            let req = UpdateChapterRequest {
+                title: Some(title),
+                content: None,
+            };
+            api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/chapters/{}", bid, leaving_cid),
+                &req,
+                move |_result| {},
+            );
         }
     }
 
@@ -2065,19 +2065,20 @@ fn do_switch_chapter_inner(
         // no DOM race): the model always reflects the loaded chapter.
         if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
             save_status.set("saving");
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = UpdateChapterRequest { title: None, content: Some(content) };
-                if api::put::<_, serde_json::Value>(
-                    &format!("/api/books/{}/chapters/{}", bid, current_id),
-                    &req,
-                ).await.is_ok() {
-                    save_status.set("saved");
-                } else {
-                    // The just-left chapter failed to save — surface it instead of
-                    // the optimistic "saved" set below, so edits aren't lost silently.
-                    save_status.set("error");
-                }
-            });
+            let req = UpdateChapterRequest { title: None, content: Some(content) };
+            api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/chapters/{}", bid, current_id),
+                &req,
+                move |result| {
+                    if result.is_ok() {
+                        save_status.set("saved");
+                    } else {
+                        // The just-left chapter failed to save — surface it instead of
+                        // the optimistic "saved" set below, so edits aren't lost silently.
+                        save_status.set("error");
+                    }
+                },
+            );
         }
     }
 
@@ -2091,10 +2092,10 @@ fn do_switch_chapter_inner(
     // against `new_cid` while the model still holds the previous chapter.
     loaded_chapter_id.set(None);
     let bid = bid.to_string();
-    wasm_bindgen_futures::spawn_local(async move {
-        if let Ok(chapter) = api::get::<Chapter>(
-            &format!("/api/books/{}/chapters/{}", bid, new_cid),
-        ).await {
+    api::get::<Chapter>(
+        &format!("/api/books/{}/chapters/{}", bid, new_cid),
+        move |result| {
+        if let Ok(chapter) = result {
             // Bail if the user switched away while this fetch was in flight, so a
             // slow stale response can't clobber the now-current chapter's editor.
             if active_pane.get() != BookPane::Editor(new_cid.clone()) {
@@ -2131,7 +2132,8 @@ fn do_switch_chapter_inner(
                 }
             }
         }
-    });
+        },
+    );
 }
 
 fn render_beta_link_card<CB, TG, DL, CBO, TGO, DLO>(
@@ -2264,18 +2266,23 @@ fn perform_note_move(
                 new_parent_id: target.0,
                 index: target.1,
             };
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(_) = api::put::<_, serde_json::Value>(
-                    &format!("/api/books/{}/notes/move", bid), &req,
-                ).await {
-                    if let Ok(resp) = api::get::<NotesResponse>(
-                        &format!("/api/books/{}/notes", bid),
-                    ).await {
-                        store.notes.set(resp.notes);
-                        store.note_tree.set(Some(resp.tree));
+            let bid_refresh = bid.clone();
+            api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/notes/move", bid), &req,
+                move |result| {
+                    if result.is_ok() {
+                        api::get::<NotesResponse>(
+                            &format!("/api/books/{}/notes", bid_refresh),
+                            move |resp_result| {
+                                if let Ok(resp) = resp_result {
+                                    store.notes.set(resp.notes);
+                                    store.note_tree.set(Some(resp.tree));
+                                }
+                            },
+                        );
                     }
-                }
-            });
+                },
+            );
         }
     }
 }
@@ -2462,10 +2469,10 @@ fn render_note_card(
                     onclick: move || {
                         let n = nid.get();
                         let bid = bid_signal.get();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            if let Ok(note) = api::get::<Note>(
-                                &format!("/api/books/{}/notes/{}", bid, n),
-                            ).await {
+                        api::get::<Note>(
+                            &format!("/api/books/{}/notes/{}", bid, n),
+                            move |result| {
+                            if let Ok(note) = result {
                                 note_editor_title.set(note.title);
                                 note_editor_color.set(note.color);
                                 active_pane.set(BookPane::NoteEditor(n.clone()));
@@ -2477,7 +2484,8 @@ fn render_note_card(
                                 editor_utils::load_note_content(&handle, &note.content);
                                 handle.set_dark_mode(store.dark_mode.get());
                             }
-                        });
+                            },
+                        );
                         store.sidebar_open.set(false);
                     },
 
@@ -2510,18 +2518,23 @@ fn render_note_card(
                                 onclick: move || {
                                     let n = nid.get();
                                     let bid = bid_signal.get();
-                                    wasm_bindgen_futures::spawn_local(async move {
-                                        if let Ok(_) = api::delete_req::<serde_json::Value>(
-                                            &format!("/api/books/{}/notes/{}", bid, n),
-                                        ).await {
-                                            if let Ok(resp) = api::get::<NotesResponse>(
-                                                &format!("/api/books/{}/notes", bid),
-                                            ).await {
-                                                store.notes.set(resp.notes);
-                                                store.note_tree.set(Some(resp.tree));
+                                    let bid_refresh = bid.clone();
+                                    api::delete_req::<serde_json::Value>(
+                                        &format!("/api/books/{}/notes/{}", bid, n),
+                                        move |result| {
+                                            if result.is_ok() {
+                                                api::get::<NotesResponse>(
+                                                    &format!("/api/books/{}/notes", bid_refresh),
+                                                    move |resp_result| {
+                                                        if let Ok(resp) = resp_result {
+                                                            store.notes.set(resp.notes);
+                                                            store.note_tree.set(Some(resp.tree));
+                                                        }
+                                                    },
+                                                );
                                             }
-                                        }
-                                    });
+                                        },
+                                    );
                                 },
                                 {render_tabler_icon(__scope, TablerIcon::Trash, TablerIconStyle::Outline)}
                             }
@@ -2561,12 +2574,11 @@ fn render_note_card(
                                         collapsed: new_tree.collapsed,
                                     },
                                 };
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    api::put::<_, serde_json::Value>(
-                                        &format!("/api/books/{}/notes/tree", bid),
-                                        &tree_req,
-                                    ).await.ok();
-                                });
+                                api::put::<_, serde_json::Value>(
+                                    &format!("/api/books/{}/notes/tree", bid),
+                                    &tree_req,
+                                    move |_result| {},
+                                );
                             }
                         },
                         {move || {
@@ -2746,22 +2758,28 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
     // Fetch book and chapters
     let bid = book_id.clone();
-    wasm_bindgen_futures::spawn_local(async move {
-        if let Ok(book) = api::get::<Book>(&format!("/api/books/{}", bid)).await {
+    api::get::<Book>(&format!("/api/books/{}", bid), move |book_result| {
+        if let Ok(book) = book_result {
             let fs = book.font_settings.clone().unwrap_or_default();
             fonts::load_book_fonts(&fs);
             font_settings.set(fs);
             store.current_book.set(Some(book));
         }
-        if let Ok(chapters) = api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid)).await {
-            store.chapters.set(chapters);
-        }
-        if let Ok(links) = api::get::<Vec<BetaReaderLink>>(&format!("/api/books/{}/beta-links", bid)).await {
-            beta_links.set(links);
-        }
-        if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/books/{}/feedback", bid)).await {
-            beta_feedback.set(fb);
-        }
+        api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid), move |ch_result| {
+            if let Ok(chapters) = ch_result {
+                store.chapters.set(chapters);
+            }
+            api::get::<Vec<BetaReaderLink>>(&format!("/api/books/{}/beta-links", bid), move |links_result| {
+                if let Ok(links) = links_result {
+                    beta_links.set(links);
+                }
+                api::get::<Vec<BetaFeedback>>(&format!("/api/books/{}/feedback", bid), move |fb_result| {
+                    if let Ok(fb) = fb_result {
+                        beta_feedback.set(fb);
+                    }
+                });
+            });
+        });
     });
 
     // Connect WebSocket for real-time feedback
@@ -2818,22 +2836,23 @@ pub fn book_page(book_id: String) -> NodeHandle {
         };
         let bid = bid_signal.get();
         save_status.set("saving");
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = UpdateChapterRequest {
-                title: None,
-                content: Some(content),
-            };
-            if api::put::<_, serde_json::Value>(
-                &format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
-                &req,
-            ).await.is_ok() {
-                save_status.set("saved");
-            } else {
-                // Distinct from "unsaved" (pending edits): the save was attempted
-                // and the server rejected it, so the edit is NOT persisted.
-                save_status.set("error");
-            }
-        });
+        let req = UpdateChapterRequest {
+            title: None,
+            content: Some(content),
+        };
+        api::put::<_, serde_json::Value>(
+            &format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
+            &req,
+            move |result| {
+                if result.is_ok() {
+                    save_status.set("saved");
+                } else {
+                    // Distinct from "unsaved" (pending edits): the save was attempted
+                    // and the server rejected it, so the edit is NOT persisted.
+                    save_status.set("error");
+                }
+            },
+        );
     };
 
     // Schedule a debounced chapter autosave (3s). Called on editor keystrokes and
@@ -2914,15 +2933,16 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }
         show_chapter_modal.set(false);
         let bid = bid_signal.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = CreateChapterRequest { title };
-            if let Ok(chapter) = api::post::<_, Chapter>(
-                &format!("/api/books/{}/chapters", bid),
-                &req,
-            ).await {
-                store.chapters.update(|ch| ch.push(chapter));
-            }
-        });
+        let req = CreateChapterRequest { title };
+        api::post::<_, Chapter>(
+            &format!("/api/books/{}/chapters", bid),
+            &req,
+            move |result| {
+                if let Ok(chapter) = result {
+                    store.chapters.update(|ch| ch.push(chapter));
+                }
+            },
+        );
     };
 
     // ── Book settings save ──────────────────────────────────────
@@ -2935,26 +2955,27 @@ pub fn book_page(book_id: String) -> NodeHandle {
         let bid = bid_signal.get();
         let desc = edit_book_desc.get();
         let cover = edit_book_cover.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = UpdateBookRequest {
-                title: Some(title.clone()),
-                description: Some(desc.clone()),
-                font_settings: None,
-                cover_image: Some(cover.clone()),
-            };
-            if api::put::<_, serde_json::Value>(
-                &format!("/api/books/{}", bid),
-                &req,
-            ).await.is_ok() {
-                store.current_book.update(|book| {
-                    if let Some(b) = book {
-                        b.title = title;
-                        b.description = desc;
-                        b.cover_image = cover;
-                    }
-                });
-            }
-        });
+        let req = UpdateBookRequest {
+            title: Some(title.clone()),
+            description: Some(desc.clone()),
+            font_settings: None,
+            cover_image: Some(cover.clone()),
+        };
+        api::put::<_, serde_json::Value>(
+            &format!("/api/books/{}", bid),
+            &req,
+            move |result| {
+                if result.is_ok() {
+                    store.current_book.update(|book| {
+                        if let Some(b) = book {
+                            b.title = title;
+                            b.description = desc;
+                            b.cover_image = cover;
+                        }
+                    });
+                }
+            },
+        );
     };
 
     // ── Chapter rename save ───────────────────────────────────────
@@ -2966,28 +2987,29 @@ pub fn book_page(book_id: String) -> NodeHandle {
         show_rename_chapter_modal.set(false);
         let bid = bid_signal.get();
         let cid = rename_chapter_id.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = UpdateChapterRequest {
-                title: Some(title.clone()),
-                content: None,
-            };
-            if api::put::<_, serde_json::Value>(
-                &format!("/api/books/{}/chapters/{}", bid, cid),
-                &req,
-            ).await.is_ok() {
-                store.chapters.update(|chapters| {
-                    if let Some(ch) = chapters.iter_mut().find(|c| c.id == cid) {
-                        ch.title = title.clone();
-                    }
-                });
-                // Update editor title if this chapter is currently open
-                if let BookPane::Editor(ref open_cid) = active_pane.get() {
-                    if *open_cid == cid {
-                        chapter_title.set(title);
+        let req = UpdateChapterRequest {
+            title: Some(title.clone()),
+            content: None,
+        };
+        api::put::<_, serde_json::Value>(
+            &format!("/api/books/{}/chapters/{}", bid, cid),
+            &req,
+            move |result| {
+                if result.is_ok() {
+                    store.chapters.update(|chapters| {
+                        if let Some(ch) = chapters.iter_mut().find(|c| c.id == cid) {
+                            ch.title = title.clone();
+                        }
+                    });
+                    // Update editor title if this chapter is currently open
+                    if let BookPane::Editor(ref open_cid) = active_pane.get() {
+                        if *open_cid == cid {
+                            chapter_title.set(title);
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
     };
 
     // ── Inline chapter title save (debounced) ─────────────────────
@@ -3014,22 +3036,23 @@ pub fn book_page(book_id: String) -> NodeHandle {
             } else { return; }
             let cid = captured_cid;
             let title = new_title.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = UpdateChapterRequest {
-                    title: Some(title.clone()),
-                    content: None,
-                };
-                if api::put::<_, serde_json::Value>(
-                    &format!("/api/books/{}/chapters/{}", captured_bid, cid),
-                    &req,
-                ).await.is_ok() {
-                    store.chapters.update(|chapters| {
-                        if let Some(ch) = chapters.iter_mut().find(|c| c.id == cid) {
-                            ch.title = title;
-                        }
-                    });
-                }
-            });
+            let req = UpdateChapterRequest {
+                title: Some(title.clone()),
+                content: None,
+            };
+            api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/chapters/{}", captured_bid, cid),
+                &req,
+                move |result| {
+                    if result.is_ok() {
+                        store.chapters.update(|chapters| {
+                            if let Some(ch) = chapters.iter_mut().find(|c| c.id == cid) {
+                                ch.title = title;
+                            }
+                        });
+                    }
+                },
+            );
         });
         let id = web_sys::window()
             .unwrap()
@@ -3055,10 +3078,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
             });
             let ids: Vec<String> = store.chapters.get().iter().map(|c| c.id.clone()).collect();
             let bid = bid_signal.get();
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = ReorderChaptersRequest { chapter_ids: ids };
-                api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid), &req).await.ok();
-            });
+            let req = ReorderChaptersRequest { chapter_ids: ids };
+            api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid), &req, move |_result| {});
         }
     };
 
@@ -3066,16 +3087,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
         move || {
             let cid = chapter_id.clone();
             let bid = bid_signal.get();
-            wasm_bindgen_futures::spawn_local(async move {
-                if api::delete_req::<serde_json::Value>(
-                    &format!("/api/books/{}/chapters/{}", bid, cid)
-                ).await.is_ok() {
-                    if active_pane.get() == BookPane::Editor(cid.clone()) {
-                        active_pane.set(BookPane::Chapters);
+            api::delete_req::<serde_json::Value>(
+                &format!("/api/books/{}/chapters/{}", bid, cid),
+                move |result| {
+                    if result.is_ok() {
+                        if active_pane.get() == BookPane::Editor(cid.clone()) {
+                            active_pane.set(BookPane::Chapters);
+                        }
+                        store.chapters.update(|ch| ch.retain(|c| c.id != cid));
                     }
-                    store.chapters.update(|ch| ch.retain(|c| c.id != cid));
-                }
-            });
+                },
+            );
         }
     };
 
@@ -3084,8 +3106,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let logout = move || {
-        wasm_bindgen_futures::spawn_local(async move {
-            api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({})).await.ok();
+        api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({}), move |_result| {
             store.current_user.set(None);
             router::navigate(Route::Login);
         });
@@ -3176,18 +3197,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         }
                         let bid = bid.clone();
                         let save_closure = wasm_bindgen::closure::Closure::once(move || {
-                            wasm_bindgen_futures::spawn_local(async move {
-                                let req = UpdateBookRequest {
-                                    title: None,
-                                    description: None,
-                                    font_settings: Some(fs),
-                                    cover_image: None,
-                                };
-                                api::put::<_, serde_json::Value>(
-                                    &format!("/api/books/{}", bid),
-                                    &req,
-                                ).await.ok();
-                            });
+                            let req = UpdateBookRequest {
+                                title: None,
+                                description: None,
+                                font_settings: Some(fs),
+                                cover_image: None,
+                            };
+                            api::put::<_, serde_json::Value>(
+                                &format!("/api/books/{}", bid),
+                                &req,
+                                move |_result| {},
+                            );
                         });
                         let id = web_sys::window()
                             .unwrap()
@@ -3365,18 +3385,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     }
                     let bid = bid.clone();
                     let save_closure = wasm_bindgen::closure::Closure::once(move || {
-                        wasm_bindgen_futures::spawn_local(async move {
-                            let req = UpdateBookRequest {
-                                title: None,
-                                description: None,
-                                font_settings: Some(fs),
-                                cover_image: None,
-                            };
-                            api::put::<_, serde_json::Value>(
-                                &format!("/api/books/{}", bid),
-                                &req,
-                            ).await.ok();
-                        });
+                        let req = UpdateBookRequest {
+                            title: None,
+                            description: None,
+                            font_settings: Some(fs),
+                            cover_image: None,
+                        };
+                        api::put::<_, serde_json::Value>(
+                            &format!("/api/books/{}", bid),
+                            &req,
+                            move |_result| {},
+                        );
                     });
                     let id = web_sys::window()
                         .unwrap()
@@ -3487,33 +3506,35 @@ pub fn book_page(book_id: String) -> NodeHandle {
         let pinned = if new_beta_pin_version.get() { Some("HEAD".to_string()) } else { None };
         let username_val = new_beta_username.get();
         let username = if username_val.trim().is_empty() { None } else { Some(username_val) };
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = CreateBetaLinkRequest { reader_name: name, max_chapter_index: max_ch, pinned_commit: pinned, username };
-            match api::post::<_, BetaReaderLink>(
-                &format!("/api/books/{}/beta-links", bid), &req,
-            ).await {
-                Ok(link) => {
-                    show_beta_link_modal.set(false);
-                    beta_links.update(|l| l.insert(0, link));
+        let req = CreateBetaLinkRequest { reader_name: name, max_chapter_index: max_ch, pinned_commit: pinned, username };
+        api::post::<_, BetaReaderLink>(
+            &format!("/api/books/{}/beta-links", bid), &req,
+            move |result| {
+                match result {
+                    Ok(link) => {
+                        show_beta_link_modal.set(false);
+                        beta_links.update(|l| l.insert(0, link));
+                    }
+                    Err(e) => {
+                        beta_link_error.set(Some(format!("{}", e)));
+                    }
                 }
-                Err(e) => {
-                    beta_link_error.set(Some(format!("{}", e)));
-                }
-            }
-        });
+            },
+        );
     };
 
     let delete_beta_link = move |link_id: String| {
         move || {
             let bid = bid_signal.get();
             let lid = link_id.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if api::delete_req::<serde_json::Value>(
-                    &format!("/api/books/{}/beta-links/{}", bid, lid),
-                ).await.is_ok() {
-                    beta_links.update(|l| l.retain(|x| x.id != lid));
-                }
-            });
+            api::delete_req::<serde_json::Value>(
+                &format!("/api/books/{}/beta-links/{}", bid, lid),
+                move |result| {
+                    if result.is_ok() {
+                        beta_links.update(|l| l.retain(|x| x.id != lid));
+                    }
+                },
+            );
         }
     };
 
@@ -3548,55 +3569,61 @@ pub fn book_page(book_id: String) -> NodeHandle {
         let bid = bid_signal.get();
         let lid = link.id.clone();
         beta_link_error.set(None);
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = UpdateBetaLinkRequest {
-                reader_name: Some(name.clone()),
-                max_chapter_index: Some(max_ch),
-                active: None,
-                pinned_commit,
-                username,
-            };
-            match api::put::<_, serde_json::Value>(
-                &format!("/api/books/{}/beta-links/{}", bid, lid), &req,
-            ).await {
-                Ok(_) => {
-                    editing_beta_link.set(None);
-                    // Refresh links to get resolved data
-                    if let Ok(links) = api::get::<Vec<BetaReaderLink>>(
-                        &format!("/api/books/{}/beta-links", bid),
-                    ).await {
-                        beta_links.set(links);
+        let req = UpdateBetaLinkRequest {
+            reader_name: Some(name.clone()),
+            max_chapter_index: Some(max_ch),
+            active: None,
+            pinned_commit,
+            username,
+        };
+        let bid_refresh = bid.clone();
+        api::put::<_, serde_json::Value>(
+            &format!("/api/books/{}/beta-links/{}", bid, lid), &req,
+            move |result| {
+                match result {
+                    Ok(_) => {
+                        editing_beta_link.set(None);
+                        // Refresh links to get resolved data
+                        api::get::<Vec<BetaReaderLink>>(
+                            &format!("/api/books/{}/beta-links", bid_refresh),
+                            move |links_result| {
+                                if let Ok(links) = links_result {
+                                    beta_links.set(links);
+                                }
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        beta_link_error.set(Some(format!("{}", e)));
                     }
                 }
-                Err(e) => {
-                    beta_link_error.set(Some(format!("{}", e)));
-                }
-            }
-        });
+            },
+        );
     };
 
     let toggle_beta_link_active = move |link_id: String, currently_active: bool| {
         move || {
             let bid = bid_signal.get();
             let lid = link_id.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = UpdateBetaLinkRequest {
-                    reader_name: None,
-                    max_chapter_index: None,
-                    active: Some(!currently_active),
-                    pinned_commit: None,
-                    username: None,
-                };
-                if api::put::<_, serde_json::Value>(
-                    &format!("/api/books/{}/beta-links/{}", bid, lid), &req,
-                ).await.is_ok() {
-                    beta_links.update(|l| {
-                        if let Some(link) = l.iter_mut().find(|x| x.id == lid) {
-                            link.active = !currently_active;
-                        }
-                    });
-                }
-            });
+            let req = UpdateBetaLinkRequest {
+                reader_name: None,
+                max_chapter_index: None,
+                active: Some(!currently_active),
+                pinned_commit: None,
+                username: None,
+            };
+            api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/beta-links/{}", bid, lid), &req,
+                move |result| {
+                    if result.is_ok() {
+                        beta_links.update(|l| {
+                            if let Some(link) = l.iter_mut().find(|x| x.id == lid) {
+                                link.active = !currently_active;
+                            }
+                        });
+                    }
+                },
+            );
         }
     };
 
@@ -3604,18 +3631,19 @@ pub fn book_page(book_id: String) -> NodeHandle {
         move || {
             let bid = bid_signal.get();
             let fid = feedback_id.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if api::put::<_, serde_json::Value>(
-                    &format!("/api/books/{}/feedback/{}/resolve", bid, fid),
-                    &serde_json::json!({}),
-                ).await.is_ok() {
-                    beta_feedback.update(|fb| {
-                        if let Some(f) = fb.iter_mut().find(|x| x.id == fid) {
-                            f.resolved = !f.resolved;
-                        }
-                    });
-                }
-            });
+            api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/feedback/{}/resolve", bid, fid),
+                &serde_json::json!({}),
+                move |result| {
+                    if result.is_ok() {
+                        beta_feedback.update(|fb| {
+                            if let Some(f) = fb.iter_mut().find(|x| x.id == fid) {
+                                f.resolved = !f.resolved;
+                            }
+                        });
+                    }
+                },
+            );
         }
     };
 
@@ -3623,13 +3651,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
         move || {
             let bid = bid_signal.get();
             let fid = feedback_id.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if api::delete_req::<serde_json::Value>(
-                    &format!("/api/books/{}/feedback/{}", bid, fid),
-                ).await.is_ok() {
-                    beta_feedback.update(|fb| fb.retain(|x| x.id != fid));
-                }
-            });
+            api::delete_req::<serde_json::Value>(
+                &format!("/api/books/{}/feedback/{}", bid, fid),
+                move |result| {
+                    if result.is_ok() {
+                        beta_feedback.update(|fb| fb.retain(|x| x.id != fid));
+                    }
+                },
+            );
         }
     };
 
@@ -3646,17 +3675,21 @@ pub fn book_page(book_id: String) -> NodeHandle {
             input.set_value("");
             let bid = bid_signal.get();
             let fid = feedback_id.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = CreateBetaReplyRequest { content };
-                if api::post::<_, serde_json::Value>(
-                    &format!("/api/books/{}/feedback/{}/replies", bid, fid), &req,
-                ).await.is_ok() {
-                    // Refresh feedback
-                    if let Ok(fb) = api::get::<Vec<BetaFeedback>>(&format!("/api/books/{}/feedback", bid)).await {
-                        beta_feedback.set(fb);
+            let req = CreateBetaReplyRequest { content };
+            let bid_refresh = bid.clone();
+            api::post::<_, serde_json::Value>(
+                &format!("/api/books/{}/feedback/{}/replies", bid, fid), &req,
+                move |result| {
+                    if result.is_ok() {
+                        // Refresh feedback
+                        api::get::<Vec<BetaFeedback>>(&format!("/api/books/{}/feedback", bid_refresh), move |fb_result| {
+                            if let Ok(fb) = fb_result {
+                                beta_feedback.set(fb);
+                            }
+                        });
                     }
-                }
-            });
+                },
+            );
         }
     };
 
@@ -3699,17 +3732,18 @@ pub fn book_page(book_id: String) -> NodeHandle {
             let bid = bid_signal.get();
             if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
                 save_status.set("saving");
-                wasm_bindgen_futures::spawn_local(async move {
-                    let req = UpdateChapterRequest { title: None, content: Some(content) };
-                    if api::put::<_, serde_json::Value>(
-                        &format!("/api/books/{}/chapters/{}", bid, current_id),
-                        &req,
-                    ).await.is_ok() {
-                        save_status.set("saved");
-                    } else {
-                        save_status.set("error");
-                    }
-                });
+                let req = UpdateChapterRequest { title: None, content: Some(content) };
+                api::put::<_, serde_json::Value>(
+                    &format!("/api/books/{}/chapters/{}", bid, current_id),
+                    &req,
+                    move |result| {
+                        if result.is_ok() {
+                            save_status.set("saved");
+                        } else {
+                            save_status.set("error");
+                        }
+                    },
+                );
             }
         }
     };
@@ -3743,13 +3777,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
         active_pane.set(BookPane::History);
         store.sidebar_open.set(false);
         let bid = bid_signal.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(commits) = api::get::<Vec<CommitInfo>>(
-                &format!("/api/books/{}/history", bid),
-            ).await {
-                history_commits.set(commits);
-            }
-        });
+        api::get::<Vec<CommitInfo>>(
+            &format!("/api/books/{}/history", bid),
+            move |result| {
+                if let Ok(commits) = result {
+                    history_commits.set(commits);
+                }
+            },
+        );
     };
 
     let open_notes_pane = move || {
@@ -3758,8 +3793,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
         store.sidebar_open.set(false);
         // Fetch notes
         let bid = bid_signal.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(resp) = api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid)).await {
+        api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid), move |result| {
+            if let Ok(resp) = result {
                 store.notes.set(resp.notes);
                 store.note_tree.set(Some(resp.tree));
             }
@@ -3777,19 +3812,22 @@ pub fn book_page(book_id: String) -> NodeHandle {
         show_note_modal.set(false);
         // Switch to Notes pane so the new note is visible
         active_pane.set(BookPane::Notes);
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = CreateNoteRequest {
-                title,
-                parent_id: parent_id.clone(),
-                color: Some(color),
-            };
-            match api::post::<_, Note>(&format!("/api/books/{}/notes", bid), &req).await {
+        let req = CreateNoteRequest {
+            title,
+            parent_id: parent_id.clone(),
+            color: Some(color),
+        };
+        let bid_refresh = bid.clone();
+        api::post::<_, Note>(&format!("/api/books/{}/notes", bid), &req, move |result| {
+            match result {
                 Ok(_note) => {
                     // Refresh tree
-                    if let Ok(resp) = api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid)).await {
-                        store.notes.set(resp.notes);
-                        store.note_tree.set(Some(resp.tree));
-                    }
+                    api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid_refresh), move |resp_result| {
+                        if let Ok(resp) = resp_result {
+                            store.notes.set(resp.notes);
+                            store.note_tree.set(Some(resp.tree));
+                        }
+                    });
                 }
                 Err(e) => eprintln!("Failed to create note: {}", e.message),
             }
@@ -3807,20 +3845,21 @@ pub fn book_page(book_id: String) -> NodeHandle {
             let content = editor_utils::editor_content_json(&note_handle.get()).unwrap_or_default();
 
             note_save_status.set("saving");
-            wasm_bindgen_futures::spawn_local(async move {
-                let req = UpdateNoteRequest {
-                    title: Some(title_val),
-                    content: Some(content),
-                    color: color_val,
-                };
-                match api::put::<_, serde_json::Value>(
-                    &format!("/api/books/{}/notes/{}", bid, nid),
-                    &req,
-                ).await {
-                    Ok(_) => note_save_status.set("saved"),
-                    Err(_) => note_save_status.set("error"),
-                }
-            });
+            let req = UpdateNoteRequest {
+                title: Some(title_val),
+                content: Some(content),
+                color: color_val,
+            };
+            api::put::<_, serde_json::Value>(
+                &format!("/api/books/{}/notes/{}", bid, nid),
+                &req,
+                move |result| {
+                    match result {
+                        Ok(_) => note_save_status.set("saved"),
+                        Err(_) => note_save_status.set("error"),
+                    }
+                },
+            );
         }
     };
 
@@ -3867,8 +3906,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
         active_pane.set(BookPane::Notes);
         // Refresh notes list
         let bid = bid_signal.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            if let Ok(resp) = api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid)).await {
+        api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid), move |result| {
+            if let Ok(resp) = result {
                 store.notes.set(resp.notes);
                 store.note_tree.set(Some(resp.tree));
             }
@@ -4670,15 +4709,16 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                         move || {
                                             let offset = history_commits.get().len();
                                             let bid = bid.clone();
-                                            wasm_bindgen_futures::spawn_local(async move {
-                                                if let Ok(more) = api::get::<Vec<CommitInfo>>(
-                                                    &format!("/api/books/{}/history?offset={}", bid, offset),
-                                                ).await {
-                                                    if !more.is_empty() {
-                                                        history_commits.update(|list| list.extend(more));
+                                            api::get::<Vec<CommitInfo>>(
+                                                &format!("/api/books/{}/history?offset={}", bid, offset),
+                                                move |result| {
+                                                    if let Ok(more) = result {
+                                                        if !more.is_empty() {
+                                                            history_commits.update(|list| list.extend(more));
+                                                        }
                                                     }
-                                                }
-                                            });
+                                                },
+                                            );
                                         }
                                     },
                                     "Load more"
@@ -4710,29 +4750,39 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             if let Some(oid) = show_restore_confirm.get() {
                                 let bid = bid_signal.get();
                                 show_restore_confirm.set(None);
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    if api::post::<_, serde_json::Value>(
-                                        &format!("/api/books/{}/history/{}/restore", bid, oid),
-                                        &serde_json::json!({}),
-                                    ).await.is_ok() {
-                                        // Refresh book data
-                                        if let Ok(book) = api::get::<Book>(&format!("/api/books/{}", bid)).await {
-                                            store.current_book.set(Some(book));
+                                let bid_book = bid.clone();
+                                let bid_ch = bid.clone();
+                                let bid_hist = bid.clone();
+                                api::post::<_, serde_json::Value>(
+                                    &format!("/api/books/{}/history/{}/restore", bid, oid),
+                                    &serde_json::json!({}),
+                                    move |result| {
+                                        if result.is_ok() {
+                                            // Refresh book data
+                                            api::get::<Book>(&format!("/api/books/{}", bid_book), move |book_result| {
+                                                if let Ok(book) = book_result {
+                                                    store.current_book.set(Some(book));
+                                                }
+                                                api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid_ch), move |ch_result| {
+                                                    if let Ok(chapters) = ch_result {
+                                                        store.chapters.set(chapters);
+                                                    }
+                                                    // Refresh history
+                                                    api::get::<Vec<CommitInfo>>(&format!("/api/books/{}/history", bid_hist), move |commits_result| {
+                                                        if let Ok(commits) = commits_result {
+                                                            history_commits.set(commits);
+                                                        }
+                                                        history_preview_commit.set(None);
+                                                        history_preview_chapters.set(Vec::new());
+                                                        history_preview_content.set(None);
+                                                        history_diff.set(None);
+                                                        active_pane.set(BookPane::Chapters);
+                                                    });
+                                                });
+                                            });
                                         }
-                                        if let Ok(chapters) = api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid)).await {
-                                            store.chapters.set(chapters);
-                                        }
-                                        // Refresh history
-                                        if let Ok(commits) = api::get::<Vec<CommitInfo>>(&format!("/api/books/{}/history", bid)).await {
-                                            history_commits.set(commits);
-                                        }
-                                        history_preview_commit.set(None);
-                                        history_preview_chapters.set(Vec::new());
-                                        history_preview_content.set(None);
-                                        history_diff.set(None);
-                                        active_pane.set(BookPane::Chapters);
-                                    }
-                                });
+                                    },
+                                );
                             }
                         },
                         "Restore"

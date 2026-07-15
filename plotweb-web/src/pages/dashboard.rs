@@ -240,18 +240,19 @@ pub fn dashboard_page() -> NodeHandle {
     let new_desc = Signal::new(String::new());
 
     // Fetch books on mount
-    wasm_bindgen_futures::spawn_local(async move {
-        if let Ok(books) = api::get::<Vec<Book>>("/api/books").await {
+    api::get::<Vec<Book>>("/api/books", move |books_result| {
+        if let Ok(books) = books_result {
             store.books.set(books);
         }
-        if let Ok(shared) = api::get::<Vec<SharedBook>>("/api/shared-books").await {
-            store.shared_books.set(shared);
-        }
+        api::get::<Vec<SharedBook>>("/api/shared-books", move |shared_result| {
+            if let Ok(shared) = shared_result {
+                store.shared_books.set(shared);
+            }
+        });
     });
 
     let logout = move || {
-        wasm_bindgen_futures::spawn_local(async move {
-            api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({})).await.ok();
+        api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({}), move |_result| {
             store.current_user.set(None);
             router::navigate(Route::Login);
         });
@@ -274,12 +275,12 @@ pub fn dashboard_page() -> NodeHandle {
         }
         let desc = new_desc.get();
         show_modal.set(false);
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = CreateBookRequest {
-                title,
-                description: desc,
-            };
-            if let Ok(book) = api::post::<_, Book>("/api/books", &req).await {
+        let req = CreateBookRequest {
+            title,
+            description: desc,
+        };
+        api::post::<_, Book>("/api/books", &req, move |result| {
+            if let Ok(book) = result {
                 store.books.update(|books| books.insert(0, book));
             }
         });
@@ -300,8 +301,8 @@ pub fn dashboard_page() -> NodeHandle {
     let delete_book = move |id: String| {
         move || {
             let id = id.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if api::delete_req::<serde_json::Value>(&format!("/api/books/{}", id)).await.is_ok() {
+            api::delete_req::<serde_json::Value>(&format!("/api/books/{}", id), move |result| {
+                if result.is_ok() {
                     store.books.update(|books| books.retain(|b| b.id != id));
                 }
             });

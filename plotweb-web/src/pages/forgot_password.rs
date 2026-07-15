@@ -28,9 +28,9 @@ pub fn forgot_password_page() -> NodeHandle {
         }
         submitting.set(true);
         error.set(None);
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = ForgotPasswordRequest { email: e };
-            match api::post::<_, serde_json::Value>("/api/auth/forgot-password", &req).await {
+        let req = ForgotPasswordRequest { email: e };
+        api::post::<_, serde_json::Value>("/api/auth/forgot-password", &req, move |result| {
+            match result {
                 Ok(_) => sent.set(true),
                 Err(e) => error.set(Some(e.message)),
             }

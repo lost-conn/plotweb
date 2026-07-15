@@ -28,13 +28,13 @@ pub fn login_page() -> NodeHandle {
         }
         submitting.set(true);
         error.set(None);
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = LoginRequest {
-                username: u,
-                password: p,
-                remember_me: remember_me.get(),
-            };
-            match api::post::<_, plotweb_common::User>("/api/auth/login", &req).await {
+        let req = LoginRequest {
+            username: u,
+            password: p,
+            remember_me: remember_me.get(),
+        };
+        api::post::<_, plotweb_common::User>("/api/auth/login", &req, move |result| {
+            match result {
                 Ok(user) => {
                     store.current_user.set(Some(user));
                     router::navigate(Route::Dashboard);

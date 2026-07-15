@@ -37,12 +37,12 @@ pub fn reset_password_page(token: String) -> NodeHandle {
         submitting.set(true);
         error.set(None);
         let token = token.get();
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = ResetPasswordRequest {
-                token,
-                new_password: p,
-            };
-            match api::post::<_, serde_json::Value>("/api/auth/reset-password", &req).await {
+        let req = ResetPasswordRequest {
+            token,
+            new_password: p,
+        };
+        api::post::<_, serde_json::Value>("/api/auth/reset-password", &req, move |result| {
+            match result {
                 Ok(_) => done.set(true),
                 Err(e) => error.set(Some(e.message)),
             }

@@ -1,8 +1,18 @@
+//! Cross-platform HTTP API helpers over [`rinch_http`].
+//!
+//! The request/response calls (`get`/`post`/`put`/`delete_req`) are **callback-
+//! based** and work on both web (wasm, `web_sys::fetch`) and native (`ureq`) —
+//! `rinch_http` invokes the callback on the UI thread, so the closure can update
+//! rinch Signals directly. JSON (de)serialization and error extraction stay here.
+//!
+//! File upload/download (`upload_file`/`upload_image`/`download_file`) are still
+//! web-only (they use `web_sys` File/Blob/anchor); native file I/O is a later
+//! phase. They are `#[cfg(target_arch = "wasm32")]`.
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
-use web_sys::{Request, RequestCredentials, RequestInit, Response};
+
+use rinch_http::{fetch, HttpError, Request, Response};
 
 #[derive(Debug)]
 pub struct ApiError {
@@ -15,35 +25,31 @@ impl std::fmt::Display for ApiError {
     }
 }
 
-async fn do_fetch(url: &str, init: &RequestInit) -> Result<Response, ApiError> {
-    let request =
-        Request::new_with_str_and_init(url, init).map_err(|e| ApiError { message: format!("{:?}", e) })?;
-    request
-        .headers()
-        .set("Content-Type", "application/json")
-        .ok();
+// The result callback bound mirrors `rinch_http::HttpCallback`: it must be `Send`
+// on native (the result crosses from the request thread to the UI thread) and
+// need not be on wasm (single-threaded; JS captures aren't `Send`).
+#[cfg(not(target_arch = "wasm32"))]
+pub trait ApiCallback<T>: FnOnce(Result<T, ApiError>) + Send + 'static {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T, F> ApiCallback<T> for F where F: FnOnce(Result<T, ApiError>) + Send + 'static {}
 
-    let window = web_sys::window().unwrap();
-    let resp_value = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
+#[cfg(target_arch = "wasm32")]
+pub trait ApiCallback<T>: FnOnce(Result<T, ApiError>) + 'static {}
+#[cfg(target_arch = "wasm32")]
+impl<T, F> ApiCallback<T> for F where F: FnOnce(Result<T, ApiError>) + 'static {}
 
-    let resp: Response = resp_value.dyn_into().map_err(|_| ApiError {
-        message: "response is not a Response".into(),
+/// Turn a raw [`rinch_http`] result into the deserialized `T` or an [`ApiError`].
+///
+/// Runs inside the fetch callback (on the UI thread). A 4xx/5xx response carries
+/// its body, so we surface the server's `{ "error": ... }` message when present.
+fn parse<T: DeserializeOwned>(result: Result<Response, HttpError>) -> Result<T, ApiError> {
+    let resp = result.map_err(|e| ApiError {
+        message: e.to_string(),
     })?;
-
-    Ok(resp)
-}
-
-async fn parse_response<T: DeserializeOwned>(resp: Response) -> Result<T, ApiError> {
-    let status = resp.status();
-    let text = JsFuture::from(resp.text().unwrap())
-        .await
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
-    let text = text.as_string().unwrap_or_default();
+    let status = resp.status;
+    let text = resp.text();
 
     if status >= 400 {
-        // Try to extract error message from JSON
         if let Ok(err) = serde_json::from_str::<plotweb_common::ApiError>(&text) {
             return Err(ApiError { message: err.error });
         }
@@ -53,160 +59,229 @@ async fn parse_response<T: DeserializeOwned>(resp: Response) -> Result<T, ApiErr
     }
 
     serde_json::from_str(&text).map_err(|e| ApiError {
-        message: format!("JSON parse error: {} (body: {})", e, text.get(..200).unwrap_or(&text)),
+        message: format!(
+            "JSON parse error: {} (body: {})",
+            e,
+            text.get(..200).unwrap_or(&text)
+        ),
     })
 }
 
-fn make_init(method: &str) -> RequestInit {
-    let init = RequestInit::new();
-    init.set_method(method);
-    init.set_credentials(RequestCredentials::SameOrigin);
-    init
+/// `GET url`, deserializing the JSON body into `T`.
+pub fn get<T: DeserializeOwned + 'static>(url: &str, on_done: impl ApiCallback<T>) {
+    let req = Request::get(url).header("Content-Type", "application/json");
+    fetch(req, move |res| on_done(parse::<T>(res)));
 }
 
-pub async fn get<T: DeserializeOwned>(url: &str) -> Result<T, ApiError> {
-    let init = make_init("GET");
-    let resp = do_fetch(url, &init).await?;
-    parse_response(resp).await
+/// `POST url` with a JSON `body`, deserializing the JSON response into `T`.
+pub fn post<B: Serialize, T: DeserializeOwned + 'static>(
+    url: &str,
+    body: &B,
+    on_done: impl ApiCallback<T>,
+) {
+    let json = serde_json::to_string(body).unwrap_or_default();
+    let req = Request::post(url)
+        .header("Content-Type", "application/json")
+        .body_str(&json);
+    fetch(req, move |res| on_done(parse::<T>(res)));
 }
 
-pub async fn post<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Result<T, ApiError> {
-    let init = make_init("POST");
-    let json = serde_json::to_string(body).unwrap();
-    init.set_body(&JsValue::from_str(&json));
-    let resp = do_fetch(url, &init).await?;
-    parse_response(resp).await
+/// `PUT url` with a JSON `body`, deserializing the JSON response into `T`.
+pub fn put<B: Serialize, T: DeserializeOwned + 'static>(
+    url: &str,
+    body: &B,
+    on_done: impl ApiCallback<T>,
+) {
+    let json = serde_json::to_string(body).unwrap_or_default();
+    let req = Request::put(url)
+        .header("Content-Type", "application/json")
+        .body_str(&json);
+    fetch(req, move |res| on_done(parse::<T>(res)));
 }
 
-pub async fn put<B: Serialize, T: DeserializeOwned>(url: &str, body: &B) -> Result<T, ApiError> {
-    let init = make_init("PUT");
-    let json = serde_json::to_string(body).unwrap();
-    init.set_body(&JsValue::from_str(&json));
-    let resp = do_fetch(url, &init).await?;
-    parse_response(resp).await
+/// `DELETE url`, deserializing the JSON response into `T`.
+pub fn delete_req<T: DeserializeOwned + 'static>(url: &str, on_done: impl ApiCallback<T>) {
+    let req = Request::delete(url).header("Content-Type", "application/json");
+    fetch(req, move |res| on_done(parse::<T>(res)));
 }
 
-pub async fn delete_req<T: DeserializeOwned>(url: &str) -> Result<T, ApiError> {
-    let init = make_init("DELETE");
-    let resp = do_fetch(url, &init).await?;
-    parse_response(resp).await
-}
+// ── Web-only file transfer ───────────────────────────────────────────────────
+// These use web_sys File/Blob/anchor. Native file dialogs / filesystem I/O are a
+// later phase; the call sites are web-only UI flows for now.
 
-/// Trigger a browser download of a binary GET endpoint.
-///
-/// Fetches `url` with session credentials, then saves the response body via a
-/// temporary object URL + synthetic `<a download>` click — the download mirror
-/// of [`upload_file`]. The saved filename comes from the response's
-/// `Content-Disposition`, falling back to `fallback_name`.
-pub async fn download_file(url: &str, fallback_name: &str) -> Result<(), ApiError> {
-    let init = make_init("GET");
-    let resp = do_fetch(url, &init).await?;
+#[cfg(target_arch = "wasm32")]
+mod web_files {
+    use super::ApiError;
+    use serde::de::DeserializeOwned;
+    use wasm_bindgen::JsCast;
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Request, RequestCredentials, RequestInit, Response};
 
-    let status = resp.status();
-    if status >= 400 {
-        // Error responses are JSON; surface the message if we can.
+    async fn parse_response<T: DeserializeOwned>(resp: Response) -> Result<T, ApiError> {
+        let status = resp.status();
         let text = JsFuture::from(resp.text().unwrap())
             .await
-            .ok()
-            .and_then(|t| t.as_string())
-            .unwrap_or_default();
-        if let Ok(err) = serde_json::from_str::<plotweb_common::ApiError>(&text) {
-            return Err(ApiError { message: err.error });
+            .map_err(|e| ApiError {
+                message: format!("{:?}", e),
+            })?;
+        let text = text.as_string().unwrap_or_default();
+
+        if status >= 400 {
+            if let Ok(err) = serde_json::from_str::<plotweb_common::ApiError>(&text) {
+                return Err(ApiError { message: err.error });
+            }
+            return Err(ApiError {
+                message: format!("HTTP {}: {}", status, text),
+            });
         }
-        return Err(ApiError {
-            message: format!("HTTP {}", status),
-        });
+
+        serde_json::from_str(&text).map_err(|e| ApiError {
+            message: format!(
+                "JSON parse error: {} (body: {})",
+                e,
+                text.get(..200).unwrap_or(&text)
+            ),
+        })
     }
 
-    let filename = resp
-        .headers()
-        .get("Content-Disposition")
-        .ok()
-        .flatten()
-        .and_then(|cd| content_disposition_filename(&cd))
-        .unwrap_or_else(|| fallback_name.to_string());
+    /// Trigger a browser download of a binary GET endpoint (session credentials),
+    /// saving via a temporary object URL + synthetic `<a download>` click. The
+    /// filename comes from `Content-Disposition`, falling back to `fallback_name`.
+    pub async fn download_file(url: &str, fallback_name: &str) -> Result<(), ApiError> {
+        let init = RequestInit::new();
+        init.set_method("GET");
+        init.set_credentials(RequestCredentials::SameOrigin);
+        let request = Request::new_with_str_and_init(url, &init).map_err(|e| ApiError {
+            message: format!("{:?}", e),
+        })?;
 
-    let blob_promise = resp
-        .blob()
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
-    let blob_value = JsFuture::from(blob_promise)
-        .await
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
-    let blob: web_sys::Blob = blob_value.dyn_into().map_err(|_| ApiError {
-        message: "response body is not a Blob".into(),
-    })?;
+        let window = web_sys::window().unwrap();
+        let resp_value = JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(|e| ApiError {
+                message: format!("{:?}", e),
+            })?;
+        let resp: Response = resp_value.dyn_into().map_err(|_| ApiError {
+            message: "response is not a Response".into(),
+        })?;
 
-    let object_url = web_sys::Url::create_object_url_with_blob(&blob)
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
+        let status = resp.status();
+        if status >= 400 {
+            let text = JsFuture::from(resp.text().unwrap())
+                .await
+                .ok()
+                .and_then(|t| t.as_string())
+                .unwrap_or_default();
+            if let Ok(err) = serde_json::from_str::<plotweb_common::ApiError>(&text) {
+                return Err(ApiError { message: err.error });
+            }
+            return Err(ApiError {
+                message: format!("HTTP {}", status),
+            });
+        }
 
-    let document = web_sys::window().unwrap().document().unwrap();
-    let anchor: web_sys::HtmlAnchorElement = document
-        .create_element("a")
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?
-        .dyn_into()
-        .map_err(|_| ApiError { message: "failed to create anchor".into() })?;
-    anchor.set_href(&object_url);
-    anchor.set_download(&filename);
-    anchor.click();
-    web_sys::Url::revoke_object_url(&object_url).ok();
+        let filename = resp
+            .headers()
+            .get("Content-Disposition")
+            .ok()
+            .flatten()
+            .and_then(|cd| content_disposition_filename(&cd))
+            .unwrap_or_else(|| fallback_name.to_string());
 
-    Ok(())
-}
+        let blob_promise = resp.blob().map_err(|e| ApiError {
+            message: format!("{:?}", e),
+        })?;
+        let blob_value = JsFuture::from(blob_promise).await.map_err(|e| ApiError {
+            message: format!("{:?}", e),
+        })?;
+        let blob: web_sys::Blob = blob_value.dyn_into().map_err(|_| ApiError {
+            message: "response body is not a Blob".into(),
+        })?;
 
-/// Extract the `filename="..."` value from a Content-Disposition header.
-fn content_disposition_filename(cd: &str) -> Option<String> {
-    let start = cd.find("filename=")? + "filename=".len();
-    let rest = cd[start..].trim();
-    let name = rest
-        .split(';')
-        .next()
-        .unwrap_or(rest)
-        .trim()
-        .trim_matches('"');
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
+        let object_url =
+            web_sys::Url::create_object_url_with_blob(&blob).map_err(|e| ApiError {
+                message: format!("{:?}", e),
+            })?;
+
+        let document = web_sys::window().unwrap().document().unwrap();
+        let anchor: web_sys::HtmlAnchorElement = document
+            .create_element("a")
+            .map_err(|e| ApiError {
+                message: format!("{:?}", e),
+            })?
+            .dyn_into()
+            .map_err(|_| ApiError {
+                message: "failed to create anchor".into(),
+            })?;
+        anchor.set_href(&object_url);
+        anchor.set_download(&filename);
+        anchor.click();
+        web_sys::Url::revoke_object_url(&object_url).ok();
+
+        Ok(())
+    }
+
+    fn content_disposition_filename(cd: &str) -> Option<String> {
+        let start = cd.find("filename=")? + "filename=".len();
+        let rest = cd[start..].trim();
+        let name = rest
+            .split(';')
+            .next()
+            .unwrap_or(rest)
+            .trim()
+            .trim_matches('"');
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        }
+    }
+
+    /// Upload an image for a book via multipart form data.
+    pub async fn upload_image(
+        book_id: &str,
+        file: &web_sys::File,
+    ) -> Result<plotweb_common::ImageUploadResponse, ApiError> {
+        upload_file(&format!("/api/books/{}/images", book_id), file).await
+    }
+
+    /// Upload a file via multipart form data. Does NOT set Content-Type (the
+    /// browser sets it with the boundary automatically for FormData).
+    pub async fn upload_file<T: DeserializeOwned>(
+        url: &str,
+        file: &web_sys::File,
+    ) -> Result<T, ApiError> {
+        let form_data = web_sys::FormData::new().map_err(|e| ApiError {
+            message: format!("{:?}", e),
+        })?;
+        form_data
+            .append_with_blob_and_filename("file", file, &file.name())
+            .map_err(|e| ApiError {
+                message: format!("{:?}", e),
+            })?;
+
+        let init = RequestInit::new();
+        init.set_method("POST");
+        init.set_credentials(RequestCredentials::SameOrigin);
+        init.set_body(&form_data);
+
+        let request = Request::new_with_str_and_init(url, &init).map_err(|e| ApiError {
+            message: format!("{:?}", e),
+        })?;
+
+        let window = web_sys::window().unwrap();
+        let resp_value = JsFuture::from(window.fetch_with_request(&request))
+            .await
+            .map_err(|e| ApiError {
+                message: format!("{:?}", e),
+            })?;
+        let resp: Response = resp_value.dyn_into().map_err(|_| ApiError {
+            message: "response is not a Response".into(),
+        })?;
+
+        parse_response(resp).await
     }
 }
 
-/// Upload an image for a book via multipart form data.
-pub async fn upload_image(
-    book_id: &str,
-    file: &web_sys::File,
-) -> Result<plotweb_common::ImageUploadResponse, ApiError> {
-    upload_file(&format!("/api/books/{}/images", book_id), file).await
-}
-
-/// Upload a file via multipart form data. Does NOT set Content-Type header
-/// (the browser sets it with the boundary automatically for FormData).
-pub async fn upload_file<T: DeserializeOwned>(
-    url: &str,
-    file: &web_sys::File,
-) -> Result<T, ApiError> {
-    let form_data = web_sys::FormData::new()
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
-    form_data
-        .append_with_blob_and_filename("file", file, &file.name())
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
-
-    let init = RequestInit::new();
-    init.set_method("POST");
-    init.set_credentials(RequestCredentials::SameOrigin);
-    init.set_body(&form_data);
-
-    let request = Request::new_with_str_and_init(url, &init)
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
-    // Do NOT set Content-Type — browser will set multipart/form-data with boundary
-
-    let window = web_sys::window().unwrap();
-    let resp_value = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|e| ApiError { message: format!("{:?}", e) })?;
-
-    let resp: Response = resp_value.dyn_into().map_err(|_| ApiError {
-        message: "response is not a Response".into(),
-    })?;
-
-    parse_response(resp).await
-}
+#[cfg(target_arch = "wasm32")]
+pub use web_files::{download_file, upload_file, upload_image};

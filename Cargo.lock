@@ -2195,7 +2195,7 @@ dependencies = [
 [[package]]
 name = "rinch-editor-core"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=d8295a47bda417906b5422446748c0f755f09e1e#d8295a47bda417906b5422446748c0f755f09e1e"
+source = "git+https://github.com/joeleaver/rinch?rev=797bc907f0c83e8291500be4569fded82d3fa449#797bc907f0c83e8291500be4569fded82d3fa449"
 dependencies = [
  "pulldown-cmark 0.12.2",
  "regex",

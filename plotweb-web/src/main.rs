@@ -46,8 +46,8 @@ fn app() -> NodeHandle {
     } else {
         let requested = initial_route;
         // Check session on start
-        wasm_bindgen_futures::spawn_local(async move {
-            match api::get::<plotweb_common::User>("/api/auth/me").await {
+        api::get::<plotweb_common::User>("/api/auth/me", move |result| {
+            match result {
                 Ok(user) => {
                     store.current_user.set(Some(user));
                     let route = match &requested {

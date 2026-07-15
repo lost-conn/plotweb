@@ -9,7 +9,6 @@
 //! — it never runs Automerge; the clients merge. Content is flat (collab scope).
 
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::spawn_local;
 
 use rinch::prelude::*;
 use rinch_core::Signal;
@@ -69,8 +68,8 @@ pub fn sync_spike_page() -> NodeHandle {
     let b_pull = b.clone();
     let pull = move || {
         let b = b_pull.clone();
-        spawn_local(async move {
-            match api::get::<SyncState>(&format!("/api/sync/{DOC_ID}")).await {
+        api::get::<SyncState>(&format!("/api/sync/{DOC_ID}"), move |result| {
+            match result {
                 Ok(state) => {
                     let Some(snap_hex) = state.snapshot else {
                         status.set("No snapshot on the server yet.".to_string());
@@ -128,23 +127,19 @@ pub fn sync_spike_page() -> NodeHandle {
     // relay every subsequent local delta to the server over HTTP.
     match a.start_collaboration_host(move |delta| {
         let hex = to_hex(&delta);
-        spawn_local(async move {
-            let _ = api::post::<_, serde_json::Value>(
-                &format!("/api/sync/{DOC_ID}/delta"),
-                &HexBody { hex },
-            )
-            .await;
-        });
+        api::post::<_, serde_json::Value>(
+            &format!("/api/sync/{DOC_ID}/delta"),
+            &HexBody { hex },
+            move |_result| {},
+        );
     }) {
         Ok(snapshot) => {
             let hex = to_hex(&snapshot);
-            spawn_local(async move {
-                let _ = api::post::<_, serde_json::Value>(
-                    &format!("/api/sync/{DOC_ID}/snapshot"),
-                    &HexBody { hex },
-                )
-                .await;
-            });
+            api::post::<_, serde_json::Value>(
+                &format!("/api/sync/{DOC_ID}/snapshot"),
+                &HexBody { hex },
+                move |_result| {},
+            );
         }
         Err(e) => status.set(format!("Host projection failed (flat-scope only): {e:?}")),
     }

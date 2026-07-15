@@ -38,13 +38,13 @@ pub fn register_page() -> NodeHandle {
 
         submitting.set(true);
         error.set(None);
-        wasm_bindgen_futures::spawn_local(async move {
-            let req = RegisterRequest {
-                username: u,
-                email: e,
-                password: p,
-            };
-            match api::post::<_, plotweb_common::User>("/api/auth/register", &req).await {
+        let req = RegisterRequest {
+            username: u,
+            email: e,
+            password: p,
+        };
+        api::post::<_, plotweb_common::User>("/api/auth/register", &req, move |result| {
+            match result {
                 Ok(user) => {
                     store.current_user.set(Some(user));
                     router::navigate(Route::Dashboard);

@@ -27,8 +27,8 @@ pub fn fetch_font_catalog() {
     if !catalog.get().is_empty() {
         return;
     }
-    wasm_bindgen_futures::spawn_local(async move {
-        if let Ok(fonts) = crate::api::get::<Vec<FontInfo>>("/api/fonts").await {
+    crate::api::get::<Vec<FontInfo>>("/api/fonts", move |result| {
+        if let Ok(fonts) = result {
             catalog.set(fonts);
         }
     });
