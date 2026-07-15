@@ -89,7 +89,7 @@ pub fn register_page() -> NodeHandle {
                     Alert {
                         color: "red",
                         title: "Error",
-                        {error.get().unwrap_or_default()}
+                        {move || error.get().unwrap_or_default()}
                     }
                     Space { h: "md" }
                 }
