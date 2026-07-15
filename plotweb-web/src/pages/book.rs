@@ -1976,8 +1976,8 @@ fn render_history_chapter_preview(
 /// All parameters are Copy or Clone so this can be called from rsx! closures without ownership issues.
 fn do_switch_chapter(
     active_pane: Signal<BookPane>,
-    auto_save_timer_id: Signal<i32>,
-    chapter_title_save_timer_id: Signal<i32>,
+    auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
+    chapter_title_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
     save_status: Signal<&'static str>,
     editor_word_count: Signal<u64>,
     loaded_chapter_id: Signal<Option<String>>,
@@ -1998,8 +1998,8 @@ thread_local! {
 
 fn do_switch_chapter_inner(
     active_pane: Signal<BookPane>,
-    auto_save_timer_id: Signal<i32>,
-    chapter_title_save_timer_id: Signal<i32>,
+    auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
+    chapter_title_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
     save_status: Signal<&'static str>,
     editor_word_count: Signal<u64>,
     loaded_chapter_id: Signal<Option<String>>,
@@ -2011,24 +2011,18 @@ fn do_switch_chapter_inner(
     pending_scroll: Option<Signal<Option<(String, String)>>>,
 ) {
     // Clear any pending auto-save timer
-    let prev = auto_save_timer_id.get();
-    if prev != 0 {
-        if let Some(w) = crate::platform::window() {
-            w.clear_timeout_with_handle(prev);
-        }
-        auto_save_timer_id.set(0);
+    if let Some(h) = auto_save_timer_id.get() {
+        rinch_core::clear_timeout(h);
+        auto_save_timer_id.set(None);
     }
 
     // Flush, then clear, any pending chapter-title save. The debounced title PUT
     // (save_chapter_title_inline) hasn't fired yet; cancelling its timer without
     // saving would drop a title edit made just before switching. Persist the
     // leaving chapter's current title now via its own PUT (mirroring the debounce).
-    let prev_title = chapter_title_save_timer_id.get();
-    if prev_title != 0 {
-        if let Some(w) = crate::platform::window() {
-            w.clear_timeout_with_handle(prev_title);
-        }
-        chapter_title_save_timer_id.set(0);
+    if let Some(h) = chapter_title_save_timer_id.get() {
+        rinch_core::clear_timeout(h);
+        chapter_title_save_timer_id.set(None);
         if let BookPane::Editor(leaving_cid) = active_pane.get() {
             let title = chapter_title.get();
             store.chapters.update(|chapters| {
@@ -2651,7 +2645,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // persist when this matches the target chapter, so a not-yet-loaded editor
     // (still holding the previous chapter) can't overwrite the wrong chapter.
     let loaded_chapter_id: Signal<Option<String>> = Signal::new(None);
-    let auto_save_timer_id = Signal::new(0_i32);
+    let auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>> = Signal::new(None);
 
     // Model-first prose editors (rinch-editor-view), one per prose surface. Stored in
     // Signals so the (Copy) save/switch closures can grab a clone via `.get()`.
@@ -2671,7 +2665,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     PAGE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     let page_gen = PAGE_GEN.with(|g| g.get());
     let font_settings = Signal::new(FontSettings::default());
-    let font_save_timer_id = Signal::new(0_i32);
+    let font_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>> = Signal::new(None);
     let listeners_attached = Signal::new(false);
 
     // Beta reader signals
@@ -2720,7 +2714,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let new_note_parent_id: Signal<Option<String>> = Signal::new(None);
     let new_note_color: Signal<String> = Signal::new("teal".to_string());
     let note_save_status: Signal<&str> = Signal::new("saved");
-    let note_save_timer_id: Signal<i32> = Signal::new(0);
+    let note_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>> = Signal::new(None);
     let note_editor_title: Signal<String> = Signal::new(String::new());
     let note_editor_color: Signal<Option<String>> = Signal::new(None);
     let dragging_note_id: Signal<Option<String>> = Signal::new(None);
@@ -2751,7 +2745,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let rename_chapter_title: Signal<String> = Signal::new(String::new());
 
     // Inline chapter title save timer
-    let chapter_title_save_timer_id: Signal<i32> = Signal::new(0);
+    let chapter_title_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>> = Signal::new(None);
 
     // Trigger font catalog fetch
     fonts::fetch_font_catalog();
@@ -2855,26 +2849,23 @@ pub fn book_page(book_id: String) -> NodeHandle {
         );
     };
 
-    // Schedule a debounced chapter autosave (3s). Called on editor keystrokes and
+    // Schedule a debounced chapter autosave (3s). Called on editor edits and
     // after toolbar formatting actions (via the toolbar's `on_edit`). The model-first
-    // editor emits no DOM `input` event (no `contenteditable`), so typing is detected
-    // via a document-level `keyup` listener below.
+    // editor emits no DOM `input` event (no `contenteditable`), so edits are detected
+    // via `EditorHandle::on_change` below.
     let schedule_chapter_autosave = move || {
         if !matches!(active_pane.get(), BookPane::Editor(_)) {
             return;
         }
         save_status.set("unsaved");
-        let prev = auto_save_timer_id.get();
-        if prev != 0 {
-            if let Some(w) = crate::platform::window() {
-                w.clear_timeout_with_handle(prev);
-            }
+        if let Some(h) = auto_save_timer_id.get() {
+            rinch_core::clear_timeout(h);
         }
         let captured_cid = match active_pane.get() {
             BookPane::Editor(cid) => cid,
             _ => return,
         };
-        let closure = wasm_bindgen::closure::Closure::once(move || {
+        auto_save_timer_id.set(Some(rinch_core::set_timeout(3000, move || {
             if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
             // Recompute the word count from the model (debounced, not per-keystroke).
             editor_word_count.set(editor_utils::editor_word_count(&chapter_handle.get()));
@@ -2883,17 +2874,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     save_content(captured_cid.clone());
                 }
             }
-        });
-        let id = crate::platform::window()
-            .and_then(|w| {
-                w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    closure.as_ref().unchecked_ref(),
-                    3000,
-                ).ok()
-            })
-            .unwrap_or(0);
-        closure.forget();
-        auto_save_timer_id.set(id);
+        })));
     };
 
     // ── Set up Ctrl+S and auto-save (once, on mount) ────────────
@@ -2909,19 +2890,19 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }) as Box<dyn FnMut(_)>);
         window.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
         keydown.forget();
-
-        // Auto-save on typing: the editor consumes keydown at capture phase, but keyup
-        // still bubbles to the document. Gate on the chapter editor being active.
-        let keyup = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::KeyboardEvent| {
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
-            if matches!(active_pane.get(), BookPane::Editor(_)) {
-                schedule_chapter_autosave();
-            }
-        }) as Box<dyn FnMut(_)>);
-        let doc = window.document().unwrap();
-        doc.add_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref()).ok();
-        keyup.forget();
     }
+
+    // Auto-save on edit. Cross-platform: the editor notifies us after any local edit
+    // (typing/paste/IME/commands), and deliberately not for selection-only changes or
+    // for `load_doc`, so opening a chapter can't re-trigger a save. Registered outside
+    // the `window` guard above so it runs on native too. Gate on the chapter editor
+    // being active — the note editor has its own hook.
+    chapter_handle.get().on_change(move || {
+        if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+        if matches!(active_pane.get(), BookPane::Editor(_)) {
+            schedule_chapter_autosave();
+        }
+    });
 
     // ── Chapter actions ─────────────────────────────────────────
     let add_chapter = move || {
@@ -3013,11 +2994,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // ── Inline chapter title save (debounced) ─────────────────────
     let save_chapter_title_inline = move |new_title: String| {
         chapter_title.set(new_title.clone());
-        let prev = chapter_title_save_timer_id.get();
-        if prev != 0 {
-            if let Some(w) = crate::platform::window() {
-                w.clear_timeout_with_handle(prev);
-            }
+        if let Some(h) = chapter_title_save_timer_id.get() {
+            rinch_core::clear_timeout(h);
         }
         // Capture context now, validate when timer fires
         let captured_bid = bid_signal.get();
@@ -3026,7 +3004,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         } else {
             return;
         };
-        let save_closure = wasm_bindgen::closure::Closure::once(move || {
+        chapter_title_save_timer_id.set(Some(rinch_core::set_timeout(1000, move || {
             // Bail if this page instance is stale (user navigated away and back)
             if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
             if let BookPane::Editor(ref current_cid) = active_pane.get() {
@@ -3051,17 +3029,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     }
                 },
             );
-        });
-        let id = crate::platform::window()
-            .and_then(|w| {
-                w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    save_closure.as_ref().unchecked_ref(),
-                    1000,
-                ).ok()
-            })
-            .unwrap_or(0);
-        save_closure.forget();
-        chapter_title_save_timer_id.set(id);
+        })));
     };
 
     let move_chapter = move |chapter_id: String, direction: i32| {
@@ -3188,14 +3156,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             }
                         });
 
-                        let prev = font_save_timer_id.get();
-                        if prev != 0 {
-                            if let Some(w) = crate::platform::window() {
-                                w.clear_timeout_with_handle(prev);
-                            }
+                        if let Some(h) = font_save_timer_id.get() {
+                            rinch_core::clear_timeout(h);
                         }
                         let bid = bid.clone();
-                        let save_closure = wasm_bindgen::closure::Closure::once(move || {
+                        font_save_timer_id.set(Some(rinch_core::set_timeout(500, move || {
                             let req = UpdateBookRequest {
                                 title: None,
                                 description: None,
@@ -3207,17 +3172,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 &req,
                                 move |_result| {},
                             );
-                        });
-                        let id = crate::platform::window()
-                            .and_then(|w| {
-                                w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                                    save_closure.as_ref().unchecked_ref(),
-                                    500,
-                                ).ok()
-                            })
-                            .unwrap_or(0);
-                        save_closure.forget();
-                        font_save_timer_id.set(id);
+                        })));
                         update_preview(&font_settings.get());
                     }
                 };
@@ -3377,14 +3332,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             b.font_settings = Some(fs.clone());
                         }
                     });
-                    let prev = font_save_timer_id.get();
-                    if prev != 0 {
-                        if let Some(w) = crate::platform::window() {
-                            w.clear_timeout_with_handle(prev);
-                        }
+                    if let Some(h) = font_save_timer_id.get() {
+                        rinch_core::clear_timeout(h);
                     }
                     let bid = bid.clone();
-                    let save_closure = wasm_bindgen::closure::Closure::once(move || {
+                    font_save_timer_id.set(Some(rinch_core::set_timeout(500, move || {
                         let req = UpdateBookRequest {
                             title: None,
                             description: None,
@@ -3396,17 +3348,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             &req,
                             move |_result| {},
                         );
-                    });
-                    let id = crate::platform::window()
-                        .and_then(|w| {
-                            w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                                save_closure.as_ref().unchecked_ref(),
-                                500,
-                            ).ok()
-                        })
-                        .unwrap_or(0);
-                    save_closure.forget();
-                    font_save_timer_id.set(id);
+                    })));
                     update_preview(&font_settings.get());
                 }
             };
@@ -3718,12 +3660,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
         if let BookPane::Editor(ref current_id) = active_pane.get() {
             let current_id = current_id.clone();
             // Clear the pending debounce timer so it doesn't fire a redundant/stale save.
-            let prev = auto_save_timer_id.get();
-            if prev != 0 {
-                if let Some(w) = crate::platform::window() {
-                    w.clear_timeout_with_handle(prev);
-                }
-                auto_save_timer_id.set(0);
+            if let Some(h) = auto_save_timer_id.get() {
+                rinch_core::clear_timeout(h);
+                auto_save_timer_id.set(None);
             }
             // Don't flush while the chapter is still loading: the model holds the
             // previous chapter's content, so saving it to `current_id` would overwrite
@@ -3867,43 +3806,24 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
     let schedule_note_save = move || {
         note_save_status.set("unsaved");
-        let old_id = note_save_timer_id.get();
-        if old_id != 0 {
-            if let Some(w) = crate::platform::window() {
-                w.clear_timeout_with_handle(old_id);
-            }
+        if let Some(h) = note_save_timer_id.get() {
+            rinch_core::clear_timeout(h);
         }
-        let cb = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+        note_save_timer_id.set(Some(rinch_core::set_timeout(800, move || {
             save_note_content();
-        }) as Box<dyn FnMut()>);
-        let id = crate::platform::window()
-            .and_then(|w| {
-                w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                    cb.as_ref().unchecked_ref(),
-                    800,
-                ).ok()
-            })
-            .unwrap_or(0);
-        cb.forget();
-        note_save_timer_id.set(id);
+        })));
     };
 
-    // Note-editor autosave on typing. Like the chapter editor, the model-first note
-    // editor emits no DOM `input` event, so detect keystrokes via a document-level
-    // `keyup` listener gated on the note editor being active. (Toolbar formatting and
-    // color changes call `schedule_note_save` directly.)
-    {
-        let keyup = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::KeyboardEvent| {
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
-            if matches!(active_pane.get(), BookPane::NoteEditor(_)) {
-                schedule_note_save();
-            }
-        }) as Box<dyn FnMut(_)>);
-        if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
-            doc.add_event_listener_with_callback("keyup", keyup.as_ref().unchecked_ref()).ok();
+    // Note-editor autosave on edit. Like the chapter editor, the model-first note
+    // editor emits no DOM `input` event, so edits are detected via the cross-platform
+    // `EditorHandle::on_change` hook, gated on the note editor being active. (Toolbar
+    // formatting and color changes call `schedule_note_save` directly.)
+    note_handle.get().on_change(move || {
+        if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+        if matches!(active_pane.get(), BookPane::NoteEditor(_)) {
+            schedule_note_save();
         }
-        keyup.forget();
-    }
+    });
 
     let go_back_to_notes = move || {
         // Save before navigating back
