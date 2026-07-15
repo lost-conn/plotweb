@@ -26,11 +26,16 @@ fn app() -> NodeHandle {
     let store = AppStore::new();
     rinch_core::create_store(store);
 
-    // Parse the current URL to determine initial route
+    // Parse the current URL to determine the initial route. On native there is no
+    // browser location (and `web_sys::window()` panics off-wasm), so start at the
+    // session check with a neutral route.
+    #[cfg(target_arch = "wasm32")]
     let initial_route = web_sys::window()
         .and_then(|w| w.location().pathname().ok())
         .map(|p| Route::from_path(&p))
         .unwrap_or(Route::Dashboard);
+    #[cfg(not(target_arch = "wasm32"))]
+    let initial_route = Route::Dashboard;
 
     if matches!(
         initial_route,

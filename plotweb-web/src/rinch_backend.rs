@@ -10,4 +10,4 @@
 pub use rinch_web::{Editor, EditorHandle, create_editor};
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use rinch::{Editor, EditorHandle, create_editor};
+pub use rinch::prelude::{Editor, EditorHandle, create_editor};

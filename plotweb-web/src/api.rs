@@ -31,6 +31,26 @@ impl std::fmt::Display for ApiError {
 pub trait ApiCallback<T>: FnOnce(Result<T, ApiError>) + 'static {}
 impl<T, F> ApiCallback<T> for F where F: FnOnce(Result<T, ApiError>) + 'static {}
 
+/// The origin prepended to API paths.
+///
+/// Empty on web — relative `/api/...` paths resolve against the page origin. On
+/// native there is no page origin and `ureq` needs an absolute URL, so we prepend
+/// the hosted server's address (override with `PLOTWEB_SERVER`).
+#[cfg(target_arch = "wasm32")]
+fn base_url() -> String {
+    String::new()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn base_url() -> String {
+    std::env::var("PLOTWEB_SERVER").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string())
+}
+
+/// Resolve an API path to the full URL for the current platform.
+fn full_url(path: &str) -> String {
+    format!("{}{}", base_url(), path)
+}
+
 /// Turn a raw [`rinch_http`] result into the deserialized `T` or an [`ApiError`].
 ///
 /// Runs inside the fetch callback (on the UI thread). A 4xx/5xx response carries
@@ -62,7 +82,7 @@ fn parse<T: DeserializeOwned>(result: Result<Response, HttpError>) -> Result<T, 
 
 /// `GET url`, deserializing the JSON body into `T`.
 pub fn get<T: DeserializeOwned + 'static>(url: &str, on_done: impl ApiCallback<T>) {
-    let req = Request::get(url).header("Content-Type", "application/json");
+    let req = Request::get(&full_url(url)).header("Content-Type", "application/json");
     fetch(req, move |res| on_done(parse::<T>(res)));
 }
 
@@ -73,7 +93,7 @@ pub fn post<B: Serialize, T: DeserializeOwned + 'static>(
     on_done: impl ApiCallback<T>,
 ) {
     let json = serde_json::to_string(body).unwrap_or_default();
-    let req = Request::post(url)
+    let req = Request::post(&full_url(url))
         .header("Content-Type", "application/json")
         .body_str(&json);
     fetch(req, move |res| on_done(parse::<T>(res)));
@@ -86,7 +106,7 @@ pub fn put<B: Serialize, T: DeserializeOwned + 'static>(
     on_done: impl ApiCallback<T>,
 ) {
     let json = serde_json::to_string(body).unwrap_or_default();
-    let req = Request::put(url)
+    let req = Request::put(&full_url(url))
         .header("Content-Type", "application/json")
         .body_str(&json);
     fetch(req, move |res| on_done(parse::<T>(res)));
@@ -94,7 +114,7 @@ pub fn put<B: Serialize, T: DeserializeOwned + 'static>(
 
 /// `DELETE url`, deserializing the JSON response into `T`.
 pub fn delete_req<T: DeserializeOwned + 'static>(url: &str, on_done: impl ApiCallback<T>) {
-    let req = Request::delete(url).header("Content-Type", "application/json");
+    let req = Request::delete(&full_url(url)).header("Content-Type", "application/json");
     fetch(req, move |res| on_done(parse::<T>(res)));
 }
 
