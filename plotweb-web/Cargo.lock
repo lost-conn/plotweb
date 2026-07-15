@@ -466,6 +466,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
+dependencies = [
+ "percent-encoding",
+ "time",
+ "version_check",
+]
+
+[[package]]
+name = "cookie_store"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b2c103cf610ec6cae3da84a766285b42fd16aad564758459e6ecf128c75206"
+dependencies = [
+ "cookie",
+ "document-features",
+ "idna",
+ "indexmap",
+ "log",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -641,6 +667,12 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
+
+[[package]]
+name = "deranged"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
 name = "derive_more"
@@ -2112,6 +2144,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "num-conv"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
+
+[[package]]
 name = "num-derive"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2713,6 +2751,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "powerfmt"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
+
+[[package]]
 name = "precomputed-hash"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2977,7 +3021,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 [[package]]
 name = "rinch"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "base64",
  "bytemuck",
@@ -3009,7 +3053,7 @@ dependencies = [
 [[package]]
 name = "rinch-components"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "rinch-core",
  "rinch-macros",
@@ -3020,7 +3064,7 @@ dependencies = [
 [[package]]
 name = "rinch-core"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "thiserror 1.0.69",
  "tracing",
@@ -3029,7 +3073,7 @@ dependencies = [
 [[package]]
 name = "rinch-dom"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -3066,12 +3110,12 @@ dependencies = [
 [[package]]
 name = "rinch-editable"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 
 [[package]]
 name = "rinch-editor-collab"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "automerge",
  "rinch-editor-core",
@@ -3082,7 +3126,7 @@ dependencies = [
 [[package]]
 name = "rinch-editor-core"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "regex",
  "serde",
@@ -3092,7 +3136,7 @@ dependencies = [
 [[package]]
 name = "rinch-editor-view"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "rinch-core",
  "rinch-editor-collab",
@@ -3102,7 +3146,7 @@ dependencies = [
 [[package]]
 name = "rinch-http"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "js-sys",
  "rinch-core",
@@ -3116,7 +3160,7 @@ dependencies = [
 [[package]]
 name = "rinch-macros"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3126,7 +3170,7 @@ dependencies = [
 [[package]]
 name = "rinch-platform"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "peniko",
  "vello",
@@ -3136,7 +3180,7 @@ dependencies = [
 [[package]]
 name = "rinch-tabler-icons"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "heck 0.5.0",
  "rinch-core",
@@ -3148,12 +3192,12 @@ dependencies = [
 [[package]]
 name = "rinch-theme"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 
 [[package]]
 name = "rinch-web"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "js-sys",
  "rinch",
@@ -3766,7 +3810,7 @@ checksum = "fd15301b4756455af51fda9835655e48812dd4175e80947fd5d6a4b57ee30e89"
 [[package]]
 name = "stylo_taffy"
 version = "0.2.0"
-source = "git+https://github.com/joeleaver/rinch?rev=3960d382eeb17654c27bfd515c3135d7da7cda76#3960d382eeb17654c27bfd515c3135d7da7cda76"
+source = "git+https://github.com/joeleaver/rinch?rev=4c706a02e2f631267af96282e925bc63f3c9a1af#4c706a02e2f631267af96282e925bc63f3c9a1af"
 dependencies = [
  "stylo",
  "stylo_atoms",
@@ -3943,6 +3987,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "time"
+version = "0.3.53"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18dfaaeddcb932337b5e7866ee7d0ce9b76d2fd092997146f187ec09b4558a50"
+dependencies = [
+ "deranged",
+ "num-conv",
+ "powerfmt",
+ "serde_core",
+ "time-core",
+ "time-macros",
+]
+
+[[package]]
+name = "time-core"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+
+[[package]]
+name = "time-macros"
+version = "0.2.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c431b87111666e491a90baa837f914fb45cd5dc3c268591b0220ff5057f2085f"
+dependencies = [
+ "num-conv",
+ "time-core",
 ]
 
 [[package]]
@@ -4226,12 +4300,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdc97a28575b85cfedf2a7e7d3cc64b3e11bd8ac766666318003abbacc7a21fc"
 dependencies = [
  "base64",
+ "cookie_store",
  "flate2",
  "log",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
  "ureq-proto",
+ "url",
  "utf-8",
  "webpki-roots",
 ]

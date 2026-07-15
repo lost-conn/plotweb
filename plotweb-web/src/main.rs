@@ -54,6 +54,7 @@ fn app() -> NodeHandle {
         store.loading.set(false);
     } else {
         let requested = initial_route;
+
         // Check session on start
         api::get::<plotweb_common::User>("/api/auth/me", move |result| {
             match result {
