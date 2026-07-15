@@ -3,7 +3,7 @@ use wasm_bindgen::JsCast;
 use rinch::prelude::*;
 use rinch_core::use_store;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use rinch_web::{Editor, EditorHandle, create_editor};
+use crate::rinch_backend::{Editor, EditorHandle, create_editor};
 use plotweb_common::{
     BetaFeedback, BetaReaderLink, Book, Chapter, CommitDiff, CommitInfo, CreateBetaLinkRequest,
     CreateBetaReplyRequest, CreateChapterRequest, CreateNoteRequest, FontSettings,

@@ -16,7 +16,6 @@ plotweb-common = { path = "../crates/plotweb-common" }
 rinch = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", default-features = false, features = ["components", "theme"] }
 rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", features = ["theme"] }
 rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051" }
-rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", features = ["collaboration"] }
 # Shared with the copy rinch-web already pulls; `serde` lights up DocNode
 # (durable JSON save shape) + `Schema::node_from_doc` / `Node::to_doc`.
 rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", features = ["serde"] }
@@ -58,6 +57,16 @@ serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1"
 console_log = "0.2"
 log = "0.4"
+
+# ── Render backend ───────────────────────────────────────────────────────────
+# Web: rinch-web (browser DOM). Desktop: rinch's native shell (winit/wgpu) via the
+# `desktop` feature. The editor + mount come from whichever backend is active for
+# the target — see `src/rinch_backend.rs`.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", features = ["collaboration"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rinch = { git = "https://github.com/joeleaver/rinch", rev = "82a0a0d3dace42ca0321f2be5a151aec3f9ec051", features = ["desktop", "collaboration"] }
 
 [profile.dev]
 opt-level = 1

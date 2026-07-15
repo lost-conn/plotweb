@@ -10,7 +10,7 @@
 //! (schema gap — see the plan doc); links/images need arg-based handle calls.
 
 use rinch::prelude::*;
-use rinch_web::{Editor, create_editor};
+use crate::rinch_backend::{Editor, create_editor};
 
 use crate::pages::editor_utils::markdown_to_html;
 

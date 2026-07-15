@@ -12,7 +12,7 @@ use wasm_bindgen::prelude::*;
 
 use rinch::prelude::*;
 use rinch_core::Signal;
-use rinch_web::{Editor, create_editor};
+use crate::rinch_backend::{Editor, create_editor};
 use serde::{Deserialize, Serialize};
 
 use crate::api;

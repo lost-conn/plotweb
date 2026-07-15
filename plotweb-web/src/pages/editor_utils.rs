@@ -3,7 +3,7 @@ use std::rc::Rc;
 use rinch::prelude::*;
 use rinch_core::Signal;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use rinch_web::EditorHandle;
+use crate::rinch_backend::EditorHandle;
 use rinch_editor_core::serialize::DocNode;
 
 use wasm_bindgen::prelude::*;

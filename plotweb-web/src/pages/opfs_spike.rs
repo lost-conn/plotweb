@@ -25,7 +25,7 @@ use wasm_bindgen::prelude::*;
 
 use rinch::prelude::*;
 use rinch_core::Signal;
-use rinch_web::{Editor, create_editor};
+use crate::rinch_backend::{Editor, create_editor};
 
 const STORE_KEY: &str = "plotweb-spike-doc";
 const FLAT_SAMPLE: &str = "<h1>Chapter One</h1><p>The lantern <strong>guttered</strong> against the <em>fog</em> while the harbour bell counted out the hours.</p><p>Edit this, click <strong>Save</strong>, then reload the page — the Automerge snapshot is restored.</p>";

@@ -5,10 +5,13 @@ pub mod pages;
 pub mod components;
 pub mod fonts;
 pub mod ws;
+pub mod rinch_backend;
 
 use std::rc::Rc;
 
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 
 use rinch::prelude::*;
@@ -70,20 +73,26 @@ fn app() -> NodeHandle {
         });
     }
 
-    // Listen for back/forward navigation
-    let popstate_closure = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-        if let Some(window) = web_sys::window() {
-            if let Ok(pathname) = window.location().pathname() {
-                let route = Route::from_path(&pathname);
-                store.current_route.set(route);
+    // Listen for browser back/forward navigation (web only — no History natively).
+    #[cfg(target_arch = "wasm32")]
+    {
+        let popstate_closure = Closure::wrap(Box::new(move |_event: web_sys::Event| {
+            if let Some(window) = web_sys::window() {
+                if let Ok(pathname) = window.location().pathname() {
+                    let route = Route::from_path(&pathname);
+                    store.current_route.set(route);
+                }
             }
-        }
-    }) as Box<dyn FnMut(_)>);
-    web_sys::window()
-        .unwrap()
-        .add_event_listener_with_callback("popstate", popstate_closure.as_ref().unchecked_ref())
-        .unwrap();
-    popstate_closure.forget();
+        }) as Box<dyn FnMut(_)>);
+        web_sys::window()
+            .unwrap()
+            .add_event_listener_with_callback(
+                "popstate",
+                popstate_closure.as_ref().unchecked_ref(),
+            )
+            .unwrap();
+        popstate_closure.forget();
+    }
 
     rsx! {
         ThemeProvider {
@@ -96,24 +105,35 @@ fn app() -> NodeHandle {
     }
 }
 
-// ── Entry point ─────────────────────────────────────────────────────────────
+/// The app theme, shared across the web (`rinch_web::mount`) and desktop
+/// (`rinch::run_with_theme`) entry points.
+fn theme_props() -> ThemeProviderProps {
+    ThemeProviderProps {
+        primary_color: Some("teal".into()),
+        default_radius: Some("xs".into()),
+        font_family: Some("'Playwrite DE Grund', Georgia, 'Times New Roman', serif".into()),
+        dark_mode: true,
+        ..Default::default()
+    }
+}
 
+// ── Entry points ────────────────────────────────────────────────────────────
+
+/// Web entry: mount into the browser DOM via rinch-web.
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen(start)]
 pub fn start() {
     console_error_panic_hook::set_once();
     console_log::init_with_level(log::Level::Info).ok();
-
-    let theme = ThemeProviderProps {
-        primary_color: Some("teal".into()),
-        default_radius: Some("xs".into()),
-        font_family: Some(
-            "'Playwrite DE Grund', Georgia, 'Times New Roman', serif".into(),
-        ),
-        dark_mode: true,
-        ..Default::default()
-    };
-    rinch_web::mount(theme, app);
+    rinch_web::mount(theme_props(), app);
     log::info!("PlotWeb mounted");
 }
 
+/// Desktop entry: run a native window via rinch's shell (winit/wgpu).
+#[cfg(not(target_arch = "wasm32"))]
+fn main() {
+    rinch::run_with_theme("PlotWeb", 1200, 800, app, theme_props());
+}
+
+#[cfg(target_arch = "wasm32")]
 fn main() {}
