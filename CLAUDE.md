@@ -64,7 +64,35 @@ cargo test -p plotweb-server   # server integration tests (tests/*.rs drive the 
 # End-to-end (Playwright, browser): builds the SPA + server over a temp data dir
 cd e2e && npm install && npx playwright install chromium-headless-shell
 cd e2e && npx playwright test
+
+# Native desktop build (same frontend, rinch's winit/wgpu shell instead of the DOM)
+cd plotweb-web && cargo build            # host target; `--target wasm32-...` is web
+cd plotweb-web && ./target/debug/plotweb-web
 ```
+
+The frontend targets **web and desktop from one codebase** — see
+`plotweb-web/src/rinch_backend.rs` (rinch-web on wasm / rinch natively) and
+`src/platform.rs` (browser-only APIs, `None` on native — `web_sys::window()`
+*panics* off-wasm rather than returning `None`, so never call it directly in
+shared page code). Linux desktop builds need the GTK dev stack
+(`libgtk-3-dev libfontconfig-dev`); the native app reaches the server via
+`PLOTWEB_SERVER` (default `http://127.0.0.1:3000`).
+
+## Driving the native app (rinch MCP)
+
+The desktop window can't be driven by Playwright. Build it with the opt-in
+`debug-mcp` feature and rinch's MCP server takes over that role — screenshots,
+DOM queries, computed styles, click/type/key, caret positions:
+
+```bash
+cd plotweb-web && cargo build --features debug-mcp   # NEVER for release: opens a control port
+./target/debug/plotweb-web                            # registers in ~/.rinch/debug/{pid}.json
+```
+
+`.mcp.json` registers `rinch-mcp-server` from the sibling rinch checkout
+(`../rinch`, the same layout DEPLOY.md's co-dev `[patch]` assumes), so build it
+once with `cargo build -p rinch-mcp-server` in that repo. Then `list_apps` →
+`connect` (or `launch`) drives the running window.
 
 The server is a **lib + bin**: routing/state live in `crates/plotweb-server/src/lib.rs`
 (`api_router`, `build_state`, `test_router`); `main.rs` is a thin wrapper that adds

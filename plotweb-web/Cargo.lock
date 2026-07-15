@@ -3033,6 +3033,7 @@ dependencies = [
  "png 0.17.16",
  "rinch-components",
  "rinch-core",
+ "rinch-debug",
  "rinch-dom",
  "rinch-editable",
  "rinch-editor-core",
@@ -3067,6 +3068,16 @@ version = "0.1.0"
 source = "git+https://github.com/joeleaver/rinch?rev=2c04aa64ce2fb1e7a24938fcb31449b92a72c7a8#2c04aa64ce2fb1e7a24938fcb31449b92a72c7a8"
 dependencies = [
  "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
+name = "rinch-debug"
+version = "0.1.0"
+source = "git+https://github.com/joeleaver/rinch?rev=2c04aa64ce2fb1e7a24938fcb31449b92a72c7a8#2c04aa64ce2fb1e7a24938fcb31449b92a72c7a8"
+dependencies = [
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

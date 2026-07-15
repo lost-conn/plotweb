@@ -55,6 +55,13 @@ console_error_panic_hook = "0.1"
 console_log = "0.2"
 log = "0.4"
 
+[features]
+# Expose rinch's debug server so `rinch-mcp-server` can drive the native window
+# (screenshot / DOM query / computed styles / click / type). Opt-in and
+# native-only — build with `cargo build --features debug-mcp`. Never enable it for
+# a release or deploy build; it opens a local control port.
+debug-mcp = ["rinch/debug"]
+
 # ── Render backend ───────────────────────────────────────────────────────────
 # Web: rinch-web (browser DOM). Desktop: rinch's native shell (winit/wgpu) via the
 # `desktop` feature. The editor + mount come from whichever backend is active for

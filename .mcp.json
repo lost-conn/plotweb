@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "rinch": {
+      "command": "../rinch/target/debug/rinch-mcp-server",
+      "args": [],
+      "env": {}
+    }
+  }
+}
