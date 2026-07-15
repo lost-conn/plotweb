@@ -508,6 +508,32 @@ fn reader_content_el() -> Option<web_sys::HtmlElement> {
         .ok()
 }
 
+/// Build the paginated reading column and publish its handle into `content_el`.
+///
+/// `#reader-content` lives inside an rsx `if` (a `show_dom` branch), so the node
+/// only exists once `current_chapter` flips to `Some`. Publishing the handle from
+/// the branch render hands `open_chapter` the element directly — no
+/// `query_selector`, and nothing to wait for. `show_dom` only re-renders a branch
+/// when the *condition* flips, so this handle stays valid across chapter switches
+/// (and is republished if the branch is ever rebuilt).
+///
+/// The `id` stays: pagination measuring, the beta feedback text-walk (`closest`)
+/// and the e2e specs all select `#reader-content`. It is simply no longer the way
+/// content gets *in*.
+fn reader_content_node(
+    __scope: &mut RenderScope,
+    content_el: Signal<Option<NodeHandle>>,
+) -> NodeHandle {
+    let el = rsx! {
+        div {
+            class: "reader-content",
+            id: "reader-content",
+        }
+    };
+    content_el.set(Some(el.clone()));
+    el
+}
+
 /// Apply the multi-column styling to `#reader-content` (sized to the live
 /// viewport) and return the resulting total page count. Reading `scroll_width`
 /// forces the synchronous reflow we need before counting pages.
@@ -753,6 +779,9 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     // Pagination state
     let current_page: Signal<i32> = Signal::new(0);
     let total_pages: Signal<i32> = Signal::new(1);
+    // Handle to the `#reader-content` element, published by `reader_content_node`
+    // when the chapter branch renders. Chapter HTML is injected through this.
+    let content_el: Signal<Option<NodeHandle>> = Signal::new(None);
     // Debounce handle for progress saves (a window timeout id, or None).
     let progress_timer: Signal<Option<i32>> = Signal::new(None);
 
@@ -840,11 +869,12 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                 } else {
                     editor_utils::content_to_display_html(&ch.content)
                 };
-                let guard_cid = cid.clone();
-                editor_utils::with_element_when_ready("#reader-content".to_string(), move |el| {
-                    if active_chapter_id.get().as_deref() != Some(guard_cid.as_str()) {
-                        return;
-                    }
+                // `current_chapter.set` above synchronously renders the branch that
+                // owns `#reader-content` (signal notification runs effects inline),
+                // so the handle is published by the time we read it here. The stale
+                // -chapter guard above already ran in this same callback, so no
+                // second guard is needed.
+                if let Some(el) = content_el.get() {
                     el.set_inner_html(&editor_utils::sanitize_html(&content_html));
                     repaginate(target_page);
                     // A second pass catches late reflow (e.g. images loading).
@@ -858,7 +888,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                         ).ok();
                     }
                     closure.forget();
-                });
+                }
             }
         });
     };
@@ -1528,10 +1558,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                                 div { class: "reader-reading-col",
                                     div { class: "reader-viewport", id: "reader-viewport",
                                         div { class: "reader-page-frame",
-                                            div {
-                                                class: "reader-content",
-                                                id: "reader-content",
-                                            }
+                                            {reader_content_node(__scope, content_el)}
                                         }
                                     }
                                     div { class: "reader-pagebar",

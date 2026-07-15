@@ -1862,38 +1862,43 @@ fn render_chapter_diff(
     }
 
     let header = format!("{} ({})", ch_diff.chapter_title, ch_diff.change_type);
-    let diff_el_id = Signal::new(format!("diff-{}", ch_diff.chapter_id));
-    let diff_el_id_copy = diff_el_id.get();
 
-    // Set inner HTML imperatively after render
-    let html_clone = diff_html.clone();
-    wasm_bindgen_futures::spawn_local(async move {
-        let closure = wasm_bindgen::closure::Closure::once(move || {
-            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
-                if let Ok(Some(el)) = doc.query_selector(&format!("#{}", diff_el_id_copy)) {
-                    el.set_inner_html(&html_clone);
-                }
-            }
-        });
-        if let Some(w) = crate::platform::window() {
-            w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                closure.as_ref().unchecked_ref(),
-                50,
-            ).ok();
+    // Build the diff pane up-front so we can inject into its handle directly.
+    // The old `id` + `spawn_local` + `setTimeout(50ms)` + `query_selector` dance
+    // existed only to wait for the node to appear; we have it right here, and
+    // `set_inner_html` is cross-platform (web + native).
+    let diff_el = rsx! {
+        div {
+            style: "font-family: monospace; font-size: 13px; line-height: 1.6; margin-top: 4px; border: 1px solid var(--rinch-color-border); border-radius: var(--rinch-radius-sm); overflow: hidden;",
         }
-        closure.forget();
-    });
+    };
+    diff_el.set_inner_html(&diff_html);
 
     rsx! {
         div {
             style: "margin-bottom: 12px;",
             Text { size: "sm", weight: "600", {header} }
-            div {
-                id: {move || diff_el_id.get()},
-                style: "font-family: monospace; font-size: 13px; line-height: 1.6; margin-top: 4px; border: 1px solid var(--rinch-color-border); border-radius: var(--rinch-radius-sm); overflow: hidden;",
-            }
+            {diff_el}
         }
     }
+}
+
+/// Build the history preview pane and publish its handle into `preview_el`.
+///
+/// The pane lives inside an rsx `if` (a `show_dom` branch), so the node only
+/// exists once it's selected. Publishing the handle from the branch render lets
+/// the click handler inject straight into it — no `id`, no `query_selector`.
+fn history_preview_node(
+    __scope: &mut RenderScope,
+    preview_el: Signal<Option<NodeHandle>>,
+) -> NodeHandle {
+    let el = rsx! {
+        div {
+            style: "padding: 8px 12px; margin: 4px 0; background: var(--rinch-color-body); border-radius: var(--rinch-radius-sm); border: 1px solid var(--rinch-color-border); max-height: 400px; overflow-y: auto; font-size: 14px; line-height: 1.6;",
+        }
+    };
+    preview_el.set(Some(el.clone()));
+    el
 }
 
 fn render_history_chapter_preview(
@@ -1904,8 +1909,9 @@ fn render_history_chapter_preview(
     preview_commit: Signal<Option<String>>,
 ) -> NodeHandle {
     let cid_signal = Signal::new(chapter.id.clone());
-    let preview_el_id = format!("history-preview-{}", chapter.id);
-    let preview_el_id_signal = Signal::new(preview_el_id);
+    // Handle to the preview pane, published by `history_preview_node` when the
+    // `if is_selected()` branch renders.
+    let preview_el: Signal<Option<NodeHandle>> = Signal::new(None);
     let is_selected = move || {
         preview_content
             .get()
@@ -1930,29 +1936,21 @@ fn render_history_chapter_preview(
                     } else {
                         let bid = bid_signal.get();
                         let ch_id = cid_signal.get();
-                        let el_id = preview_el_id_signal.get();
                         if let Some(commit) = preview_commit.get() {
                             api::get::<Chapter>(
                                 &format!("/api/books/{}/history/{}/chapters/{}", bid, commit, ch_id),
                                 move |result| {
                                 if let Ok(full_ch) = result {
                                     let html = super::editor_utils::sanitize_html(&super::editor_utils::content_to_display_html(&full_ch.content));
+                                    // Setting `preview_content` synchronously renders
+                                    // the `if is_selected()` branch below, which
+                                    // publishes the pane's handle — so it's ready to
+                                    // inject into on the next line. Replaces the old
+                                    // `setTimeout(50ms)` + `query_selector` wait.
                                     preview_content.set(Some(full_ch));
-                                    // Set inner HTML imperatively after a tick
-                                    let closure = wasm_bindgen::closure::Closure::once(move || {
-                                        if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
-                                            if let Ok(Some(el)) = doc.query_selector(&format!("#{}", el_id)) {
-                                                el.set_inner_html(&html);
-                                            }
-                                        }
-                                    });
-                                    if let Some(w) = crate::platform::window() {
-                                        w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                                            closure.as_ref().unchecked_ref(),
-                                            50,
-                                        ).ok();
+                                    if let Some(el) = preview_el.get() {
+                                        el.set_inner_html(&html);
                                     }
-                                    closure.forget();
                                 }
                                 },
                             );
@@ -1963,10 +1961,7 @@ fn render_history_chapter_preview(
             }
 
             if is_selected() {
-                div {
-                    id: {move || preview_el_id_signal.get()},
-                    style: "padding: 8px 12px; margin: 4px 0; background: var(--rinch-color-body); border-radius: var(--rinch-radius-sm); border: 1px solid var(--rinch-color-border); max-height: 400px; overflow-y: auto; font-size: 14px; line-height: 1.6;",
-                }
+                {history_preview_node(__scope, preview_el)}
             }
         }
     }

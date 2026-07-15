@@ -122,46 +122,6 @@ fn current_heading_level(handle: &EditorHandle) -> Option<i64> {
     resolved.parent().attrs().get_int("level")
 }
 
-/// Invoke `action` with the element matching `selector` as soon as it exists in
-/// the DOM, polling on animation frames rather than guessing a fixed timeout.
-///
-/// This replaces the old `setTimeout(…, 100ms)` hacks that blindly waited for
-/// rinch to (re)render a node before injecting content into it: too short and
-/// the injection silently no-ops (lost content / stuck "read-only" editor); too
-/// long and chapter switches feel laggy. Polling on rAF injects on the first
-/// frame the node is present — deterministic regardless of render timing.
-///
-/// Capped at ~1s of frames so a selector that never matches can't spin forever.
-/// Implemented as chained one-shot closures (each `forget()`-ed, matching the
-/// crate's existing pattern) rather than a single self-rescheduling closure,
-/// which would have to drop itself mid-call — undefined behavior in wasm.
-pub fn with_element_when_ready(
-    selector: String,
-    action: impl FnOnce(&web_sys::Element) + 'static,
-) {
-    fn attempt(selector: String, frames_left: u32, action: Box<dyn FnOnce(&web_sys::Element)>) {
-        if let Some(el) = crate::platform::window()
-            .and_then(|w| w.document())
-            .and_then(|d| d.query_selector(&selector).ok().flatten())
-        {
-            action(&el);
-            return;
-        }
-        if frames_left == 0 {
-            return;
-        }
-        let closure = wasm_bindgen::closure::Closure::once(move || {
-            attempt(selector, frames_left - 1, action);
-        });
-        if let Some(w) = crate::platform::window() {
-            w.request_animation_frame(closure.as_ref().unchecked_ref()).ok();
-        }
-        closure.forget();
-    }
-    // ~1s at 60fps; the target node normally exists within a frame or two.
-    attempt(selector, 60, Box::new(action));
-}
-
 /// Editor CSS — focused writing environment with semantic colors.
 pub const EDITOR_CSS: &str = r#"
 .editor-layout {
@@ -748,6 +708,8 @@ pub fn markdown_to_html(md: &str) -> String {
 
 /// Allowlist of element tag names (lowercase) permitted in rendered prose.
 /// Anything not in this list is unwrapped/removed by `sanitize_html`.
+/// Web-only: the native `sanitize_html` passes through (no JS engine to guard).
+#[cfg(target_arch = "wasm32")]
 const ALLOWED_TAGS: &[&str] = &[
     "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote",
     "hr", "br", "strong", "b", "em", "i", "code", "s", "del", "u", "mark",
@@ -764,6 +726,24 @@ const ALLOWED_TAGS: &[&str] = &[
 /// drop disallowed elements (unwrapping their text children so prose survives),
 /// and strip dangerous attributes (`on*` handlers, `javascript:` URLs). The
 /// cleaned element's innerHTML is returned.
+///
+/// # Why this is web-only (see the native branch below)
+///
+/// The sanitizer exists to stop `<script>`, `on*=` handlers and `javascript:`
+/// URLs — smuggled in via a legacy note's pasted HTML — from becoming live DOM.
+/// Every one of those vectors needs a JavaScript engine to fire. The native
+/// build has none: rinch-dom's `set_inner_html` runs `html_parser::parse_html_string`
+/// and builds a *widget* tree, so an `on*` attribute is only ever stored as an
+/// inert string in the node's attribute map (`dom_document_impl.rs::set_attribute`)
+/// and nothing in the event system ever reads it — native handlers come solely
+/// from Rust callbacks registered through `register_handler`. A `<script>` tag
+/// is likewise just a node whose text is never executed (and which is laid out
+/// `display: none`). So the XSS this guards against is strictly a *web* concern.
+///
+/// Therefore: on web, sanitize exactly as before; on native, pass through. The
+/// alternative — the old behavior of returning `String::new()` off-wasm — rendered
+/// the reader blank, which is strictly worse than rendering the author's own prose.
+#[cfg(target_arch = "wasm32")]
 pub fn sanitize_html(raw: &str) -> String {
     let doc = match crate::platform::window().and_then(|w| w.document()) {
         Some(d) => d,
@@ -782,7 +762,22 @@ pub fn sanitize_html(raw: &str) -> String {
     container.inner_html()
 }
 
+/// Native pass-through: there is no JS engine to sanitize *against*.
+///
+/// rinch-dom parses this HTML into widgets; `on*` attributes are inert strings
+/// and `<script>` text is never executed, so the script/handler/`javascript:`
+/// vectors the web sanitizer strips cannot fire here. See the doc comment on the
+/// wasm version above for the full reasoning.
+///
+/// Passing through also needs no DOM: the web implementation used a detached
+/// `web_sys` div purely as an HTML *parser*, and `web_sys` is unavailable off-wasm.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn sanitize_html(raw: &str) -> String {
+    raw.to_string()
+}
+
 /// Recursively sanitize the element children of `el` in place.
+#[cfg(target_arch = "wasm32")]
 fn sanitize_node(el: &web_sys::Element) {
     use wasm_bindgen::JsCast;
 
