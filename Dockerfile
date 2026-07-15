@@ -9,7 +9,7 @@ FROM rust:1.88-bookworm AS frontend
 # Pinned to rinch origin/main (includes the new ProseMirror-style rich-text
 # editor, PR #65, plus the earlier rsx capture-scanner if-let fix). Repin to a
 # newer origin/main commit as rinch evolves.
-ARG RINCH_COMMIT=2c04aa64ce2fb1e7a24938fcb31449b92a72c7a8
+ARG RINCH_COMMIT=06e563066ab80beb91eab37665b3e86a62102d0f
 ARG RINCH_REPO=https://github.com/joeleaver/rinch.git
 
 RUN apt-get update && apt-get install -y --no-install-recommends git \
