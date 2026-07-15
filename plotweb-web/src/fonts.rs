@@ -35,9 +35,12 @@ pub fn fetch_font_catalog() {
 }
 
 /// Fonts already loaded globally — skip these when building the dynamic link.
+#[cfg(target_arch = "wasm32")]
 const GLOBAL_FONTS: &[&str] = &["Macondo Swash Caps", "Playwrite DE Grund"];
 
-/// Build a Google Fonts CSS URL for the given font names.
+/// Build a Google Fonts CSS URL for the given font names. Web-only (only the DOM
+/// `<link>` injectors use it).
+#[cfg(target_arch = "wasm32")]
 pub fn google_fonts_url(fonts: &[&str]) -> String {
     let families: Vec<String> = fonts
         .iter()
@@ -51,6 +54,15 @@ pub fn google_fonts_url(fonts: &[&str]) -> String {
 
 /// Inject a <link> tag for the book's custom fonts into <head>.
 /// Removes any previous book-fonts link first.
+///
+/// Web-only: it injects a Google Fonts `<link>` into the document `<head>`.
+/// On native there is no DOM and fonts must be registered with rinch's text
+/// renderer from bundled files — that's Phase 3 ("fonts + images on native"), so
+/// this is a no-op on native for now (the frontend still compiles for desktop).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_book_fonts(_settings: &FontSettings) {}
+
+#[cfg(target_arch = "wasm32")]
 pub fn load_book_fonts(settings: &FontSettings) {
     let document = match web_sys::window().and_then(|w| w.document()) {
         Some(d) => d,
@@ -95,6 +107,12 @@ pub fn load_book_fonts(settings: &FontSettings) {
 }
 
 /// Load a single font for preview purposes (adds a link tag if not already present).
+///
+/// Web-only (DOM `<link>` injection); no-op on native — see [`load_book_fonts`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_single_font(_family: &str) {}
+
+#[cfg(target_arch = "wasm32")]
 pub fn load_single_font(family: &str) {
     if family.is_empty() || GLOBAL_FONTS.contains(&family) {
         return;
