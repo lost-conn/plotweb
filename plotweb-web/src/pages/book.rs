@@ -1479,6 +1479,7 @@ fn editor_feedback_item<AR, RF, DF, ARO, RFO, DFO>(
     __scope: &mut RenderScope,
     fb: BetaFeedback,
     scroll_target: Signal<Option<(String, String)>>,
+    reply_drafts: Signal<std::collections::HashMap<String, String>>,
     author_reply: AR,
     resolve_feedback: RF,
     delete_feedback: DF,
@@ -1496,6 +1497,8 @@ where
     let fb_id4 = fb.id.clone();
     let fb_id5 = fb.id.clone();
     let fb_id_enter = fb.id.clone();
+    let fb_id_value = std::rc::Rc::new(fb.id.clone());
+    let fb_id_input = fb.id.clone();
     let class = if fb.resolved { "feedback-card resolved" } else { "feedback-card" };
     let reply_input_id = format!("author-reply-{}", fb.id);
 
@@ -1519,6 +1522,14 @@ where
                 id: reply_input_id,
                 placeholder: "Reply...",
                 rows: "1",
+                value: {
+                    let k = fb_id_value.clone();
+                    move || reply_drafts.get().get(k.as_str()).cloned().unwrap_or_default()
+                },
+                oninput: move |v: String| {
+                    let key = fb_id_input.clone();
+                    reply_drafts.update(|m| { m.insert(key, v); });
+                },
             }
             ActionIcon { variant: "subtle", size: "xs", onclick: author_reply(fb_id3),
                 {render_tabler_icon(__scope, TablerIcon::Send, TablerIconStyle::Outline)}
@@ -1574,6 +1585,7 @@ fn overview_feedback_item<AR, RF, DF, NF, ARO, RFO, DFO, NFO>(
     __scope: &mut RenderScope,
     fb: BetaFeedback,
     ch_title: String,
+    reply_drafts: Signal<std::collections::HashMap<String, String>>,
     author_reply: AR,
     resolve_feedback: RF,
     delete_feedback: DF,
@@ -1595,6 +1607,8 @@ where
     let fb_id4 = fb.id.clone();
     let fb_id5 = fb.id.clone();
     let fb_id_enter = fb.id.clone();
+    let fb_id_value = std::rc::Rc::new(fb.id.clone());
+    let fb_id_input = fb.id.clone();
     let class = if fb.resolved { "feedback-card resolved" } else { "feedback-card" };
     let fb_reader = fb.reader_name.clone();
     let fb_comment = fb.comment.clone();
@@ -1617,6 +1631,14 @@ where
                 id: {format!("author-reply-{}", fb_id4)},
                 placeholder: "Reply...",
                 rows: "1",
+                value: {
+                    let k = fb_id_value.clone();
+                    move || reply_drafts.get().get(k.as_str()).cloned().unwrap_or_default()
+                },
+                oninput: move |v: String| {
+                    let key = fb_id_input.clone();
+                    reply_drafts.update(|m| { m.insert(key, v); });
+                },
             }
             ActionIcon {
                 variant: "subtle",
@@ -1695,6 +1717,7 @@ fn render_feedback_overview<AR, RF, DF, NF, ARO, RFO, DFO, NFO>(
     __scope: &mut RenderScope,
     feedback: &[BetaFeedback],
     chapters: &[Chapter],
+    reply_drafts: Signal<std::collections::HashMap<String, String>>,
     author_reply: AR,
     resolve_feedback: RF,
     delete_feedback: DF,
@@ -1715,7 +1738,7 @@ where
             .find(|c| c.id == fb.chapter_id)
             .map(|c| c.title.clone())
             .unwrap_or_else(|| String::from("Unknown"));
-        overview_feedback_item(__scope, fb.clone(), ch_title, author_reply, resolve_feedback, delete_feedback, navigate_to_feedback)
+        overview_feedback_item(__scope, fb.clone(), ch_title, reply_drafts, author_reply, resolve_feedback, delete_feedback, navigate_to_feedback)
     }).collect();
     rsx! { {nodes} }
 }
@@ -2130,6 +2153,7 @@ fn render_beta_link_card<CB, TG, DL, CBO, TGO, DLO>(
     link: BetaReaderLink,
     edit_beta_reader_name: Signal<String>,
     edit_beta_max_chapter: Signal<Option<i64>>,
+    edit_beta_max_chapter_text: Signal<String>,
     edit_beta_pinned: Signal<bool>,
     edit_beta_username: Signal<String>,
     editing_beta_link: Signal<Option<BetaReaderLink>>,
@@ -2191,6 +2215,11 @@ where
                         onclick: move || {
                             edit_beta_reader_name.set(edit_link.reader_name.clone());
                             edit_beta_max_chapter.set(edit_link.max_chapter_index);
+                            // Seed the bound input text from the link being edited
+                            // (stored 0-indexed, displayed 1-indexed).
+                            edit_beta_max_chapter_text.set(
+                                edit_link.max_chapter_index.map(|v| (v + 1).to_string()).unwrap_or_default(),
+                            );
                             edit_beta_pinned.set(edit_link.pinned_commit.is_some());
                             edit_beta_username.set(edit_link.username.clone().unwrap_or_default());
                             editing_beta_link.set(Some(edit_link.clone()));
@@ -2672,6 +2701,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let show_feedback_sidebar = Signal::new(false);
     let _beta_reply_text: Signal<String> = Signal::new(String::new());
 
+    // Per-feedback author reply drafts, keyed by feedback id. The reply
+    // textareas are controlled off this map (`value:` + `oninput:`) so
+    // submitting reads state, not the DOM (the DOM read no-oped on native).
+    let reply_drafts: Signal<std::collections::HashMap<String, String>> =
+        Signal::new(std::collections::HashMap::new());
+
     // Pending feedback scroll target: (selected_text, context_block)
     let pending_feedback_scroll: Signal<Option<(String, String)>> = Signal::new(None);
 
@@ -2679,6 +2714,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let editing_beta_link: Signal<Option<BetaReaderLink>> = Signal::new(None);
     let edit_beta_reader_name: Signal<String> = Signal::new(String::new());
     let edit_beta_max_chapter: Signal<Option<i64>> = Signal::new(None);
+    // Raw text of the "Max chapters" number inputs. Bound to the inputs with
+    // `value:` + `oninput:` and parsed on submit, so the value comes from state
+    // rather than a DOM read (which no-oped on native).
+    let new_beta_max_chapter_text: Signal<String> = Signal::new(String::new());
+    let edit_beta_max_chapter_text: Signal<String> = Signal::new(String::new());
     let new_beta_pin_version: Signal<bool> = Signal::new(false);
     let edit_beta_pinned: Signal<bool> = Signal::new(false);
     let new_beta_username: Signal<String> = Signal::new(String::new());
@@ -3603,15 +3643,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
     let author_reply = move |feedback_id: String| {
         move || {
-            let Some(doc) = crate::platform::document() else { return; };
-            let selector = format!("#author-reply-{}", feedback_id);
-            let input: web_sys::HtmlTextAreaElement = match doc.query_selector(&selector).ok().flatten() {
-                Some(el) => el.dyn_into().unwrap(),
-                None => return,
-            };
-            let content = input.value();
+            let content = reply_drafts
+                .get()
+                .get(&feedback_id)
+                .cloned()
+                .unwrap_or_default();
             if content.trim().is_empty() { return; }
-            input.set_value("");
+            let clear_key = feedback_id.clone();
+            reply_drafts.update(|m| { m.remove(&clear_key); });
             let bid = bid_signal.get();
             let fid = feedback_id.clone();
             let req = CreateBetaReplyRequest { content };
@@ -4325,7 +4364,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                             false
                                         }
                                     }) {
-                                        {editor_feedback_item(__scope, fb, pending_feedback_scroll, author_reply, resolve_feedback, delete_feedback)}
+                                        {editor_feedback_item(__scope, fb, pending_feedback_scroll, reply_drafts, author_reply, resolve_feedback, delete_feedback)}
                                     }
 
                                     if beta_feedback.get().iter().filter(|f| {
@@ -4381,6 +4420,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     onclick: move || {
                                         new_beta_reader_name.set(String::new());
                                         new_beta_max_chapter.set(None);
+                                        new_beta_max_chapter_text.set(String::new());
                                         new_beta_pin_version.set(false);
                                         new_beta_username.set(String::new());
                                         beta_link_error.set(None);
@@ -4410,6 +4450,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                         link,
                                         edit_beta_reader_name,
                                         edit_beta_max_chapter,
+                                        edit_beta_max_chapter_text,
                                         edit_beta_pinned,
                                         edit_beta_username,
                                         editing_beta_link,
@@ -4434,7 +4475,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                             .unwrap_or_else(|| String::from("Unknown"));
                                         (fb, ch_title)
                                     }) {
-                                        {overview_feedback_item(__scope, fb.0, fb.1, author_reply, resolve_feedback, delete_feedback, navigate_to_feedback)}
+                                        {overview_feedback_item(__scope, fb.0, fb.1, reply_drafts, author_reply, resolve_feedback, delete_feedback, navigate_to_feedback)}
                                     }
                                 }
                             }
@@ -4945,6 +4986,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         r#type: "number",
                         min: "1",
                         placeholder: "All",
+                        value: {move || new_beta_max_chapter_text.get()},
+                        oninput: move |v: String| new_beta_max_chapter_text.set(v),
                         style: "width: 80px; padding: 4px 8px; border: 1px solid var(--rinch-color-border); border-radius: 4px; background: var(--rinch-color-surface); color: var(--rinch-color-text); font-size: 13px;",
                     }
                 }
@@ -4985,17 +5028,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     }
                     Button {
                         onclick: move || {
-                            // Read max chapter input
-                            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
-                                if let Ok(Some(el)) = doc.query_selector("#beta-max-chapter-input") {
-                                    let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
-                                    let val = input.value();
-                                    if let Ok(n) = val.parse::<i64>() {
-                                        new_beta_max_chapter.set(Some(n - 1)); // 0-indexed
-                                    } else {
-                                        new_beta_max_chapter.set(None);
-                                    }
-                                }
+                            // Parse the max chapter input from its bound signal
+                            match new_beta_max_chapter_text.get().parse::<i64>() {
+                                Ok(n) => new_beta_max_chapter.set(Some(n - 1)), // 0-indexed
+                                Err(_) => new_beta_max_chapter.set(None),
                             }
                             add_beta_link();
                         },
@@ -5030,7 +5066,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         r#type: "number",
                         min: "1",
                         placeholder: "All",
-                        value: {move || edit_beta_max_chapter.get().map(|v| (v + 1).to_string()).unwrap_or_default()},
+                        value: {move || edit_beta_max_chapter_text.get()},
+                        oninput: move |v: String| edit_beta_max_chapter_text.set(v),
                         style: "width: 80px; padding: 4px 8px; border: 1px solid var(--rinch-color-border); border-radius: 4px; background: var(--rinch-color-surface); color: var(--rinch-color-text); font-size: 13px;",
                     }
                 }
@@ -5071,17 +5108,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     }
                     Button {
                         onclick: move || {
-                            // Read max chapter input
-                            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
-                                if let Ok(Some(el)) = doc.query_selector("#beta-edit-max-chapter-input") {
-                                    let input: web_sys::HtmlInputElement = el.dyn_into().unwrap();
-                                    let val = input.value();
-                                    if let Ok(n) = val.parse::<i64>() {
-                                        edit_beta_max_chapter.set(Some(n - 1)); // 0-indexed
-                                    } else {
-                                        edit_beta_max_chapter.set(None);
-                                    }
-                                }
+                            // Parse the max chapter input from its bound signal
+                            match edit_beta_max_chapter_text.get().parse::<i64>() {
+                                Ok(n) => edit_beta_max_chapter.set(Some(n - 1)), // 0-indexed
+                                Err(_) => edit_beta_max_chapter.set(None),
                             }
                             update_beta_link();
                         },

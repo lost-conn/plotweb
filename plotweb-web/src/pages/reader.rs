@@ -664,6 +664,7 @@ where
 fn reader_feedback_card<F, FO>(
     __scope: &mut RenderScope,
     fb: BetaFeedback,
+    reply_drafts: Signal<std::collections::HashMap<String, String>>,
     reply_to_feedback: F,
 ) -> NodeHandle
 where
@@ -673,6 +674,8 @@ where
     let _fb_id = fb.id.clone();
     let fb_id2 = fb.id.clone();
     let fb_id3 = fb.id.clone();
+    let fb_id_value = std::rc::Rc::new(fb.id.clone());
+    let fb_id_input = fb.id.clone();
     let fb_id_enter = fb.id.clone();
     let class = if fb.resolved { "feedback-card resolved" } else { "feedback-card" };
     let fb_comment = fb.comment.clone();
@@ -700,6 +703,14 @@ where
                 id: {format!("reply-input-{}", fb_id2)},
                 placeholder: "Reply...",
                 rows: "1",
+                value: {
+                    let k = fb_id_value.clone();
+                    move || reply_drafts.get().get(k.as_str()).cloned().unwrap_or_default()
+                },
+                oninput: move |v: String| {
+                    let key = fb_id_input.clone();
+                    reply_drafts.update(|m| { m.insert(key, v); });
+                },
             }
             ActionIcon {
                 variant: "subtle",
@@ -792,6 +803,12 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     let tooltip_selected_text: Signal<String> = Signal::new(String::new());
     let tooltip_context: Signal<String> = Signal::new(String::new());
     let tooltip_comment: Signal<String> = Signal::new(String::new());
+
+    // Per-feedback reply drafts, keyed by feedback id. The reply textareas are
+    // controlled off this map (`value:` + `oninput:`) so submitting can read the
+    // text from state instead of the DOM — the DOM read no-oped on native.
+    let reply_drafts: Signal<std::collections::HashMap<String, String>> =
+        Signal::new(std::collections::HashMap::new());
 
     // ── Auto last-page: persist reading position, debounced (beta only) ──────
     let save_progress = move |chapter_id: String, page: i32| {
@@ -1311,6 +1328,9 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         let tok = token_signal.get();
 
         tooltip_visible.set(false);
+        // Clear the draft now that it has been consumed — the textarea is bound
+        // to this signal, so this is what empties it visually.
+        tooltip_comment.set(String::new());
 
         let req = CreateBetaFeedbackRequest {
             chapter_id,
@@ -1334,17 +1354,16 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     // Reply to feedback
     let reply_to_feedback = move |feedback_id: String| {
         move || {
-            let Some(doc) = crate::platform::document() else { return; };
-            let selector = format!("#reply-input-{}", feedback_id);
-            let input: web_sys::HtmlTextAreaElement = match doc.query_selector(&selector).ok().flatten() {
-                Some(el) => el.dyn_into().unwrap(),
-                None => return,
-            };
-            let content = input.value();
+            let content = reply_drafts
+                .get()
+                .get(&feedback_id)
+                .cloned()
+                .unwrap_or_default();
             if content.trim().is_empty() {
                 return;
             }
-            input.set_value("");
+            let clear_key = feedback_id.clone();
+            reply_drafts.update(|m| { m.remove(&clear_key); });
             let tok = token_signal.get();
             let fid = feedback_id.clone();
             let req = CreateBetaReplyRequest { content };
@@ -1615,7 +1634,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                                     }
                                     div { class: "reader-feedback-list",
                                         for fb in feedback_list.get().into_iter().filter(|f| active_chapter_id.get().as_ref().is_some_and(|cid| *cid == f.chapter_id)) {
-                                            {reader_feedback_card(__scope, fb, reply_to_feedback)}
+                                            {reader_feedback_card(__scope, fb, reply_drafts, reply_to_feedback)}
                                         }
 
                                         if feedback_list.get().iter().filter(|f| active_chapter_id.get().as_ref().is_some_and(|cid| *cid == f.chapter_id)).count() == 0 {
@@ -1645,6 +1664,8 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                 textarea {
                     placeholder: "Leave your feedback...",
                     id: "feedback-tooltip-textarea",
+                    value: {move || tooltip_comment.get()},
+                    oninput: move |v: String| tooltip_comment.set(v),
                 }
                 div { class: "feedback-tooltip-actions",
                     Button {
@@ -1655,17 +1676,7 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                     }
                     Button {
                         size: "xs",
-                        onclick: move || {
-                            // Read textarea value
-                            if let Some(doc) = crate::platform::window().and_then(|w| w.document()) {
-                                if let Ok(Some(el)) = doc.query_selector("#feedback-tooltip-textarea") {
-                                    let textarea: web_sys::HtmlTextAreaElement = el.dyn_into().unwrap();
-                                    tooltip_comment.set(textarea.value());
-                                    textarea.set_value("");
-                                }
-                            }
-                            submit_feedback();
-                        },
+                        onclick: move || submit_feedback(),
                         "Submit"
                     }
                 }
