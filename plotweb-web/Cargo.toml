@@ -13,15 +13,15 @@ plotweb-common = { path = "../crates/plotweb-common" }
 # RINCH_COMMIT). For local rinch co-dev, add an UNCOMMITTED [patch] (see DEPLOY.md).
 # plotweb-common stays a path dep — it's in-repo and resolves via jkbase.toml's
 # `context = "."` (the build VM mounts the whole repo).
-rinch = { git = "https://github.com/joeleaver/rinch", rev = "06e563066ab80beb91eab37665b3e86a62102d0f", default-features = false, features = ["components", "theme"] }
-rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "06e563066ab80beb91eab37665b3e86a62102d0f", features = ["theme"] }
-rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "06e563066ab80beb91eab37665b3e86a62102d0f" }
+rinch = { git = "https://github.com/joeleaver/rinch", rev = "a7ef361b1721fd06911d7ea665fb5761633a8700", default-features = false, features = ["components", "theme"] }
+rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "a7ef361b1721fd06911d7ea665fb5761633a8700", features = ["theme"] }
+rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "a7ef361b1721fd06911d7ea665fb5761633a8700" }
 # Shared with the copy rinch-web already pulls; `serde` lights up DocNode
 # (durable JSON save shape) + `Schema::node_from_doc` / `Node::to_doc`.
-rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "06e563066ab80beb91eab37665b3e86a62102d0f", features = ["serde"] }
+rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "a7ef361b1721fd06911d7ea665fb5761633a8700", features = ["serde"] }
 # Cross-platform HTTP client (web fetch / native ureq); replaces the web-only
 # fetch in api.rs so the frontend compiles for desktop too.
-rinch-http = { git = "https://github.com/joeleaver/rinch", rev = "06e563066ab80beb91eab37665b3e86a62102d0f" }
+rinch-http = { git = "https://github.com/joeleaver/rinch", rev = "a7ef361b1721fd06911d7ea665fb5761633a8700" }
 
 
 wasm-bindgen = "0.2"
@@ -67,14 +67,14 @@ debug-mcp = ["rinch/debug"]
 # `desktop` feature. The editor + mount come from whichever backend is active for
 # the target — see `src/rinch_backend.rs`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "06e563066ab80beb91eab37665b3e86a62102d0f", features = ["collaboration"] }
+rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "a7ef361b1721fd06911d7ea665fb5761633a8700", features = ["collaboration"] }
 # Browser randomness for the transitive automerge → uuid (Automerge actor ids).
 # Without a randomness feature, uuid refuses to compile on wasm32; on native it
 # uses the OS RNG by default (forcing the `js` feature there panics at startup).
 uuid = { version = "1", features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rinch = { git = "https://github.com/joeleaver/rinch", rev = "06e563066ab80beb91eab37665b3e86a62102d0f", features = ["desktop", "collaboration"] }
+rinch = { git = "https://github.com/joeleaver/rinch", rev = "a7ef361b1721fd06911d7ea665fb5761633a8700", features = ["desktop", "collaboration"] }
 
 [profile.dev]
 opt-level = 1
