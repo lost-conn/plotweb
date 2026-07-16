@@ -2652,15 +2652,15 @@ fn render_note_card(
                 has_children && !collapsed
             }).unwrap_or(false) {
                 div { class: "note-children",
-                    for (idx, child_id) in store.note_tree.get().and_then(|t| t.children.get(&nid.get()).cloned()).unwrap_or_default().into_iter().enumerate() {
-                        div { style: "display: contents;",
-                            {render_drop_zone(__scope, Signal::new(Some(nid.get())), idx, drop_target, dragging_note_id, bid_signal, store)}
+                    for (_idx, child_id) in store.note_tree.get().and_then(|t| t.children.get(&nid.get()).cloned()).unwrap_or_default().into_iter().enumerate() {
+                        div { key: child_id.clone(), style: "display: contents;",
+                            {render_drop_zone(__scope, Signal::new(Some(nid.get())), _idx, drop_target, dragging_note_id, bid_signal, store)}
                             div { class: "note-child-row",
                                 {render_note_card(
                                     __scope,
                                     child_id.clone(),
                                     Some(nid.get()),
-                                    idx,
+                                    _idx,
                                     store,
                                     active_pane,
                                     bid_signal,
@@ -4555,14 +4555,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
                         if !store.notes.get().is_empty() {
                             div { class: "notes-tree",
-                                for (idx, root_id) in store.note_tree.get().map(|t| t.root_order.clone()).unwrap_or_default().into_iter().enumerate() {
-                                    div { style: "display: contents;",
-                                        {render_drop_zone(__scope, Signal::new(None), idx, drop_target, dragging_note_id, bid_signal, store)}
+                                for (_idx, root_id) in store.note_tree.get().map(|t| t.root_order.clone()).unwrap_or_default().into_iter().enumerate() {
+                                    div { key: root_id.clone(), style: "display: contents;",
+                                        {render_drop_zone(__scope, Signal::new(None), _idx, drop_target, dragging_note_id, bid_signal, store)}
                                         {render_note_card(
                                             __scope,
                                             root_id.clone(),
                                             None,
-                                            idx,
+                                            _idx,
                                             store,
                                             active_pane,
                                             bid_signal,
@@ -4646,6 +4646,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             div { class: "note-color-picker",
                                 for color in ["teal", "blue", "violet", "pink", "red", "orange", "yellow", "green", "gray"] {
                                     div {
+                                        key: color,
                                         class: {
                                             let c = color.to_string();
                                             move || {
@@ -4829,6 +4830,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 div { class: "note-color-picker",
                     for color in ["teal", "blue", "violet", "pink", "red", "orange", "yellow", "green", "gray"] {
                         div {
+                            key: color,
                             class: {
                                 let c = color.to_string();
                                 move || if new_note_color.get() == c { "note-color-dot selected" } else { "note-color-dot" }
