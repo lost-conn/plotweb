@@ -3,7 +3,7 @@ use rinch_core::Signal;
 use serde::{Deserialize, Serialize};
 
 /// A font entry from the Google Fonts catalog.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FontInfo {
     pub family: String,
     pub category: String,

@@ -925,22 +925,6 @@ const BOOK_WORKSPACE_CSS: &str = r#"
 }
 "#;
 
-// Web-only: serves the typography picker, which builds itself by injecting
-// HTML into the DOM (see `setup_font_pickers`).
-#[cfg(target_arch = "wasm32")]
-/// Slot definitions for font pickers
-const SLOTS: &[(&str, &str, &str, &str)] = &[
-    ("h1", "Heading 1", "Macondo Swash Caps", ""),
-    ("h2", "Heading 2", "Macondo Swash Caps", ""),
-    ("h3", "Heading 3+", "Macondo Swash Caps", ""),
-    ("body", "Body Text", "Playwrite DE Grund", ""),
-    ("quote", "Blockquote", "inherit", ""),
-    ("code", "Code", "monospace", "monospace"),
-];
-
-// Web-only: serves the typography picker, which builds itself by injecting
-// HTML into the DOM (see `setup_font_pickers`).
-#[cfg(target_arch = "wasm32")]
 const SPACING_OPTIONS: &[(f64, &str)] = &[
     (0.0, "None"),
     (4.0, "Tight"),
@@ -949,9 +933,6 @@ const SPACING_OPTIONS: &[(f64, &str)] = &[
     (24.0, "Loose"),
 ];
 
-// Web-only: serves the typography picker, which builds itself by injecting
-// HTML into the DOM (see `setup_font_pickers`).
-#[cfg(target_arch = "wasm32")]
 const INDENT_OPTIONS: &[(f64, &str)] = &[
     (0.0, "None"),
     (16.0, "Small"),
@@ -960,100 +941,199 @@ const INDENT_OPTIONS: &[(f64, &str)] = &[
     (48.0, "Extra"),
 ];
 
-// Web-only: serves the typography picker, which builds itself by injecting
-// HTML into the DOM (see `setup_font_pickers`).
-#[cfg(target_arch = "wasm32")]
-/// Build the HTML for the font picker grid.
-fn build_font_grid_html(fs: &FontSettings) -> String {
-    let mut html = String::new();
-    for &(slot, label, default, _) in SLOTS {
-        let current = match slot {
-            "h1" => fs.h1.as_deref(),
-            "h2" => fs.h2.as_deref(),
-            "h3" => fs.h3.as_deref(),
-            "body" => fs.body.as_deref(),
-            "quote" => fs.quote.as_deref(),
-            "code" => fs.code.as_deref(),
-            _ => None,
+/// Current family stored for a font slot, or "" if unset (the default shows via placeholder).
+fn slot_family(fs: &FontSettings, slot: &str) -> String {
+    match slot {
+        "h1" => fs.h1.clone(),
+        "h2" => fs.h2.clone(),
+        "h3" => fs.h3.clone(),
+        "body" => fs.body.clone(),
+        "quote" => fs.quote.clone(),
+        "code" => fs.code.clone(),
+        _ => None,
+    }
+    .unwrap_or_default()
+}
+
+/// Write a font slot on the settings (`None` = reset to default).
+fn set_slot(fs: &mut FontSettings, slot: &str, value: Option<String>) {
+    match slot {
+        "h1" => fs.h1 = value,
+        "h2" => fs.h2 = value,
+        "h3" => fs.h3 = value,
+        "body" => fs.body = value,
+        "quote" => fs.quote = value,
+        "code" => fs.code = value,
+        _ => {}
+    }
+}
+
+/// Fonts from the catalog matching `category` (empty = any) and `query`
+/// (empty = all), capped at 50. Reads `font_catalog()`, so calling it inside a
+/// reactive `for`/`if` scrutinee makes that block refresh when the async catalog
+/// arrives or the query changes.
+fn filtered_fonts(category: &str, query: &str) -> Vec<fonts::FontInfo> {
+    let q = query.to_lowercase();
+    fonts::font_catalog()
+        .get()
+        .into_iter()
+        .filter(|f| {
+            if !category.is_empty() && f.category != category {
+                return false;
+            }
+            q.is_empty() || f.family.to_lowercase().contains(&q)
+        })
+        .take(50)
+        .collect()
+}
+
+/// Persist font settings: update the signal + the current book, then debounce a
+/// PUT to the server. `load_book_fonts` is a documented no-op on native (glyph
+/// registration is Phase 3), so the choice round-trips and saves but the desktop
+/// glyphs won't change yet.
+fn save_font_settings(
+    fs: FontSettings,
+    font_settings: Signal<FontSettings>,
+    store: AppStore,
+    bid_signal: Signal<String>,
+    font_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
+) {
+    fonts::load_book_fonts(&fs);
+    font_settings.set(fs.clone());
+    store.current_book.update(|book| {
+        if let Some(b) = book {
+            b.font_settings = Some(fs.clone());
+        }
+    });
+    if let Some(h) = font_save_timer_id.get() {
+        rinch_core::clear_timeout(h);
+    }
+    let bid = bid_signal.get();
+    font_save_timer_id.set(Some(rinch_core::set_timeout(500, move || {
+        let req = UpdateBookRequest {
+            title: None,
+            description: None,
+            font_settings: Some(fs),
+            cover_image: None,
         };
-        let display_value = current.unwrap_or("");
-        let placeholder = format!("Search fonts... (default: {})", default);
-        html.push_str(&format!(
-            "<span class='font-selector-label'>{label}</span>\
-             <div class='font-picker' data-font-slot='{slot}'>\
-               <input type='text' value='{value}' placeholder='{placeholder}' autocomplete='off' />\
-               <div class='font-dropdown'></div>\
-             </div>",
-            label = label,
-            slot = slot,
-            value = display_value,
-            placeholder = placeholder,
-        ));
-    }
-    html
+        api::put::<_, serde_json::Value>(&format!("/api/books/{}", bid), &req, move |_result| {});
+    })));
 }
 
-// Web-only: serves the typography picker, which builds itself by injecting
-// HTML into the DOM (see `setup_font_pickers`).
-#[cfg(target_arch = "wasm32")]
-fn build_select_html(id: &str, options: &[(f64, &str)], current: f64) -> String {
-    let mut html = format!("<select id='{id}' class='pw-typo-select'>");
-    for &(val, label) in options {
-        let selected = if (val - current).abs() < 0.01 { " selected" } else { "" };
-        html.push_str(&format!("<option value='{val}'{selected}>{label}</option>"));
-    }
-    html.push_str("</select>");
-    html
-}
+/// One searchable font dropdown for a single slot — fully reactive rsx, so it
+/// works on web and native alike. `open_slot` holds the slot whose dropdown is
+/// currently shown; only one picker opens at a time and selecting/opening
+/// another dismisses the rest (this is also our click-outside substitute — there
+/// is no `onblur` to race the option click, which rinch fires on pointer-down).
+#[allow(clippy::too_many_arguments)]
+fn font_picker(
+    __scope: &mut RenderScope,
+    slot_name: &'static str,
+    default_family: &'static str,
+    category: &'static str,
+    font_settings: Signal<FontSettings>,
+    store: AppStore,
+    bid_signal: Signal<String>,
+    font_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
+    open_slot: Signal<&'static str>,
+) -> NodeHandle {
+    let query = Signal::new(slot_family(&font_settings.get(), slot_name));
+    // Keep the input in sync when `font_settings` changes externally (book load,
+    // reset). `set_if_changed` no-ops on the initial run and while the user types
+    // (only `query` changes then, not `font_settings`), so it never clobbers the
+    // in-progress search text.
+    __scope.create_effect(move || {
+        query.set_if_changed(slot_family(&font_settings.get(), slot_name));
+    });
 
-// Web-only: serves the typography picker, which builds itself by injecting
-// HTML into the DOM (see `setup_font_pickers`).
-#[cfg(target_arch = "wasm32")]
-/// Build the HTML for the spacing settings grid.
-fn build_spacing_grid_html(fs: &FontSettings) -> String {
-    let mut html = String::new();
-
-    html.push_str("<span class='font-selector-label'>Paragraph</span>");
-    html.push_str(&build_select_html("pw-paragraph-spacing", SPACING_OPTIONS, fs.paragraph_spacing.unwrap_or(8.0)));
-
-    html.push_str("<span class='font-selector-label'>Body Indent</span>");
-    html.push_str(&build_select_html("pw-paragraph-indent", INDENT_OPTIONS, fs.paragraph_indent.unwrap_or(0.0)));
-
-    html.push_str("<span class='font-selector-label'>Heading Indent</span>");
-    html.push_str(&build_select_html("pw-heading-indent", INDENT_OPTIONS, fs.heading_indent.unwrap_or(0.0)));
-
-    html
-}
-
-// Web-only: serves the typography picker, which builds itself by injecting
-// HTML into the DOM (see `setup_font_pickers`).
-#[cfg(target_arch = "wasm32")]
-/// Update the font preview box styles.
-fn update_preview(fs: &FontSettings) {
-    let document = match crate::platform::window().and_then(|w| w.document()) {
-        Some(d) => d,
-        None => return,
+    let apply = move |family: String| {
+        if !family.is_empty() {
+            fonts::load_single_font(&family);
+        }
+        let mut fs = font_settings.get();
+        let value = if family.is_empty() { None } else { Some(family.clone()) };
+        set_slot(&mut fs, slot_name, value);
+        save_font_settings(fs, font_settings, store, bid_signal, font_save_timer_id);
+        query.set(family);
+        open_slot.set("");
     };
 
-    if let Ok(Some(el)) = document.query_selector("#font-preview") {
-        let h1 = fs.h1.as_deref().unwrap_or("Macondo Swash Caps");
-        let h2 = fs.h2.as_deref().unwrap_or("Macondo Swash Caps");
-        let body = fs.body.as_deref().unwrap_or("Playwrite DE Grund");
-        let quote = fs.quote.as_deref().unwrap_or("inherit");
-        let code = fs.code.as_deref().unwrap_or("monospace");
-        let p_spacing = fs.paragraph_spacing.unwrap_or(8.0);
-        let p_indent = fs.paragraph_indent.unwrap_or(0.0);
-        let h_indent = fs.heading_indent.unwrap_or(0.0);
+    let placeholder = format!("Search fonts... (default: {})", default_family);
 
-        el.set_inner_html(&format!(
-            "<h3 style=\"font-family: '{}', cursive; text-indent: {}px\">Chapter Title</h3>\
-             <h4 style=\"font-family: '{}', cursive; text-indent: {}px\">Scene Heading</h4>\
-             <p class='preview-body' style=\"font-family: '{}', serif; margin-bottom: {}px; text-indent: {}px\">The quick brown fox jumps over the lazy dog. She stared out the window, watching the rain trace paths down the glass.</p>\
-             <p class='preview-body' style=\"font-family: '{}', serif; margin-bottom: {}px; text-indent: {}px\">The next morning, she found the letter on the doorstep, its edges curled and damp from the night air.</p>\
-             <blockquote style=\"font-family: '{}', serif\">\u{201c}All that glitters is not gold.\u{201d}</blockquote>\
-             <p><code style=\"font-family: '{}', monospace\">const story = new Adventure();</code></p>",
-            h1, h_indent, h2, h_indent, body, p_spacing, p_indent, body, p_spacing, p_indent, quote, code
-        ));
+    rsx! {
+        div { class: "font-picker", data-font-slot: slot_name,
+            input {
+                r#type: "text",
+                autocomplete: "off",
+                placeholder: placeholder,
+                value: {move || query.get()},
+                oninput: move |v: String| { query.set(v); open_slot.set(slot_name); },
+                onclick: move || open_slot.set(slot_name),
+            }
+            if open_slot.get() == slot_name {
+                div { class: "font-dropdown open",
+                    div {
+                        class: "font-option-default",
+                        data-font-value: "",
+                        onclick: move || apply(String::new()),
+                        {"Reset to default"}
+                    }
+                    for f in filtered_fonts(category, &query.get()) {
+                        {font_option(__scope, f.family.clone(), f.category.clone(), apply)}
+                    }
+                    if fonts::font_catalog().get().is_empty() {
+                        div { class: "font-loading", {"Loading fonts..."} }
+                    } else if filtered_fonts(category, &query.get()).is_empty() {
+                        div { class: "font-empty", {"No fonts found"} }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One font option row inside a picker dropdown. Takes owned strings so each
+/// consumer (the `data-font-value` attr effect, the click handler, the label
+/// text) gets its own copy without fighting rsx's move-capture.
+fn font_option(
+    __scope: &mut RenderScope,
+    family: String,
+    category: String,
+    apply: impl Fn(String) + 'static,
+) -> NodeHandle {
+    let fam_attr = family.clone();
+    let fam_click = family.clone();
+    rsx! {
+        div {
+            class: "font-option",
+            data-font-value: fam_attr,
+            onclick: move || apply(fam_click.clone()),
+            span { {family} }
+            span { class: "font-category", {category} }
+        }
+    }
+}
+
+/// A reactive `<select>` for a spacing/indent setting. Native `<select>` (not the
+/// `Select` component) so the e2e tests' `selectOption`/`#pw-…` locators keep
+/// working; rinch delivers its `change` as an `oninput`-style `Fn(String)`.
+fn typo_select(
+    __scope: &mut RenderScope,
+    id: &'static str,
+    options: &'static [(f64, &'static str)],
+    current: impl Fn() -> f64 + Copy + 'static,
+    apply: impl Fn(f64) + 'static,
+) -> NodeHandle {
+    rsx! {
+        select {
+            id: id,
+            class: "pw-typo-select",
+            value: {move || format!("{}", current())},
+            onchange: move |v: String| apply(v.parse().unwrap_or(0.0)),
+            for opt in options {
+                option { key: format!("{}", opt.0), value: format!("{}", opt.0), {opt.1} }
+            }
+        }
     }
 }
 
@@ -2724,11 +2804,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
     PAGE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     let page_gen = PAGE_GEN.with(|g| g.get());
     let font_settings = Signal::new(FontSettings::default());
-    // Debounce handle for font-settings saves. Only the typography picker writes
-    // font settings, and that picker is web-only (see `setup_font_pickers`).
-    #[cfg(target_arch = "wasm32")]
+    // Debounce handle for font-settings saves, written by the reactive Typography
+    // picker (cross-platform — see `font_picker` / `save_font_settings`).
     let font_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>> = Signal::new(None);
-    let listeners_attached = Signal::new(false);
+    // Which font slot's dropdown is currently open ("" = none). Shared across the
+    // six pickers so only one is open at a time.
+    let open_slot: Signal<&'static str> = Signal::new("");
 
     // Beta reader signals
     let beta_links: Signal<Vec<BetaReaderLink>> = Signal::new(Vec::new());
@@ -3160,338 +3241,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
         store.sidebar_open.update(|o| *o = !*o);
     };
 
-    // ── Typography font picker setup ────────────────────────────
-    // Native: inert. The whole picker is built imperatively — `set_inner_html`
-    // into `#font-selector-grid`, then `input`/`focus`/`blur`/`change` listeners
-    // attached to the resulting DOM nodes. Nothing here has a native equivalent
-    // yet, so desktop has no font/typography picker. (This block is also what
-    // encloses the nested handler closures further down, so gating it here keeps
-    // all of them off the native path.)
-    let setup_font_pickers = move || {
-        crate::web_only! {
-        let bid_for_save = bid_signal.get();
-        let closure = wasm_bindgen::closure::Closure::once(move || {
-            if listeners_attached.get() {
-                return;
-            }
-            let Some(document) = crate::platform::document() else { return; };
-
-            let fs = font_settings.get();
-            if let Ok(Some(grid)) = document.query_selector("#font-selector-grid") {
-                grid.set_inner_html(&build_font_grid_html(&fs));
-            }
-            if let Ok(Some(grid)) = document.query_selector("#spacing-selector-grid") {
-                grid.set_inner_html(&build_spacing_grid_html(&fs));
-            }
-
-            update_preview(&fs);
-
-            for &(slot_name, _, _, cat_filter) in SLOTS {
-                let selector = format!(".font-picker[data-font-slot='{}']", slot_name);
-                let picker_el = match document.query_selector(&selector) {
-                    Ok(Some(el)) => el,
-                    _ => continue,
-                };
-                let input_el: web_sys::HtmlInputElement = match picker_el.query_selector("input") {
-                    Ok(Some(el)) => el.dyn_into().unwrap(),
-                    _ => continue,
-                };
-                let dropdown_el = match picker_el.query_selector(".font-dropdown") {
-                    Ok(Some(el)) => el,
-                    _ => continue,
-                };
-
-                let slot = slot_name.to_string();
-                let cat = cat_filter.to_string();
-                let bid = bid_for_save.clone();
-                let input_ref = input_el.clone();
-                let dropdown_ref = dropdown_el.clone();
-
-                let apply_font = {
-                    let slot = slot.clone();
-                    let bid = bid.clone();
-                    let input_ref = input_ref.clone();
-                    let dropdown_ref = dropdown_ref.clone();
-                    move |family: String| {
-                        let new_value = if family.is_empty() { None } else { Some(family.clone()) };
-                        input_ref.set_value(&family);
-                        dropdown_ref.class_list().remove_1("open").ok();
-
-                        let mut fs = font_settings.get();
-                        match slot.as_str() {
-                            "h1" => fs.h1 = new_value,
-                            "h2" => fs.h2 = new_value,
-                            "h3" => fs.h3 = new_value,
-                            "body" => fs.body = new_value,
-                            "quote" => fs.quote = new_value,
-                            "code" => fs.code = new_value,
-                            _ => {}
-                        }
-
-                        fonts::load_book_fonts(&fs);
-                        font_settings.set(fs.clone());
-                        store.current_book.update(|book| {
-                            if let Some(b) = book {
-                                b.font_settings = Some(fs.clone());
-                            }
-                        });
-
-                        if let Some(h) = font_save_timer_id.get() {
-                            rinch_core::clear_timeout(h);
-                        }
-                        let bid = bid.clone();
-                        font_save_timer_id.set(Some(rinch_core::set_timeout(500, move || {
-                            let req = UpdateBookRequest {
-                                title: None,
-                                description: None,
-                                font_settings: Some(fs),
-                                cover_image: None,
-                            };
-                            api::put::<_, serde_json::Value>(
-                                &format!("/api/books/{}", bid),
-                                &req,
-                                move |_result| {},
-                            );
-                        })));
-                        update_preview(&font_settings.get());
-                    }
-                };
-
-                // Input handler
-                let apply_for_input = apply_font.clone();
-                let dropdown_for_input = dropdown_ref.clone();
-                let cat_for_input = cat.clone();
-                let input_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                    let query = input_ref.value().to_lowercase();
-                    let catalog = fonts::font_catalog().get();
-                    let dropdown = &dropdown_for_input;
-
-                    if catalog.is_empty() {
-                        dropdown.set_inner_html("<div class='font-loading'>Loading fonts...</div>");
-                        dropdown.class_list().add_1("open").ok();
-                        return;
-                    }
-
-                    let filtered: Vec<&fonts::FontInfo> = catalog.iter()
-                        .filter(|f| {
-                            if !cat_for_input.is_empty() && f.category != cat_for_input {
-                                return false;
-                            }
-                            if query.is_empty() { return true; }
-                            f.family.to_lowercase().contains(&query)
-                        })
-                        .take(50)
-                        .collect();
-
-                    let mut html = String::from(
-                        "<div class='font-option-default' data-font-value=''>Reset to default</div>"
-                    );
-                    if filtered.is_empty() {
-                        html.push_str("<div class='font-empty'>No fonts found</div>");
-                    } else {
-                        for f in &filtered {
-                            html.push_str(&format!(
-                                "<div class='font-option' data-font-value='{family}'>\
-                                   <span>{family}</span>\
-                                   <span class='font-category'>{cat}</span>\
-                                 </div>",
-                                family = f.family,
-                                cat = f.category,
-                            ));
-                        }
-                    }
-                    dropdown.set_inner_html(&html);
-                    dropdown.class_list().add_1("open").ok();
-
-                    let options = dropdown.query_selector_all("[data-font-value]").unwrap();
-                    for i in 0..options.length() {
-                        if let Some(opt) = options.item(i) {
-                            let el: web_sys::Element = opt.dyn_into().unwrap();
-                            let value = el.get_attribute("data-font-value").unwrap_or_default();
-                            let apply = apply_for_input.clone();
-                            let click_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |e: web_sys::Event| {
-                                e.prevent_default();
-                                e.stop_propagation();
-                                let v = value.clone();
-                                if !v.is_empty() { fonts::load_single_font(&v); }
-                                apply(v);
-                            }) as Box<dyn FnMut(_)>);
-                            el.add_event_listener_with_callback("mousedown", click_handler.as_ref().unchecked_ref()).ok();
-                            click_handler.forget();
-                        }
-                    }
-                }) as Box<dyn FnMut(_)>);
-                input_el.add_event_listener_with_callback("input", input_handler.as_ref().unchecked_ref()).ok();
-                input_handler.forget();
-
-                // Focus handler
-                let input_for_focus = input_el.clone();
-                let dropdown_for_focus = dropdown_ref.clone();
-                let cat_for_focus = cat.clone();
-                let apply_for_focus = apply_font.clone();
-                let focus_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                    let query = input_for_focus.value().to_lowercase();
-                    let catalog = fonts::font_catalog().get();
-                    let dropdown = &dropdown_for_focus;
-
-                    if catalog.is_empty() {
-                        dropdown.set_inner_html("<div class='font-loading'>Loading fonts...</div>");
-                        dropdown.class_list().add_1("open").ok();
-                        return;
-                    }
-
-                    let filtered: Vec<&fonts::FontInfo> = catalog.iter()
-                        .filter(|f| {
-                            if !cat_for_focus.is_empty() && f.category != cat_for_focus {
-                                return false;
-                            }
-                            if query.is_empty() { return true; }
-                            f.family.to_lowercase().contains(&query)
-                        })
-                        .take(50)
-                        .collect();
-
-                    let mut html = String::from(
-                        "<div class='font-option-default' data-font-value=''>Reset to default</div>"
-                    );
-                    if filtered.is_empty() {
-                        html.push_str("<div class='font-empty'>No fonts found</div>");
-                    } else {
-                        for f in &filtered {
-                            html.push_str(&format!(
-                                "<div class='font-option' data-font-value='{family}'>\
-                                   <span>{family}</span>\
-                                   <span class='font-category'>{cat}</span>\
-                                 </div>",
-                                family = f.family,
-                                cat = f.category,
-                            ));
-                        }
-                    }
-                    dropdown.set_inner_html(&html);
-                    dropdown.class_list().add_1("open").ok();
-
-                    let options = dropdown.query_selector_all("[data-font-value]").unwrap();
-                    for i in 0..options.length() {
-                        if let Some(opt) = options.item(i) {
-                            let el: web_sys::Element = opt.dyn_into().unwrap();
-                            let value = el.get_attribute("data-font-value").unwrap_or_default();
-                            let apply = apply_for_focus.clone();
-                            let click_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |e: web_sys::Event| {
-                                e.prevent_default();
-                                e.stop_propagation();
-                                let v = value.clone();
-                                if !v.is_empty() { fonts::load_single_font(&v); }
-                                apply(v);
-                            }) as Box<dyn FnMut(_)>);
-                            el.add_event_listener_with_callback("mousedown", click_handler.as_ref().unchecked_ref()).ok();
-                            click_handler.forget();
-                        }
-                    }
-                }) as Box<dyn FnMut(_)>);
-                input_el.add_event_listener_with_callback("focus", focus_handler.as_ref().unchecked_ref()).ok();
-                focus_handler.forget();
-
-                // Blur handler
-                let dropdown_for_blur = dropdown_ref.clone();
-                let blur_handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
-                    dropdown_for_blur.class_list().remove_1("open").ok();
-                }) as Box<dyn FnMut(_)>);
-                input_el.add_event_listener_with_callback("blur", blur_handler.as_ref().unchecked_ref()).ok();
-                blur_handler.forget();
-            }
-
-            // ── Paragraph spacing/indent select handlers ──
-            let save_typography = {
-                let bid = bid_for_save.clone();
-                move |fs: FontSettings| {
-                    fonts::load_book_fonts(&fs);
-                    font_settings.set(fs.clone());
-                    store.current_book.update(|book| {
-                        if let Some(b) = book {
-                            b.font_settings = Some(fs.clone());
-                        }
-                    });
-                    if let Some(h) = font_save_timer_id.get() {
-                        rinch_core::clear_timeout(h);
-                    }
-                    let bid = bid.clone();
-                    font_save_timer_id.set(Some(rinch_core::set_timeout(500, move || {
-                        let req = UpdateBookRequest {
-                            title: None,
-                            description: None,
-                            font_settings: Some(fs),
-                            cover_image: None,
-                        };
-                        api::put::<_, serde_json::Value>(
-                            &format!("/api/books/{}", bid),
-                            &req,
-                            move |_result| {},
-                        );
-                    })));
-                    update_preview(&font_settings.get());
-                }
-            };
-
-            if let Ok(Some(el)) = document.query_selector("#pw-paragraph-spacing") {
-                let save = save_typography.clone();
-                let doc = document.clone();
-                let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
-                    let el: web_sys::HtmlSelectElement = doc.query_selector("#pw-paragraph-spacing")
-                        .ok().flatten().unwrap().dyn_into().unwrap();
-                    let val: f64 = el.value().parse().unwrap_or(8.0);
-                    let mut fs = font_settings.get();
-                    fs.paragraph_spacing = if (val - 8.0).abs() < 0.01 { None } else { Some(val) };
-                    save(fs);
-                }) as Box<dyn FnMut(_)>);
-                el.add_event_listener_with_callback("change", handler.as_ref().unchecked_ref()).ok();
-                handler.forget();
-            }
-
-            if let Ok(Some(el)) = document.query_selector("#pw-paragraph-indent") {
-                let save = save_typography.clone();
-                let doc = document.clone();
-                let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
-                    let el: web_sys::HtmlSelectElement = doc.query_selector("#pw-paragraph-indent")
-                        .ok().flatten().unwrap().dyn_into().unwrap();
-                    let val: f64 = el.value().parse().unwrap_or(0.0);
-                    let mut fs = font_settings.get();
-                    fs.paragraph_indent = if val.abs() < 0.01 { None } else { Some(val) };
-                    save(fs);
-                }) as Box<dyn FnMut(_)>);
-                el.add_event_listener_with_callback("change", handler.as_ref().unchecked_ref()).ok();
-                handler.forget();
-            }
-
-            if let Ok(Some(el)) = document.query_selector("#pw-heading-indent") {
-                let save = save_typography.clone();
-                let doc = document.clone();
-                let handler = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::Event| {
-                    let el: web_sys::HtmlSelectElement = doc.query_selector("#pw-heading-indent")
-                        .ok().flatten().unwrap().dyn_into().unwrap();
-                    let val: f64 = el.value().parse().unwrap_or(0.0);
-                    let mut fs = font_settings.get();
-                    fs.heading_indent = if val.abs() < 0.01 { None } else { Some(val) };
-                    save(fs);
-                }) as Box<dyn FnMut(_)>);
-                el.add_event_listener_with_callback("change", handler.as_ref().unchecked_ref()).ok();
-                handler.forget();
-            }
-
-            listeners_attached.set(true);
-        });
-        if let Some(window) = crate::platform::window() {
-            window
-                .set_timeout_with_callback_and_timeout_and_arguments_0(
-                    closure.as_ref().unchecked_ref(),
-                    100,
-                )
-                .ok();
-        }
-        closure.forget();
-        }
-    };
-
     // Factory closures capture only Copy types (Signals) so they are Copy themselves.
     // This lets the rsx macro use them in multiple for-loops without move issues.
     let open_chapter = move |chapter_id: String| {
@@ -3776,15 +3525,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
         store.sidebar_open.set(false);
     };
 
-    let open_typography_pane = {
-        let setup = setup_font_pickers.clone();
-        move || {
-            flush_editor_if_active();
-            active_pane.set(BookPane::Typography);
-            listeners_attached.set(false);
-            setup();
-            store.sidebar_open.set(false);
-        }
+    let open_typography_pane = move || {
+        flush_editor_if_active();
+        active_pane.set(BookPane::Typography);
+        store.sidebar_open.set(false);
     };
 
     let open_beta_pane = move || {
@@ -4441,14 +4185,109 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             div { class: "typography-section",
                                 Text { weight: "600", size: "sm", "Fonts" }
                                 Space { h: "xs" }
-                                div { class: "font-selector-grid", id: "font-selector-grid" }
+                                div { class: "font-selector-grid", id: "font-selector-grid",
+                                    span { class: "font-selector-label", "Heading 1" }
+                                    {font_picker(__scope, "h1", "Macondo Swash Caps", "", font_settings, store, bid_signal, font_save_timer_id, open_slot)}
+                                    span { class: "font-selector-label", "Heading 2" }
+                                    {font_picker(__scope, "h2", "Macondo Swash Caps", "", font_settings, store, bid_signal, font_save_timer_id, open_slot)}
+                                    span { class: "font-selector-label", "Heading 3+" }
+                                    {font_picker(__scope, "h3", "Macondo Swash Caps", "", font_settings, store, bid_signal, font_save_timer_id, open_slot)}
+                                    span { class: "font-selector-label", "Body Text" }
+                                    {font_picker(__scope, "body", "Playwrite DE Grund", "", font_settings, store, bid_signal, font_save_timer_id, open_slot)}
+                                    span { class: "font-selector-label", "Blockquote" }
+                                    {font_picker(__scope, "quote", "inherit", "", font_settings, store, bid_signal, font_save_timer_id, open_slot)}
+                                    span { class: "font-selector-label", "Code" }
+                                    {font_picker(__scope, "code", "monospace", "monospace", font_settings, store, bid_signal, font_save_timer_id, open_slot)}
+                                }
                                 Space { h: "lg" }
                                 Text { weight: "600", size: "sm", "Spacing" }
                                 Space { h: "xs" }
-                                div { class: "font-selector-grid", id: "spacing-selector-grid" }
+                                div { class: "font-selector-grid", id: "spacing-selector-grid",
+                                    span { class: "font-selector-label", "Paragraph" }
+                                    {typo_select(__scope, "pw-paragraph-spacing", SPACING_OPTIONS,
+                                        move || font_settings.get().paragraph_spacing.unwrap_or(8.0),
+                                        move |val: f64| {
+                                            let mut fs = font_settings.get();
+                                            fs.paragraph_spacing = if (val - 8.0).abs() < 0.01 { None } else { Some(val) };
+                                            save_font_settings(fs, font_settings, store, bid_signal, font_save_timer_id);
+                                        })}
+                                    span { class: "font-selector-label", "Body Indent" }
+                                    {typo_select(__scope, "pw-paragraph-indent", INDENT_OPTIONS,
+                                        move || font_settings.get().paragraph_indent.unwrap_or(0.0),
+                                        move |val: f64| {
+                                            let mut fs = font_settings.get();
+                                            fs.paragraph_indent = if val.abs() < 0.01 { None } else { Some(val) };
+                                            save_font_settings(fs, font_settings, store, bid_signal, font_save_timer_id);
+                                        })}
+                                    span { class: "font-selector-label", "Heading Indent" }
+                                    {typo_select(__scope, "pw-heading-indent", INDENT_OPTIONS,
+                                        move || font_settings.get().heading_indent.unwrap_or(0.0),
+                                        move |val: f64| {
+                                            let mut fs = font_settings.get();
+                                            fs.heading_indent = if val.abs() < 0.01 { None } else { Some(val) };
+                                            save_font_settings(fs, font_settings, store, bid_signal, font_save_timer_id);
+                                        })}
+                                }
                                 Space { h: "lg" }
                                 Text { size: "sm", color: "dimmed", "Preview:" }
-                                div { class: "font-preview-box", id: "font-preview" }
+                                div { class: "font-preview-box", id: "font-preview",
+                                    h3 {
+                                        style: {move || {
+                                            let fs = font_settings.get();
+                                            format!("font-family: '{}', cursive; text-indent: {}px",
+                                                fs.h1.as_deref().unwrap_or("Macondo Swash Caps"),
+                                                fs.heading_indent.unwrap_or(0.0))
+                                        }},
+                                        {"Chapter Title"}
+                                    }
+                                    h4 {
+                                        style: {move || {
+                                            let fs = font_settings.get();
+                                            format!("font-family: '{}', cursive; text-indent: {}px",
+                                                fs.h2.as_deref().unwrap_or("Macondo Swash Caps"),
+                                                fs.heading_indent.unwrap_or(0.0))
+                                        }},
+                                        {"Scene Heading"}
+                                    }
+                                    p {
+                                        class: "preview-body",
+                                        style: {move || {
+                                            let fs = font_settings.get();
+                                            format!("font-family: '{}', serif; margin-bottom: {}px; text-indent: {}px",
+                                                fs.body.as_deref().unwrap_or("Playwrite DE Grund"),
+                                                fs.paragraph_spacing.unwrap_or(8.0),
+                                                fs.paragraph_indent.unwrap_or(0.0))
+                                        }},
+                                        {"The quick brown fox jumps over the lazy dog. She stared out the window, watching the rain trace paths down the glass."}
+                                    }
+                                    p {
+                                        class: "preview-body",
+                                        style: {move || {
+                                            let fs = font_settings.get();
+                                            format!("font-family: '{}', serif; margin-bottom: {}px; text-indent: {}px",
+                                                fs.body.as_deref().unwrap_or("Playwrite DE Grund"),
+                                                fs.paragraph_spacing.unwrap_or(8.0),
+                                                fs.paragraph_indent.unwrap_or(0.0))
+                                        }},
+                                        {"The next morning, she found the letter on the doorstep, its edges curled and damp from the night air."}
+                                    }
+                                    blockquote {
+                                        style: {move || {
+                                            let fs = font_settings.get();
+                                            format!("font-family: '{}', serif", fs.quote.as_deref().unwrap_or("inherit"))
+                                        }},
+                                        {"\u{201c}All that glitters is not gold.\u{201d}"}
+                                    }
+                                    p {
+                                        code {
+                                            style: {move || {
+                                                let fs = font_settings.get();
+                                                format!("font-family: '{}', monospace", fs.code.as_deref().unwrap_or("monospace"))
+                                            }},
+                                            {"const story = new Adventure();"}
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
