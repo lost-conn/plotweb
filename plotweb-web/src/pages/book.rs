@@ -3157,6 +3157,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
             &req,
             move |result| {
                 if result.is_ok() {
+                    // Dual-write: update the dashboard's cached title/cover for this
+                    // book in the local `user:` doc (updated_at preserved — the PUT
+                    // returns no body, so there is no fresh server timestamp).
+                    if let Some(user) = store.current_user.get() {
+                        crate::local_user::update_book(&user.id, &bid, &title, cover.as_deref());
+                    }
                     store.current_book.update(|book| {
                         if let Some(b) = book {
                             b.title = title;

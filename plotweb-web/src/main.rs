@@ -1,6 +1,7 @@
 pub mod api;
 pub mod local_book;
 pub mod local_store;
+pub mod local_user;
 pub mod store;
 pub mod router;
 pub mod pages;

@@ -239,10 +239,15 @@ pub fn dashboard_page() -> NodeHandle {
     let new_title = Signal::new(String::new());
     let new_desc = Signal::new(String::new());
 
-    // Fetch books on mount
+    // Fetch books on mount, then back the list with the local-first `user:` doc:
+    // seed it from this REST list (first open) or load the local doc (which then
+    // wins the projection into `store.books`). See crate::local_user.
     api::get::<Vec<Book>>("/api/books", move |books_result| {
         if let Ok(books) = books_result {
-            store.books.set(books);
+            store.books.set(books.clone());
+            if let Some(user) = store.current_user.get() {
+                crate::local_user::enter_user(user.id, books, store);
+            }
         }
         api::get::<Vec<SharedBook>>("/api/shared-books", move |shared_result| {
             if let Ok(shared) = shared_result {
@@ -281,6 +286,10 @@ pub fn dashboard_page() -> NodeHandle {
         };
         api::post::<_, Book>("/api/books", &req, move |result| {
             if let Ok(book) = result {
+                // Dual-write: cache the new book in the local `user:` doc beside REST.
+                if let Some(user) = store.current_user.get() {
+                    crate::local_user::add_book(&user.id, &book);
+                }
                 store.books.update(|books| books.insert(0, book));
             }
         });
@@ -303,6 +312,10 @@ pub fn dashboard_page() -> NodeHandle {
             let id = id.clone();
             api::delete_req::<serde_json::Value>(&format!("/api/books/{}", id), move |result| {
                 if result.is_ok() {
+                    // Dual-write: drop the cached entry from the local `user:` doc.
+                    if let Some(user) = store.current_user.get() {
+                        crate::local_user::remove_book(&user.id, &id);
+                    }
                     store.books.update(|books| books.retain(|b| b.id != id));
                 }
             });
