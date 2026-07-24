@@ -25,6 +25,12 @@ rinch-http = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b3
 # Cross-platform durable local storage (native FsStore / web IdbStore). The local-
 # first seam for chapter-body Automerge docs (Phase 2). Cross-platform, so shared.
 rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b33bdaeccef3cec69722e30702ac" }
+# Hand-projected `book:` structure doc (chapter order/titles, notes tree, meta).
+# Already in the tree transitively (rinch-editor-collab / rinch-web `collaboration`);
+# named directly so `local_book.rs` can build/read a plain Automerge doc. On wasm the
+# transitive automerge→uuid needs the `js` randomness feature (set below, as the
+# body-CRDT path already required).
+automerge = "0.5"
 
 
 wasm-bindgen = "0.2"

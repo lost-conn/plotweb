@@ -354,16 +354,20 @@ impl OutboundSink {
 pub fn attach_chapter(handle: EditorHandle, chapter_id: String, seed_content: String) {
     let doc_id = format!("chapter:{chapter_id}");
     spawn(async move {
-        if let Err(e) = attach_chapter_inner(&handle, &doc_id, &seed_content).await {
+        if let Err(e) = attach_body_inner(&handle, &doc_id, &seed_content, BodyKind::Chapter).await {
             log::warn!("local-first: {doc_id}: {e}");
         }
     });
 }
 
-async fn attach_chapter_inner(
+/// Shared body-doc attach for a chapter or a note (they differ only in `kind`'s
+/// legacy-content seed loader). Adopts a local doc if one exists (guest + delta
+/// replay + compaction), else seeds a fresh host doc from `seed_content`.
+async fn attach_body_inner(
     handle: &EditorHandle,
     doc_id: &str,
     seed_content: &str,
+    kind: BodyKind,
 ) -> StorageResult<()> {
     // Detach any prior session before touching the editor model.
     handle.stop_collaboration();
@@ -380,7 +384,7 @@ async fn attach_chapter_inner(
             {
                 // Base snapshot unreadable / out of the staged collab scope — the
                 // editor is still untouched, so re-seed from REST and host afresh.
-                return seed_and_host(handle, &store, seed_content).await;
+                return seed_and_host_kind(handle, &store, seed_content, kind).await;
             }
             // Replay the persisted delta log to reach the last-saved content.
             // `collab_receive` integrates without re-broadcasting, so `sink` stays
@@ -397,18 +401,53 @@ async fn attach_chapter_inner(
             sink.publish(generation);
             Ok(())
         }
-        None => seed_and_host(handle, &store, seed_content).await,
+        None => seed_and_host_kind(handle, &store, seed_content, kind).await,
+    }
+}
+
+/// Attach local-first persistence to `handle` for note `note_id` — the note-body
+/// mirror of [`attach_chapter`] (doc-id `note:{note_id}`, same collab byte seam,
+/// same dual-write). Seeds from `seed_content` (the REST-fetched note body) when no
+/// local document exists yet. Note *structure* (title/color/tree position) is not a
+/// body concern — it lives in the `book:` doc (see [`crate::local_book`]).
+pub fn attach_note(handle: EditorHandle, note_id: String, seed_content: String) {
+    let doc_id = format!("note:{note_id}");
+    spawn(async move {
+        if let Err(e) = attach_body_inner(&handle, &doc_id, &seed_content, BodyKind::Note).await {
+            log::warn!("local-first: {doc_id}: {e}");
+        }
+    });
+}
+
+/// Which editor loader seeds a fresh body doc (chapter vs note). The two differ only
+/// in the legacy-content fallback (`load_chapter_content` / `load_note_content`); the
+/// CRDT collab seam and dual-write are identical.
+#[derive(Clone, Copy)]
+enum BodyKind {
+    Chapter,
+    Note,
+}
+
+impl BodyKind {
+    fn seed_editor(self, handle: &EditorHandle, seed_content: &str) {
+        match self {
+            BodyKind::Chapter => {
+                crate::pages::editor_utils::load_chapter_content(handle, seed_content)
+            }
+            BodyKind::Note => crate::pages::editor_utils::load_note_content(handle, seed_content),
+        }
     }
 }
 
 /// Fresh-doc path: seed the editor from the REST content, project it onto a new
 /// CRDT as host, and publish the initial snapshot.
-async fn seed_and_host(
+async fn seed_and_host_kind(
     handle: &EditorHandle,
     store: &DocStore,
     seed_content: &str,
+    kind: BodyKind,
 ) -> StorageResult<()> {
-    crate::pages::editor_utils::load_chapter_content(handle, seed_content);
+    kind.seed_editor(handle, seed_content);
 
     let sink = OutboundSink::new(store.clone());
     let out = sink.clone();

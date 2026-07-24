@@ -2158,6 +2158,7 @@ fn do_switch_chapter_inner(
                 }
             });
             let bid = bid.to_string();
+            crate::local_book::sync_chapters(&bid, &store.chapters.get());
             let req = UpdateChapterRequest {
                 title: Some(title),
                 content: None,
@@ -2412,6 +2413,7 @@ fn perform_note_move(
                 index: target.1,
             };
             let bid_refresh = bid.clone();
+            let bid_sync = bid.clone();
             api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/notes/move", bid), &req,
                 move |result| {
@@ -2420,6 +2422,7 @@ fn perform_note_move(
                             &format!("/api/books/{}/notes", bid_refresh),
                             move |resp_result| {
                                 if let Ok(resp) = resp_result {
+                                    crate::local_book::sync_notes(&bid_sync, &resp.notes, &resp.tree);
                                     store.notes.set(resp.notes);
                                     store.note_tree.set(Some(resp.tree));
                                 }
@@ -2628,6 +2631,15 @@ fn render_note_card(
                                 let handle = note_handle.get();
                                 editor_utils::load_note_content(&handle, &note.content);
                                 handle.set_dark_mode(store.dark_mode.get());
+
+                                // Local-first (deliverable 2): back this note body with
+                                // a durable Automerge doc (`note:{id}`) — the body-CRDT
+                                // mirror of the chapter path. Additive/dual-write.
+                                crate::local_store::attach_note(
+                                    handle.clone(),
+                                    n.clone(),
+                                    note.content.clone(),
+                                );
                             }
                             },
                         );
@@ -2664,6 +2676,7 @@ fn render_note_card(
                                     let n = nid.get();
                                     let bid = bid_signal.get();
                                     let bid_refresh = bid.clone();
+                                    let bid_sync = bid_refresh.clone();
                                     api::delete_req::<serde_json::Value>(
                                         &format!("/api/books/{}/notes/{}", bid, n),
                                         move |result| {
@@ -2672,6 +2685,7 @@ fn render_note_card(
                                                     &format!("/api/books/{}/notes", bid_refresh),
                                                     move |resp_result| {
                                                         if let Ok(resp) = resp_result {
+                                                            crate::local_book::sync_notes(&bid_sync, &resp.notes, &resp.tree);
                                                             store.notes.set(resp.notes);
                                                             store.note_tree.set(Some(resp.tree));
                                                         }
@@ -2712,6 +2726,7 @@ fn render_note_card(
                                 }
                                 store.note_tree.set(Some(new_tree.clone()));
                                 let bid = bid_signal.get();
+                                crate::local_book::sync_notes(&bid, &store.notes.get(), &new_tree);
                                 let tree_req = UpdateNoteTreeRequest {
                                     tree: NoteTree {
                                         root_order: new_tree.root_order,
@@ -2919,16 +2934,45 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Fetch book and chapters
     let bid = book_id.clone();
     api::get::<Book>(&format!("/api/books/{}", bid), move |book_result| {
-        if let Ok(book) = book_result {
-            let fs = book.font_settings.clone().unwrap_or_default();
-            fonts::load_book_fonts(&fs);
-            font_settings.set(fs);
-            store.current_book.set(Some(book));
-        }
-        api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid), move |ch_result| {
-            if let Ok(chapters) = ch_result {
-                store.chapters.set(chapters);
+        let book_opt = match book_result {
+            Ok(book) => {
+                let fs = book.font_settings.clone().unwrap_or_default();
+                fonts::load_book_fonts(&fs);
+                font_settings.set(fs);
+                store.current_book.set(Some(book.clone()));
+                Some(book)
             }
+            Err(_) => None,
+        };
+        api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid), move |ch_result| {
+            let chapters = ch_result.unwrap_or_default();
+            store.chapters.set(chapters.clone());
+
+            // Local-first book structure (Phase 2 · Slice 1 · deliverable 2): also
+            // fetch the notes, then seed-or-load the hand-projected `book:` Automerge
+            // doc and project it back over the REST signals (chapter order/titles +
+            // notes tree). On divergence the local doc wins. Additive — the REST
+            // loads/PUTs stay intact (dual-write).
+            let bid_book = bid.clone();
+            api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid), move |notes_result| {
+                let (notes, tree) = match notes_result {
+                    Ok(resp) => (resp.notes, resp.tree),
+                    Err(_) => (
+                        Vec::new(),
+                        NoteTree {
+                            root_order: Vec::new(),
+                            children: Default::default(),
+                            collapsed: Vec::new(),
+                        },
+                    ),
+                };
+                store.notes.set(notes.clone());
+                store.note_tree.set(Some(tree.clone()));
+                if let Some(book) = book_opt {
+                    crate::local_book::enter(bid_book, book, chapters, notes, tree, store);
+                }
+            });
+
             api::get::<Vec<BetaReaderLink>>(&format!("/api/books/{}/beta-links", bid), move |links_result| {
                 if let Ok(links) = links_result {
                     beta_links.set(links);
@@ -3078,6 +3122,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }
         show_chapter_modal.set(false);
         let bid = bid_signal.get();
+        let bid_sync = bid.clone();
         let req = CreateChapterRequest { title };
         api::post::<_, Chapter>(
             &format!("/api/books/{}/chapters", bid),
@@ -3085,6 +3130,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             move |result| {
                 if let Ok(chapter) = result {
                     store.chapters.update(|ch| ch.push(chapter));
+                    crate::local_book::sync_chapters(&bid_sync, &store.chapters.get());
                 }
             },
         );
@@ -3131,6 +3177,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }
         show_rename_chapter_modal.set(false);
         let bid = bid_signal.get();
+        let bid_sync = bid.clone();
         let cid = rename_chapter_id.get();
         let req = UpdateChapterRequest {
             title: Some(title.clone()),
@@ -3146,6 +3193,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             ch.title = title.clone();
                         }
                     });
+                    crate::local_book::sync_chapters(&bid_sync, &store.chapters.get());
                     // Update editor title if this chapter is currently open
                     if let BookPane::Editor(ref open_cid) = active_pane.get() {
                         if *open_cid == cid {
@@ -3178,6 +3226,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             } else { return; }
             let cid = captured_cid;
             let title = new_title.clone();
+            let bid_sync = captured_bid.clone();
             let req = UpdateChapterRequest {
                 title: Some(title.clone()),
                 content: None,
@@ -3192,6 +3241,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 ch.title = title;
                             }
                         });
+                        crate::local_book::sync_chapters(&bid_sync, &store.chapters.get());
                     }
                 },
             );
@@ -3211,6 +3261,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             });
             let ids: Vec<String> = store.chapters.get().iter().map(|c| c.id.clone()).collect();
             let bid = bid_signal.get();
+            crate::local_book::sync_chapters(&bid, &store.chapters.get());
             let req = ReorderChaptersRequest { chapter_ids: ids };
             api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid), &req, move |_result| {});
         }
@@ -3220,6 +3271,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         move || {
             let cid = chapter_id.clone();
             let bid = bid_signal.get();
+            let bid_sync = bid.clone();
             api::delete_req::<serde_json::Value>(
                 &format!("/api/books/{}/chapters/{}", bid, cid),
                 move |result| {
@@ -3228,6 +3280,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             active_pane.set(BookPane::Chapters);
                         }
                         store.chapters.update(|ch| ch.retain(|c| c.id != cid));
+                        crate::local_book::sync_chapters(&bid_sync, &store.chapters.get());
                     }
                 },
             );
@@ -3574,6 +3627,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
             if let Ok(resp) = result {
                 store.notes.set(resp.notes);
                 store.note_tree.set(Some(resp.tree));
+                // Read path: re-project the local `book:` doc's structure over the
+                // REST notes so the local tree/titles/colors win on divergence.
+                crate::local_book::project_notes(store);
             }
         });
     };
@@ -3595,12 +3651,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
             color: Some(color),
         };
         let bid_refresh = bid.clone();
+        let bid_sync = bid.clone();
         api::post::<_, Note>(&format!("/api/books/{}/notes", bid), &req, move |result| {
             match result {
                 Ok(_note) => {
                     // Refresh tree
                     api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid_refresh), move |resp_result| {
                         if let Ok(resp) = resp_result {
+                            crate::local_book::sync_notes(&bid_sync, &resp.notes, &resp.tree);
                             store.notes.set(resp.notes);
                             store.note_tree.set(Some(resp.tree));
                         }
@@ -3620,6 +3678,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
             // Serialize the durable save shape (DocNode JSON) from the note editor model.
             let content = editor_utils::editor_content_json(&note_handle.get()).unwrap_or_default();
+
+            // Local-first: mirror the rename/recolor into the `book:` doc's note
+            // titles/colors Maps (structure decoupled), beside the REST PUT below.
+            crate::local_book::note_meta(&bid, &nid, Some(&title_val), color_val.as_deref());
 
             note_save_status.set("saving");
             let req = UpdateNoteRequest {
@@ -3671,6 +3733,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             if let Ok(resp) = result {
                 store.notes.set(resp.notes);
                 store.note_tree.set(Some(resp.tree));
+                crate::local_book::project_notes(store);
             }
         });
     };
