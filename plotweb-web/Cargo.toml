@@ -22,6 +22,9 @@ rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37
 # Cross-platform HTTP client (web fetch / native ureq); replaces the web-only
 # fetch in api.rs so the frontend compiles for desktop too.
 rinch-http = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b33bdaeccef3cec69722e30702ac" }
+# Cross-platform durable local storage (native FsStore / web IdbStore). The local-
+# first seam for chapter-body Automerge docs (Phase 2). Cross-platform, so shared.
+rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b33bdaeccef3cec69722e30702ac" }
 
 
 wasm-bindgen = "0.2"
@@ -75,6 +78,12 @@ uuid = { version = "1", features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rinch = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b33bdaeccef3cec69722e30702ac", features = ["desktop", "collaboration"] }
+
+# Native durability proof (local_store::tests): drive the chapter-body Automerge
+# round-trip (CollabSession) against a tempdir FsStore, no GUI needed.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b33bdaeccef3cec69722e30702ac" }
+tempfile = "3"
 
 [profile.dev]
 opt-level = 1

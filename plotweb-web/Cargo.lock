@@ -805,7 +805,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2140,7 +2140,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2662,13 +2662,16 @@ dependencies = [
  "plotweb-common",
  "rinch",
  "rinch-core",
+ "rinch-editor-collab",
  "rinch-editor-core",
  "rinch-http",
+ "rinch-storage",
  "rinch-tabler-icons",
  "rinch-web",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
+ "tempfile",
  "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -3190,6 +3193,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rinch-storage"
+version = "0.1.0"
+source = "git+https://github.com/joeleaver/rinch?rev=f7e1c37a0c50b33bdaeccef3cec69722e30702ac#f7e1c37a0c50b33bdaeccef3cec69722e30702ac"
+dependencies = [
+ "js-sys",
+ "thiserror 1.0.69",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "rinch-tabler-icons"
 version = "0.1.0"
 source = "git+https://github.com/joeleaver/rinch?rev=f7e1c37a0c50b33bdaeccef3cec69722e30702ac#f7e1c37a0c50b33bdaeccef3cec69722e30702ac"
@@ -3274,7 +3288,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3936,6 +3950,19 @@ name = "target-lexicon"
 version = "0.12.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
+
+[[package]]
+name = "tempfile"
+version = "3.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+dependencies = [
+ "fastrand",
+ "getrandom 0.4.3",
+ "once_cell",
+ "rustix",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "termcolor"
@@ -4881,7 +4908,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

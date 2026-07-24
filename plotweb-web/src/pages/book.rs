@@ -2235,6 +2235,18 @@ fn do_switch_chapter_inner(
             // may safely persist it.
             loaded_chapter_id.set(Some(new_cid.clone()));
 
+            // Local-first (Phase 2 · Slice 1 · deliverable 1): back this chapter body
+            // with a durable Automerge doc in rinch-storage. Additive — the REST
+            // load above and the REST autosave elsewhere are unchanged (dual-write).
+            // If a local doc exists it is adopted (guest + delta replay); otherwise
+            // the just-loaded REST content seeds a fresh host doc. Every subsequent
+            // keystroke's change delta is persisted locally.
+            crate::local_store::attach_chapter(
+                handle.clone(),
+                new_cid.clone(),
+                chapter.content.clone(),
+            );
+
             // Execute pending feedback scroll if any (walks the editor's rendered
             // text nodes under #editor-main). Delay a tick to let the view settle.
             if let Some(scroll_signal) = pending_scroll {

@@ -1,4 +1,5 @@
 pub mod api;
+pub mod local_store;
 pub mod store;
 pub mod router;
 pub mod pages;
