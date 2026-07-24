@@ -394,3 +394,40 @@ sites collapse into `rinch-editor-view`** (the editor/reader own their rendering
 **fetch/WS/routing/fonts** move behind cross-platform seams; **image FormData/
 object-URLs** become blob-store ops. What remains web-only (and acceptable) is a
 thin platform layer, not app logic.
+
+## Migration off git — reversible, git-as-fallback (2026-07-24)
+
+Decided after verifying the local-first layer against a real book: git is a
+**fallback that is never destroyed until the Automerge store is proven**. The
+migration is additive, per-document, and reversible.
+
+**Safety net (replaces "test on a copy of prod"):**
+1. **Per-doc round-trip validation** — `git DocNode → Automerge → materialize back
+   → assert semantically equal`. A doc migrates only if it round-trips losslessly;
+   anything that doesn't (unsupported blocks) is **flagged and left on git**, never
+   silently converted.
+2. **Read-only dry-run audit that runs on the server** — walks every book's git
+   repo, round-trips every doc, emits a report (clean / flagged+reason). Run
+   against prod (safe, read-only); review before any write. This is the
+   "verify on real data where it lives" step.
+
+**Phases:**
+- **A. Additive store + canonical projection + validator.** Server Automerge blob
+  store + rhypedb heads index; the `git-DocNode → Automerge` projection as SHARED
+  canonical code (body = the editor-collab seam, already shared; structure =
+  extract the `local_book.rs`/`local_user.rs` shape); per-doc round-trip validator.
+- **B. Read-only dry-run audit** command — walk prod git, round-trip everything,
+  report. (A+B write nothing.)
+- **C. Backfill** — write an Automerge blob for every clean doc + index heads.
+  Idempotent, resumable. Git untouched; flagged docs skipped + reported.
+- **D. Shadow validation** — serve from git (authoritative) while reading the
+  Automerge copy and logging divergence during a soak.
+- **E. Cutover** — flip a per-book/global `canonical = automerge` flag. Reads/writes
+  hit Automerge; sync goes live. Git still on disk; **flag flips back**.
+- **F. Retire git** — only after cutover soaks clean: tag/back up the git repos,
+  then stop writing them. Backup kept. The one hard-to-reverse step, deliberately
+  last and manual.
+
+**Note:** the client already seeds existing books from REST, so there is no
+separate client migration — this is server-side. The projection must be shared so
+client-written and server-migrated docs are byte-compatible before sync (E).
