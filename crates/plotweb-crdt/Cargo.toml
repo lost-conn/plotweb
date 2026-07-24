@@ -1,0 +1,17 @@
+[package]
+name = "plotweb-crdt"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The ONLY first-party automerge dependency on the server side. Pinned to the same
+# 0.5 line the editor-collab adapter (and the client) were written against.
+automerge = "0.5"
+# Shared, canonical git-DocNode -> Automerge projection code. rinch-editor-core is
+# already a workspace dep (features serde + markdown); rinch-editor-collab is the
+# body-CRDT seam, pulled at the SAME pin as everything else in the tree.
+rinch-editor-core = { workspace = true }
+rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b33bdaeccef3cec69722e30702ac", default-features = false }
+plotweb-common = { workspace = true }
+serde_json = { workspace = true }

@@ -8,6 +8,21 @@ use plotweb_server::{api_router, build_state, session_layer};
 
 #[tokio::main]
 async fn main() {
+    // Subcommand dispatch. With no args (or an unknown first arg) we run the server,
+    // exactly as before. `audit-migration` runs the read-only migration dry-run and
+    // exits without ever starting the server or writing anything.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("audit-migration") {
+        // Optional `--json <path>` for a machine-readable report.
+        let json_path = args
+            .iter()
+            .position(|a| a == "--json")
+            .and_then(|i| args.get(i + 1))
+            .cloned();
+        plotweb_server::audit::run(json_path).await;
+        return;
+    }
+
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:plotweb.db".into());
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
     let rhype_dir = std::env::var("RHYPEDB_DATA_DIR").unwrap_or_else(|_| "data/rhypedb".into());

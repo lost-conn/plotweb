@@ -21,6 +21,7 @@ reqwest.workspace = true
 plotweb-git.workspace = true
 plotweb-import.workspace = true
 plotweb-export.workspace = true
+plotweb-crdt = { path = "../plotweb-crdt" }
 rhypedb-engine.workspace = true
 rhypedb-query.workspace = true
 rhypedb-schema.workspace = true

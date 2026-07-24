@@ -4,6 +4,7 @@
 //! built in-process by integration tests. `main.rs` is a thin wrapper that wires
 //! up real env-based state, adds static-file serving, and serves.
 
+pub mod audit;
 pub mod auth;
 pub mod db;
 pub mod email;
