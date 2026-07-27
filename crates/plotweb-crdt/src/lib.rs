@@ -51,7 +51,7 @@ pub mod body;
 pub mod book;
 pub mod user;
 
-pub use body::roundtrip_body;
+pub use body::{roundtrip_body, BodyKind};
 pub use book::{roundtrip_book_structure, BookStructureInput};
 pub use user::{roundtrip_user_index, UserIndexInput};
 

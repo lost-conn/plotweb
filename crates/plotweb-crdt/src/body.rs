@@ -9,58 +9,139 @@
 use std::rc::Rc;
 
 use rinch_editor_collab::CollabSession;
-use rinch_editor_core::serialize::DocNode;
-use rinch_editor_core::{EditorState, Schema, default_plugins};
+use rinch_editor_core::serialize::{DocNode, slice_from_html};
+use rinch_editor_core::{EditorState, Node, Schema, default_plugins};
 
 use crate::RoundTrip;
 
+/// Which body flavor is being round-tripped — decides how *legacy* (pre-DocNode)
+/// content is converted to a model before the CRDT round-trip. New content
+/// (DocNode JSON) takes the same path regardless of kind.
+///
+/// The conversion mirrors the editor's own legacy load (`editor_utils.rs`):
+/// - [`Chapter`](BodyKind::Chapter) bodies were stored as **Markdown** →
+///   `plotweb_common::markdown_to_html` → `load_html`.
+/// - [`Note`](BodyKind::Note) bodies were stored as **raw HTML** → `load_html`
+///   directly (empty → `<p></p>`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyKind {
+    /// A chapter body (legacy form: Markdown).
+    Chapter,
+    /// A note body (legacy form: HTML).
+    Note,
+}
+
 /// Round-trip one body document (`chapter:` or `note:`).
 ///
-/// `content_docnode_json` is the raw stored content string (the editor's durable
-/// `DocNode` JSON save shape). The path mirrors the client body primitive:
+/// `content` is the raw stored content string. Real books mix two shapes and this
+/// validator is tolerant of both, exactly as the editor is when it loads a body:
+///
+/// - **New content** — the editor's durable `DocNode` JSON save shape. Parsed with
+///   `serde_json` and validated with `Schema::node_from_doc`.
+/// - **Legacy content** — pre-DocNode bodies. A chapter is **Markdown**; a note is
+///   **raw HTML**. These are converted to a model the *same way the editor does*
+///   (`editor_utils.rs`): build HTML (`plotweb_common::markdown_to_html` for a
+///   chapter, the HTML verbatim for a note — empty → `<p></p>`), then
+///   `slice_from_html(&schema, html)` + `schema.branch("doc", slice.content)` — a
+///   byte-for-byte mirror of `EditorHandle::load_html`.
+///
+/// Either way we obtain a model [`Node`], then drive the single CRDT path:
 ///
 /// ```text
-/// DocNode JSON
-///   → Schema::node_from_doc            (parse + schema-validate)
+/// Node
 ///   → EditorState::create
 ///   → CollabSession::new               (project the model onto an Automerge CRDT)
 ///   → session.projected_doc(&schema)   (materialize the CRDT back to a model Node)
 ///   → Node::to_doc                     (serialize to the durable DocNode shape)
 /// ```
 ///
-/// The input is canonicalized through the *same* model (`node_from_doc → to_doc`) so
-/// the comparison is semantic — JSON key/attr order and mark order are normalized by
-/// the schema on both sides (see the crate-level equality note).
+/// The input is canonicalized through the *same* model (`Node::to_doc`) so the
+/// comparison is semantic — JSON key/attr order and mark order are normalized by the
+/// schema on both sides (see the crate-level equality note). For legacy content the
+/// canonical form is the *converted* Node, so the audit reports whether that
+/// converted body round-trips — the same body the editor would have saved.
 ///
-/// Flags (with a specific reason) on:
-/// - not valid `DocNode` JSON,
-/// - `node_from_doc` schema-validation failure,
+/// Flags (with a specific, origin-tagged reason) on:
+/// - malformed `DocNode` JSON that starts like JSON but fails schema validation,
+/// - legacy HTML that `slice_from_html` cannot parse,
 /// - `CollabSession::new` returning `Unsupported` (blockquote / table / image /
-///   task-list / hard_break …) — the specific block type is captured in the reason,
+///   task-list / hard_break …) — the specific block type is captured in the reason.
+///   A legacy chapter with a `> blockquote` converts fine but the collab projection
+///   rejects `blockquote`, so it is correctly `Flagged` here,
 /// - a materialized-≠-canonical mismatch (a high-level description of what differs).
 ///
 /// Empty (or whitespace-only) content is [`RoundTrip::Clean`] — there is nothing to
 /// migrate and an empty body projects trivially.
-pub fn roundtrip_body(content_docnode_json: &str) -> RoundTrip {
-    let trimmed = content_docnode_json.trim();
+pub fn roundtrip_body(content: &str, kind: BodyKind) -> RoundTrip {
+    let trimmed = content.trim();
     if trimmed.is_empty() {
         return RoundTrip::Clean;
     }
 
     let schema = Rc::new(Schema::starter_kit());
 
-    // 1. Parse the durable wire shape.
-    let doc: DocNode = match serde_json::from_str(trimmed) {
-        Ok(d) => d,
-        Err(e) => return RoundTrip::flag(format!("not valid DocNode JSON: {e}")),
+    // Obtain the model `Node` + a human origin label for reasons. New content is
+    // DocNode JSON; anything else is legacy and is converted exactly as the editor
+    // converts it on load.
+    let (node, origin) = match parse_docnode(trimmed) {
+        // New content: DocNode JSON that parses. A schema rejection here is a genuine
+        // broken-DocNode flag (not a fall-through to legacy).
+        Some(doc) => match schema.node_from_doc(&doc) {
+            Ok(n) => (n, "DocNode JSON"),
+            Err(e) => {
+                return RoundTrip::flag(format!("DocNode JSON rejected by schema: {e}"));
+            }
+        },
+        // Legacy content: build HTML the editor's way, then mirror `load_html`.
+        None => {
+            let (html, origin) = match kind {
+                BodyKind::Chapter => (plotweb_common::markdown_to_html(content), "legacy markdown"),
+                // Notes are already HTML; empty → a single empty paragraph, matching
+                // `load_note_content`. (Whitespace-only already returned Clean above.)
+                BodyKind::Note => {
+                    let html = if content.trim().is_empty() {
+                        "<p></p>".to_string()
+                    } else {
+                        content.to_string()
+                    };
+                    (html, "legacy html")
+                }
+            };
+            // Mirror `EditorHandle::load_html`: slice_from_html + schema.branch("doc", …).
+            let slice = match slice_from_html(&schema, &html) {
+                Ok(s) => s,
+                Err(e) => {
+                    return RoundTrip::flag(format!("{origin} did not parse as HTML: {e}"));
+                }
+            };
+            match schema.branch("doc", slice.content.clone()) {
+                Ok(n) => (n, origin),
+                Err(e) => {
+                    return RoundTrip::flag(format!("{origin} did not build a doc node: {e}"));
+                }
+            }
+        }
     };
 
-    // 2. Into the schema-validated model.
-    let node = match schema.node_from_doc(&doc) {
-        Ok(n) => n,
-        Err(e) => return RoundTrip::flag(format!("node_from_doc rejected the content: {e}")),
-    };
+    roundtrip_node(&schema, node, origin)
+}
 
+/// Parse `content` as `DocNode` JSON, mirroring the editor's `load_docnode`: only
+/// content that trims to a leading `{` and deserializes cleanly is treated as new
+/// content; everything else (`None`) is legacy and converted downstream.
+fn parse_docnode(content: &str) -> Option<DocNode> {
+    let trimmed = content.trim_start();
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    serde_json::from_str::<DocNode>(trimmed).ok()
+}
+
+/// The shared CRDT round-trip: canonicalize `node`, project it onto an Automerge
+/// CRDT, materialize it back, and compare. `origin` labels the flag reasons so the
+/// audit shows whether a flagged body came from DocNode JSON or converted legacy
+/// content.
+fn roundtrip_node(schema: &Rc<Schema>, node: Node, origin: &str) -> RoundTrip {
     // Canonical form of the ORIGINAL: same model → same serializer as the round-trip
     // endpoint, so attr/mark/key ordering is normalized identically on both sides.
     let canonical = match node.to_doc() {
@@ -72,7 +153,11 @@ pub fn roundtrip_body(content_docnode_json: &str) -> RoundTrip {
     let state = EditorState::create(schema.clone(), node, default_plugins());
     let mut session = match CollabSession::new(&state) {
         Ok(s) => s,
-        Err(e) => return RoundTrip::flag(format!("editor-collab cannot project this body: {e}")),
+        Err(e) => {
+            return RoundTrip::flag(format!(
+                "editor-collab cannot project this body ({origin}): {e}"
+            ));
+        }
     };
 
     // 4. Materialize the CRDT back through the model to the durable shape. A save/load
@@ -83,7 +168,7 @@ pub fn roundtrip_body(content_docnode_json: &str) -> RoundTrip {
         Ok(s) => s,
         Err(e) => return RoundTrip::flag(format!("saved CRDT bytes did not reload: {e}")),
     };
-    let projected = match loaded.projected_doc(&schema) {
+    let projected = match loaded.projected_doc(schema) {
         Ok(n) => n,
         Err(e) => return RoundTrip::flag(format!("could not materialize the CRDT: {e}")),
     };
@@ -110,7 +195,9 @@ pub fn roundtrip_body(content_docnode_json: &str) -> RoundTrip {
     } else {
         let detail = first_diff(&canonical, &materialized, "doc")
             .unwrap_or_else(|| "content differs (no single node located)".to_string());
-        RoundTrip::flag(format!("materialized body differs from original: {detail}"))
+        RoundTrip::flag(format!(
+            "materialized body differs from original ({origin}): {detail}"
+        ))
     }
 }
 
@@ -230,7 +317,7 @@ mod tests {
                 {"type":"list_item","content":[{"type":"paragraph","content":[{"type":"text","text":"two"}]}]}
             ]}
         ]}"#;
-        assert_eq!(roundtrip_body(json), RoundTrip::Clean, "clean prose must be Clean");
+        assert_eq!(roundtrip_body(json, BodyKind::Chapter), RoundTrip::Clean, "clean prose must be Clean");
     }
 
     /// The pathological single giant paragraph: one block, a huge text run. Ugly but
@@ -243,7 +330,7 @@ mod tests {
             serde_json::to_string(&big).unwrap()
         );
         assert_eq!(
-            roundtrip_body(&json),
+            roundtrip_body(&json, BodyKind::Chapter),
             RoundTrip::Clean,
             "a single giant paragraph is ugly but lossless"
         );
@@ -266,7 +353,7 @@ mod tests {
             {"type":"text","text":", I agree."}
         ]}]}"#;
         assert_eq!(
-            roundtrip_body(json),
+            roundtrip_body(json, BodyKind::Chapter),
             RoundTrip::Clean,
             "over-segmented same-mark runs coalesce losslessly"
         );
@@ -275,8 +362,10 @@ mod tests {
     /// Empty content: nothing to migrate → Clean.
     #[test]
     fn empty_is_clean() {
-        assert_eq!(roundtrip_body(""), RoundTrip::Clean);
-        assert_eq!(roundtrip_body("   \n  "), RoundTrip::Clean);
+        assert_eq!(roundtrip_body("", BodyKind::Chapter), RoundTrip::Clean);
+        assert_eq!(roundtrip_body("   \n  ", BodyKind::Chapter), RoundTrip::Clean);
+        assert_eq!(roundtrip_body("", BodyKind::Note), RoundTrip::Clean);
+        assert_eq!(roundtrip_body("   \n  ", BodyKind::Note), RoundTrip::Clean);
     }
 
     /// A blockquote is outside the staged collab scope → Flagged, with the block type
@@ -288,7 +377,7 @@ mod tests {
                 {"type":"paragraph","content":[{"type":"text","text":"quoted"}]}
             ]}
         ]}"#;
-        let rt = roundtrip_body(json);
+        let rt = roundtrip_body(json, BodyKind::Chapter);
         let reason = rt.reason().expect("blockquote must flag");
         assert!(
             reason.contains("blockquote"),
@@ -306,7 +395,7 @@ mod tests {
                 ]}
             ]}
         ]}"#;
-        let rt = roundtrip_body(json);
+        let rt = roundtrip_body(json, BodyKind::Chapter);
         let reason = rt.reason().expect("table must flag");
         assert!(
             reason.contains("table"),
@@ -324,7 +413,7 @@ mod tests {
                 {"type":"text","text":" after"}
             ]}
         ]}"#;
-        let rt = roundtrip_body(json);
+        let rt = roundtrip_body(json, BodyKind::Chapter);
         let reason = rt.reason().expect("image must flag");
         assert!(
             reason.contains("image") || reason.contains("inline"),
@@ -332,10 +421,107 @@ mod tests {
         );
     }
 
-    /// Not JSON at all (e.g. legacy raw markdown left in a body) → Flagged, not panic.
+    // ── Legacy (pre-DocNode) content ────────────────────────────────────────
+    //
+    // ~Half of real content predates the DocNode migration: chapters are Markdown,
+    // notes are HTML. The audit must convert these the SAME way the editor does
+    // (`plotweb_common::markdown_to_html` + `load_html`) and then round-trip, not
+    // flag them wholesale as "not DocNode JSON".
+
+    /// The fidelity guarantee for real books: a legacy chapter with several sentences
+    /// on their own lines (no blank lines) must NOT collapse into one paragraph. The
+    /// line-based converter yields one paragraph per line, and that survives the
+    /// round-trip → Clean, with one paragraph per source line in the materialized doc.
     #[test]
-    fn non_json_is_flagged() {
-        let rt = roundtrip_body("# Not JSON\n\nJust markdown.");
-        assert!(rt.reason().is_some(), "non-JSON must flag, not panic");
+    fn legacy_markdown_one_paragraph_per_line_is_clean() {
+        let md = "The lantern guttered against the fog.\n\
+                  Kal plucked another quill off the corpse.\n\
+                  \"I'm used to you talking crazy,\" he said.\n\
+                  For once, I agree.";
+
+        // Prove the converter + HTML parse gives one paragraph per line (no collapse).
+        // This is exactly the Node roundtrip_body builds for a legacy chapter.
+        let schema = Schema::starter_kit();
+        let html = plotweb_common::markdown_to_html(md);
+        let slice = slice_from_html(&schema, &html).expect("converted legacy md must parse");
+        let doc = schema
+            .branch("doc", slice.content.clone())
+            .expect("slice must build a doc");
+        let docnode = doc.to_doc().expect("doc serializes");
+        assert_eq!(
+            docnode.content.len(),
+            4,
+            "one paragraph per source line (no collapse), got {} blocks",
+            docnode.content.len()
+        );
+        for block in &docnode.content {
+            assert_eq!(
+                block.node_type, "paragraph",
+                "every line becomes a paragraph, got `{}`",
+                block.node_type
+            );
+        }
+
+        // …and it round-trips through the CRDT losslessly.
+        assert_eq!(
+            roundtrip_body(md, BodyKind::Chapter),
+            RoundTrip::Clean,
+            "line-per-paragraph legacy markdown must be Clean"
+        );
+    }
+
+    /// A legacy chapter using heading + inline marks + a bullet list — all within the
+    /// collab scope — converts and round-trips Clean, structure preserved.
+    #[test]
+    fn legacy_markdown_heading_marks_list_is_clean() {
+        let md = "# Chapter One\n\
+                  Some **bold** and *italic* prose.\n\
+                  - first item\n\
+                  - second item";
+
+        // Structure check: heading, paragraph, bullet_list.
+        let schema = Schema::starter_kit();
+        let html = plotweb_common::markdown_to_html(md);
+        let slice = slice_from_html(&schema, &html).expect("converted legacy md must parse");
+        let doc = schema.branch("doc", slice.content.clone()).unwrap();
+        let docnode = doc.to_doc().unwrap();
+        let kinds: Vec<&str> = docnode.content.iter().map(|n| n.node_type.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec!["heading", "paragraph", "bullet_list"],
+            "legacy markdown structure must be preserved"
+        );
+
+        assert_eq!(
+            roundtrip_body(md, BodyKind::Chapter),
+            RoundTrip::Clean,
+            "heading/marks/list legacy markdown must be Clean"
+        );
+    }
+
+    /// A legacy note is raw HTML (already), not markdown. It converts via the note
+    /// path (HTML verbatim → load_html) and round-trips Clean.
+    #[test]
+    fn legacy_html_note_is_clean() {
+        let html = "<p>The lantern <strong>guttered</strong> against the fog.</p>";
+        assert_eq!(
+            roundtrip_body(html, BodyKind::Note),
+            RoundTrip::Clean,
+            "legacy HTML note must be Clean"
+        );
+    }
+
+    /// A legacy chapter containing a `> blockquote` converts fine (markdown_to_html
+    /// emits `<blockquote>`), but blockquote is outside the collab projection, so it
+    /// is correctly Flagged — with the block type named, and left on git.
+    #[test]
+    fn legacy_markdown_blockquote_is_flagged() {
+        let md = "A line before.\n> a quoted line\nA line after.";
+        let rt = roundtrip_body(md, BodyKind::Chapter);
+        let reason = rt.reason().expect("legacy blockquote must flag");
+        assert!(
+            reason.contains("blockquote"),
+            "reason should name the unsupported block type, got: {reason}"
+        );
     }
 }

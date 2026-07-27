@@ -1,5 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
+pub mod markdown;
+pub use markdown::markdown_to_html;
+
 /// Custom deserializer for `Option<Option<T>>` fields in update requests.
 /// Makes JSON `null` deserialize as `Some(None)` (meaning "set to null")
 /// rather than `None` (meaning "don't update").

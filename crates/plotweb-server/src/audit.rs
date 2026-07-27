@@ -17,8 +17,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use plotweb_crdt::{
-    BookStructureInput, RoundTrip, UserIndexInput, roundtrip_body, roundtrip_book_structure,
-    roundtrip_user_index,
+    BodyKind, BookStructureInput, RoundTrip, UserIndexInput, roundtrip_body,
+    roundtrip_book_structure, roundtrip_user_index,
 };
 use plotweb_git::BookStore;
 
@@ -193,7 +193,7 @@ async fn audit_one_book(
             book_id: book_id.to_string(),
             doc_id: format!("chapter:{}", c.id),
             doc_type: "chapter",
-            result: roundtrip_body(&c.content),
+            result: roundtrip_body(&c.content, BodyKind::Chapter),
         });
     }
     for n in &notes_list {
@@ -201,7 +201,7 @@ async fn audit_one_book(
             book_id: book_id.to_string(),
             doc_id: format!("note:{}", n.id),
             doc_type: "note",
-            result: roundtrip_body(&n.content),
+            result: roundtrip_body(&n.content, BodyKind::Note),
         });
     }
 
