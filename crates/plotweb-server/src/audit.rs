@@ -86,101 +86,19 @@ pub async fn run(json_path: Option<String>) {
         if book_id.is_empty() {
             continue;
         }
+        let title_fallback = row.string("title").unwrap_or_default();
+        let updated_fallback = row.string("created_at").unwrap_or_default();
 
-        // ── Read everything for this book (async → owned, Send data). ──
-        let (book_data, read_error) = match books.get_book(&book_id).await {
-            Ok(d) => (Some(d), None),
-            Err(e) => (None, Some(e.to_string())),
-        };
-        let chapters = books.list_chapters(&book_id).await.unwrap_or_default();
-        let (notes_list, notes_tree) = books.list_notes(&book_id).await.unwrap_or_default();
+        let (mut report, (u_title, u_cover, u_updated)) =
+            audit_one_book(&books, &book_id, &title_fallback, &updated_fallback).await;
+        report.user_id = user_id.clone();
 
         // Feed the user: index (mirror books::list's fallback on a missing repo).
-        let (u_title, u_cover, u_updated) = match &book_data {
-            Some(d) => (d.title.clone(), d.cover_image.clone(), d.updated_at.clone()),
-            None => (
-                row.string("title").unwrap_or_default(),
-                None,
-                row.string("created_at").unwrap_or_default(),
-            ),
-        };
-        user_entries.entry(user_id.clone()).or_default().push((
-            book_id.clone(),
-            u_title,
-            u_cover,
-            u_updated,
-        ));
-
-        // ── Round-trips (sync, !Send). Created + dropped between awaits. ──
-        let mut docs: Vec<DocResult> = Vec::new();
-
-        // book: structure
-        let structure = match &book_data {
-            Some(d) => {
-                let input = BookStructureInput {
-                    title: d.title.clone(),
-                    description: d.description.clone(),
-                    font_settings: d.font_settings.clone(),
-                    cover_ref: d.cover_image.clone(),
-                    created_at: d.created_at.clone(),
-                    chapters: chapters
-                        .iter()
-                        .map(|c| (c.id.clone(), c.title.clone()))
-                        .collect(),
-                    root_order: notes_tree.root_order.clone(),
-                    children: notes_tree.children.clone(),
-                    collapsed: notes_tree.collapsed.clone(),
-                    notes: notes_list
-                        .iter()
-                        .map(|n| (n.id.clone(), n.title.clone(), n.color.clone()))
-                        .collect(),
-                };
-                roundtrip_book_structure(&input)
-            }
-            None => RoundTrip::flag(format!(
-                "git read failed: {}",
-                read_error.clone().unwrap_or_default()
-            )),
-        };
-        docs.push(DocResult {
-            book_id: book_id.clone(),
-            doc_id: format!("book:{book_id}"),
-            doc_type: "book",
-            result: structure,
-        });
-
-        // chapter: bodies
-        for c in &chapters {
-            docs.push(DocResult {
-                book_id: book_id.clone(),
-                doc_id: format!("chapter:{}", c.id),
-                doc_type: "chapter",
-                result: roundtrip_body(&c.content),
-            });
-        }
-
-        // note: bodies
-        for n in &notes_list {
-            docs.push(DocResult {
-                book_id: book_id.clone(),
-                doc_id: format!("note:{}", n.id),
-                doc_type: "note",
-                result: roundtrip_body(&n.content),
-            });
-        }
-
-        book_reports.push(BookReport {
-            title: book_data
-                .as_ref()
-                .map(|d| d.title.clone())
-                .unwrap_or_else(|| row.string("title").unwrap_or_default()),
-            book_id,
-            user_id,
-            read_error,
-            chapters_scanned: chapters.len(),
-            notes_scanned: notes_list.len(),
-            docs,
-        });
+        user_entries
+            .entry(user_id)
+            .or_default()
+            .push((book_id, u_title, u_cover, u_updated));
+        book_reports.push(report);
     }
 
     // ── User indices: one round-trip per owner. ──
@@ -203,6 +121,233 @@ pub async fn run(json_path: Option<String>) {
         match std::fs::write(&path, serde_json::to_string_pretty(&json).unwrap()) {
             Ok(()) => println!("\nMachine-readable report written to {path}"),
             Err(e) => eprintln!("audit-migration: failed to write JSON to {path}: {e}"),
+        }
+    }
+}
+
+/// Round-trip one book's structure + every chapter + every note through the
+/// canonical projection. Reads git ONLY (via [`BookStore`] over `DATA_DIR`) — no
+/// rhypedb, no lock — so it is safe alongside a live server. Returns the per-book
+/// report (with `user_id` left empty for the caller to fill) and the
+/// `(title, cover_ref, updated_at)` the `user:` index would cache for this book.
+async fn audit_one_book(
+    books: &BookStore,
+    book_id: &str,
+    title_fallback: &str,
+    updated_fallback: &str,
+) -> (BookReport, (String, Option<String>, String)) {
+    // ── Read everything for this book (async → owned, Send data). ──
+    let (book_data, read_error) = match books.get_book(book_id).await {
+        Ok(d) => (Some(d), None),
+        Err(e) => (None, Some(e.to_string())),
+    };
+    let chapters = books.list_chapters(book_id).await.unwrap_or_default();
+    let (notes_list, notes_tree) = books.list_notes(book_id).await.unwrap_or_default();
+
+    // What the user: index would cache for this book (repo-missing fallback).
+    let user_entry = match &book_data {
+        Some(d) => (d.title.clone(), d.cover_image.clone(), d.updated_at.clone()),
+        None => (title_fallback.to_string(), None, updated_fallback.to_string()),
+    };
+
+    // ── Round-trips (sync, !Send). Created + dropped between awaits. ──
+    let mut docs: Vec<DocResult> = Vec::new();
+
+    // book: structure
+    let structure = match &book_data {
+        Some(d) => {
+            let input = BookStructureInput {
+                title: d.title.clone(),
+                description: d.description.clone(),
+                font_settings: d.font_settings.clone(),
+                cover_ref: d.cover_image.clone(),
+                created_at: d.created_at.clone(),
+                chapters: chapters
+                    .iter()
+                    .map(|c| (c.id.clone(), c.title.clone()))
+                    .collect(),
+                root_order: notes_tree.root_order.clone(),
+                children: notes_tree.children.clone(),
+                collapsed: notes_tree.collapsed.clone(),
+                notes: notes_list
+                    .iter()
+                    .map(|n| (n.id.clone(), n.title.clone(), n.color.clone()))
+                    .collect(),
+            };
+            roundtrip_book_structure(&input)
+        }
+        None => RoundTrip::flag(format!(
+            "git read failed: {}",
+            read_error.clone().unwrap_or_default()
+        )),
+    };
+    docs.push(DocResult {
+        book_id: book_id.to_string(),
+        doc_id: format!("book:{book_id}"),
+        doc_type: "book",
+        result: structure,
+    });
+
+    for c in &chapters {
+        docs.push(DocResult {
+            book_id: book_id.to_string(),
+            doc_id: format!("chapter:{}", c.id),
+            doc_type: "chapter",
+            result: roundtrip_body(&c.content),
+        });
+    }
+    for n in &notes_list {
+        docs.push(DocResult {
+            book_id: book_id.to_string(),
+            doc_id: format!("note:{}", n.id),
+            doc_type: "note",
+            result: roundtrip_body(&n.content),
+        });
+    }
+
+    let report = BookReport {
+        title: book_data
+            .as_ref()
+            .map(|d| d.title.clone())
+            .unwrap_or_else(|| title_fallback.to_string()),
+        book_id: book_id.to_string(),
+        user_id: String::new(),
+        read_error,
+        chapters_scanned: chapters.len(),
+        notes_scanned: notes_list.len(),
+        docs,
+    };
+    (report, user_entry)
+}
+
+/// Lock-free, content-only migration audit for the boot-time path. Enumerates
+/// books straight from the `DATA_DIR` filesystem (each subdirectory holding a
+/// `book.json` is one book) and round-trips structure + chapters + notes from
+/// git. Touches **no rhypedb**, needs no lock, and is safe to run alongside the
+/// live server. The `user:` index is intentionally not audited here (ownership
+/// lives in rhypedb, which the running server holds locked); prose fidelity — the
+/// part that matters for migration — is fully covered.
+pub async fn run_content_audit(data_dir: &str) -> Vec<BookReport> {
+    let books = BookStore::new(PathBuf::from(data_dir));
+
+    // Each book is a subdirectory of DATA_DIR named by its uuid, holding a
+    // `manuscript/` git repo (with `book.json`) and a `notes/` git repo.
+    let subdirs: Vec<std::path::PathBuf> = match std::fs::read_dir(data_dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    let mut book_ids: Vec<String> = subdirs
+        .iter()
+        .filter(|p| p.join("manuscript").join("book.json").is_file())
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    book_ids.sort();
+    // Non-silent: surface any subdir we did NOT treat as a book, so a layout
+    // change can never make the audit quietly report zero.
+    println!(
+        "[boot-audit] {} subdirectories under DATA_DIR, {} identified as books",
+        subdirs.len(),
+        book_ids.len()
+    );
+
+    let mut reports = Vec::new();
+    for book_id in &book_ids {
+        let (report, _entry) = audit_one_book(&books, book_id, book_id, "").await;
+        reports.push(report);
+    }
+    reports
+}
+
+/// Boot-time hook (env `PLOTWEB_AUDIT_ON_BOOT`): run the lock-free content audit
+/// against the live `DATA_DIR` and print the report to stdout (→ platform logs),
+/// so the migration fidelity of production data can be reviewed without stopping
+/// the server or copying the volume. Runs concurrently with serving; read-only.
+pub async fn run_boot_audit(data_dir: String) {
+    println!(
+        "[boot-audit] starting migration content audit — read-only, lock-free, \
+         content only (user: indices skipped)"
+    );
+    let reports = run_content_audit(&data_dir).await;
+    print_content_report(&data_dir, &reports);
+    println!("[boot-audit] migration content audit complete");
+}
+
+/// Human report for the boot-time content audit (no `user:` index section).
+fn print_content_report(data_dir: &str, books: &[BookReport]) {
+    println!("PlotWeb migration content audit (boot-time)");
+    println!("  Read-only. Reads git storage only — no rhypedb, no lock, no writes.");
+    println!("  Runs alongside the live server; the user: index is not audited here.");
+    println!("  DATA_DIR : {data_dir}");
+    println!();
+
+    let mut total_docs = 0usize;
+    let mut total_clean = 0usize;
+    let mut total_flagged = 0usize;
+    let mut flagged_lines: Vec<String> = Vec::new();
+
+    for b in books {
+        println!("Book {} \"{}\"", b.book_id, b.title);
+        if let Some(err) = &b.read_error {
+            println!("  ! git read failed: {err}");
+        }
+        let structure = &b.docs[0].result; // structure is always pushed first
+        let chapters_clean = b
+            .docs
+            .iter()
+            .filter(|d| d.doc_type == "chapter" && d.result.is_clean())
+            .count();
+        let notes_clean = b
+            .docs
+            .iter()
+            .filter(|d| d.doc_type == "note" && d.result.is_clean())
+            .count();
+        println!("  structure : {}", status_str(structure));
+        println!(
+            "  chapters  : {} scanned, {} clean, {} flagged",
+            b.chapters_scanned,
+            chapters_clean,
+            b.chapters_scanned - chapters_clean
+        );
+        println!(
+            "  notes     : {} scanned, {} clean, {} flagged",
+            b.notes_scanned,
+            notes_clean,
+            b.notes_scanned - notes_clean
+        );
+        for d in &b.docs {
+            total_docs += 1;
+            if d.result.is_clean() {
+                total_clean += 1;
+            } else {
+                total_flagged += 1;
+                let reason = d.result.reason().unwrap_or("");
+                println!("  [flagged] {} ({}) — {}", d.doc_id, d.doc_type, reason);
+                flagged_lines.push(format!(
+                    "  {} ({}) [book {}] — {}",
+                    d.doc_id, d.doc_type, d.book_id, reason
+                ));
+            }
+        }
+        println!();
+    }
+
+    println!("────────────────────────────────────────");
+    println!("Content audit totals");
+    println!("  books scanned : {}", books.len());
+    println!("  docs scanned  : {total_docs}");
+    println!("  clean         : {total_clean}");
+    println!("  flagged       : {total_flagged}");
+    println!();
+    if flagged_lines.is_empty() {
+        println!("Flagged docs  : (none — every document round-trips losslessly)");
+    } else {
+        println!("Flagged docs:");
+        for line in &flagged_lines {
+            println!("{line}");
         }
     }
 }

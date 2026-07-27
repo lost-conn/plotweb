@@ -49,5 +49,21 @@ async fn main() {
     let addr = "0.0.0.0:3000";
     println!("PlotWeb server running on http://{}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+
+    // Opt-in boot-time migration content audit (env `PLOTWEB_AUDIT_ON_BOOT`).
+    // Runs the lock-free, read-only content audit in the background — alongside
+    // serving, no rhypedb lock, no writes — and logs the report to stdout so the
+    // migration fidelity of production data can be reviewed via the platform logs
+    // without stopping the server or copying its volume. Unset the flag afterward.
+    if std::env::var("PLOTWEB_AUDIT_ON_BOOT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        let dd = data_dir.clone();
+        tokio::spawn(async move {
+            plotweb_server::audit::run_boot_audit(dd).await;
+        });
+    }
+
     axum::serve(listener, app).await.unwrap();
 }
