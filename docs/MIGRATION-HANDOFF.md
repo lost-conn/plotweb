@@ -143,17 +143,27 @@ drive** proving local beats a divergent server.
 The canonical Automerge store is **staged but unread**. Everything below is where Automerge
 *goes live* — weightier than the additive work so far; open each with a written design.
 
-1. **Sync engine (the big one).** Server serves/accepts Automerge sync-message bytes
-   (`POST /api/sync/{doc_id}`); the client (already local-first, `local_store.rs` holds the
-   docs) runs Automerge's sync protocol against it per doc, keeping per-doc `SyncState`.
-   Spike ③ (`docs/…plan.md`) proved the transport with a dumb relay; the real server persists
-   canonical Automerge (the backfilled `data/crdt` store). Forks to decide: periodic-HTTP vs
-   live-WS (rinch-ws #114 exists); how heads are indexed (rhypedb — see the deferred `user:`
-   note); auth (token — a later slice, currently session cookies). This is the payoff and the
-   largest remaining build.
-2. **`user:` index backfill.** Deferred in phase C because it needs rhypedb ownership (the
-   lock-free walk has none). Do it via the rhypedb-enumerated path (`audit.rs::run` already
-   walks ownership) — a small backfill variant, server stopped or lock-aware.
+1. **Sync engine (the big one).** → **designed in `docs/sync-engine-design.md`; slices 0–1
+   are built.** The forks are settled there (book-scoped periodic HTTP, real heads-based
+   protocol, session-cookie auth, canonical store = the backfilled `PLOTWEB_CRDT_DIR`).
+   Landed: the Phase-0 spike relay is gone (it was live, unauthenticated, and unbounded),
+   and `POST /api/books/{book_id}/sync/{doc_id}` + `POST /api/sync/user` now run the real
+   protocol against the canonical store, authorized and per-doc locked.
+   Slice 3 also landed: `plotweb-web/src/sync.rs` syncs the `user:` and `book:` docs
+   (callback-driven, `rinch_core::set_timeout` poll, off unless `PLOTWEB_SYNC=1` / web
+   `localStorage["plotweb_sync"]="1"`). Proven natively with two app instances: a chapter
+   added on one device appears in the other's open book **in place**.
+   Next: slice 2 (upstream rinch `EditorHandle` sync pass-through — the CRDT has the
+   methods, the handle doesn't expose them), then slice 4 (chapter/note bodies, which
+   needs slice 2). **Read §D8 before writing that client code**: client and server seeded
+   their docs independently, so a naive first merge duplicates content.
+2. ~~**`user:` index backfill.**~~ **DONE** — `backfill::run_user_backfill` enumerates
+   `Book` rows from rhypedb, groups by owner (same git fallbacks as `books::list`), and
+   emits one `user:{id}` blob each. **No downtime needed**: the boot hook
+   (`PLOTWEB_BACKFILL_ON_BOOT`) now also runs this pass using the *server's own* rhypedb
+   handle, so the single-writer lock is never contended. The `backfill-migration`
+   subcommand runs it too, but only with the server stopped (it says so if the lock is
+   held). Idempotent via `src-sha`, and it skips client-synced docs like the content pass.
 3. **Phase D — shadow read.** Serve from git (authoritative) but also read the Automerge copy
    and log any divergence during a soak. Confidence before flipping.
 4. **Phase E — cutover.** A reversible per-book (or global) `canonical = automerge` flag.
