@@ -68,6 +68,12 @@ impl TestApp {
         }
     }
 
+    /// The git `DATA_DIR` these stores live under — so a test can point the
+    /// lock-free migration backfill/audit at the same books it created over HTTP.
+    pub fn book_dir(&self) -> &PathBuf {
+        &self.book_dir
+    }
+
     /// Rebuild the app over the SAME on-disk stores (simulating a server
     /// restart), keeping the client's session cookie. The SQLite-backed session
     /// store must return the still-valid session afterwards.

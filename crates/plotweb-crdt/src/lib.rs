@@ -51,9 +51,9 @@ pub mod body;
 pub mod book;
 pub mod user;
 
-pub use body::{roundtrip_body, BodyKind};
-pub use book::{roundtrip_book_structure, BookStructureInput};
-pub use user::{roundtrip_user_index, UserIndexInput};
+pub use body::{project_body, roundtrip_body, BodyKind};
+pub use book::{project_book_structure, roundtrip_book_structure, BookStructureInput};
+pub use user::{project_user_index, roundtrip_user_index, UserIndexInput};
 
 /// The outcome of round-tripping one document through its canonical projection.
 ///

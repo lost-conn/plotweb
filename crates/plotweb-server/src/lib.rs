@@ -6,6 +6,7 @@
 
 pub mod audit;
 pub mod auth;
+pub mod backfill;
 pub mod db;
 pub mod email;
 pub mod rhype;

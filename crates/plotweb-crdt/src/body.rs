@@ -78,18 +78,70 @@ pub fn roundtrip_body(content: &str, kind: BodyKind) -> RoundTrip {
         return RoundTrip::Clean;
     }
 
+    // Share the ONE projection front-end with the backfill: obtain the exact same
+    // hard-break-split model Node, then round-trip/compare on top of it. A flag from
+    // the shared front-end becomes a `Flagged` here (unchanged behavior).
+    let (schema, node, origin) = match prepare_body_node(content, kind) {
+        Ok(prepared) => prepared,
+        Err(reason) => return RoundTrip::flag(reason),
+    };
+
+    roundtrip_node(&schema, node, origin)
+}
+
+/// Project one body to its canonical Automerge **snapshot bytes** — the migration
+/// backfill's emit endpoint, the exact bytes [`roundtrip_body`]'s validation is
+/// computed over (they call the same [`prepare_body_node`] +
+/// [`project_node_to_snapshot`], so a backfilled blob is byte-for-byte what the audit
+/// certified clean).
+///
+/// Returns `Err(reason)` for a flagged body — the *same* reason strings
+/// [`roundtrip_body`] produces (a malformed DocNode, unparseable legacy HTML, or an
+/// unsupported block the collab projection rejects). A flagged body must never yield a
+/// blob, so the caller writes nothing and leaves it on git.
+///
+/// An empty (or whitespace-only) body is Clean and migratable: it projects to the
+/// snapshot of an empty doc (a single empty paragraph — what an empty editor holds).
+pub fn project_body(content: &str, kind: BodyKind) -> Result<Vec<u8>, String> {
+    let (schema, node, origin) = prepare_body_node(content, kind)?;
+    project_node_to_snapshot(&schema, node, origin)
+}
+
+/// The single projection front-end shared by validate ([`roundtrip_body`]) and emit
+/// ([`project_body`]): obtain the model [`Node`] (new DocNode JSON, or legacy
+/// Markdown/HTML converted the editor's way), then apply the `hard_break` block-split
+/// (Option 3). Returns the schema, the split node, and a human origin label for flag
+/// reasons — or `Err(reason)` if the body cannot project faithfully.
+///
+/// Empty/whitespace content is a valid, migratable doc here: a single empty paragraph.
+/// (`roundtrip_body` short-circuits empty to `Clean` before calling this; `project_body`
+/// relies on this branch to emit the empty-doc snapshot.)
+fn prepare_body_node(content: &str, kind: BodyKind) -> Result<(Rc<Schema>, Node, &'static str), String> {
     let schema = Rc::new(Schema::starter_kit());
+
+    if content.trim().is_empty() {
+        // An empty body projects trivially to a single empty paragraph — what the
+        // editor holds for an empty note (`<p></p>`) — so an empty body is a Clean,
+        // migratable doc rather than a hole in the store.
+        let doc: DocNode =
+            serde_json::from_str(r#"{"type":"doc","content":[{"type":"paragraph"}]}"#)
+                .map_err(|e| format!("empty-body template did not parse: {e}"))?;
+        let node = schema
+            .node_from_doc(&doc)
+            .map_err(|e| format!("empty-body template rejected by schema: {e}"))?;
+        return Ok((schema, node, "empty body"));
+    }
 
     // Obtain the model `Node` + a human origin label for reasons. New content is
     // DocNode JSON; anything else is legacy and is converted exactly as the editor
     // converts it on load.
-    let (node, origin) = match parse_docnode(trimmed) {
+    let (node, origin) = match parse_docnode(content.trim()) {
         // New content: DocNode JSON that parses. A schema rejection here is a genuine
         // broken-DocNode flag (not a fall-through to legacy).
         Some(doc) => match schema.node_from_doc(&doc) {
             Ok(n) => (n, "DocNode JSON"),
             Err(e) => {
-                return RoundTrip::flag(format!("DocNode JSON rejected by schema: {e}"));
+                return Err(format!("DocNode JSON rejected by schema: {e}"));
             }
         },
         // Legacy content: build HTML the editor's way, then mirror `load_html`.
@@ -97,7 +149,7 @@ pub fn roundtrip_body(content: &str, kind: BodyKind) -> RoundTrip {
             let (html, origin) = match kind {
                 BodyKind::Chapter => (plotweb_common::markdown_to_html(content), "legacy markdown"),
                 // Notes are already HTML; empty → a single empty paragraph, matching
-                // `load_note_content`. (Whitespace-only already returned Clean above.)
+                // `load_note_content`. (Whitespace-only already returned above.)
                 BodyKind::Note => {
                     let html = if content.trim().is_empty() {
                         "<p></p>".to_string()
@@ -111,13 +163,13 @@ pub fn roundtrip_body(content: &str, kind: BodyKind) -> RoundTrip {
             let slice = match slice_from_html(&schema, &html) {
                 Ok(s) => s,
                 Err(e) => {
-                    return RoundTrip::flag(format!("{origin} did not parse as HTML: {e}"));
+                    return Err(format!("{origin} did not parse as HTML: {e}"));
                 }
             };
             match schema.branch("doc", slice.content.clone()) {
                 Ok(n) => (n, origin),
                 Err(e) => {
-                    return RoundTrip::flag(format!("{origin} did not build a doc node: {e}"));
+                    return Err(format!("{origin} did not build a doc node: {e}"));
                 }
             }
         }
@@ -128,26 +180,29 @@ pub fn roundtrip_body(content: &str, kind: BodyKind) -> RoundTrip {
     // into consecutive blocks — a legacy note's `<br>` becomes a paragraph break — so
     // those notes migrate instead of flagging. No inline content is dropped; only the
     // break atom becomes a block boundary. It is a no-op for content without breaks,
-    // and it is part of the canonical migration form, so the eventual backfill stores
-    // exactly what the audit validates here. (`image`/`horizontal_rule` atoms still
-    // flag — dropping them would be lossy — until the projection supports them.)
-    let node = {
-        let doc = match node.to_doc() {
-            Ok(d) => d,
-            Err(e) => {
-                return RoundTrip::flag(format!("could not read body to split breaks ({origin}): {e}"));
-            }
-        };
-        let split = split_hard_breaks_doc(&doc);
-        match schema.node_from_doc(&split) {
-            Ok(n) => n,
-            Err(e) => {
-                return RoundTrip::flag(format!("hard_break split produced an invalid doc ({origin}): {e}"));
-            }
-        }
-    };
+    // and it is part of the canonical migration form, so the backfill stores exactly
+    // what the audit validates here. (`image`/`horizontal_rule` atoms still flag —
+    // dropping them would be lossy — until the projection supports them.)
+    let doc = node
+        .to_doc()
+        .map_err(|e| format!("could not read body to split breaks ({origin}): {e}"))?;
+    let split = split_hard_breaks_doc(&doc);
+    let node = schema
+        .node_from_doc(&split)
+        .map_err(|e| format!("hard_break split produced an invalid doc ({origin}): {e}"))?;
 
-    roundtrip_node(&schema, node, origin)
+    Ok((schema, node, origin))
+}
+
+/// Project a prepared model `node` onto the editor-collab Automerge CRDT and return
+/// its snapshot bytes — the single point where the CRDT is built, shared by validate
+/// and emit. `Err(reason)` when the collab projection rejects an unsupported shape
+/// (the block type is captured in the reason).
+fn project_node_to_snapshot(schema: &Rc<Schema>, node: Node, origin: &str) -> Result<Vec<u8>, String> {
+    let state = EditorState::create(schema.clone(), node, default_plugins());
+    let mut session = CollabSession::new(&state)
+        .map_err(|e| format!("editor-collab cannot project this body ({origin}): {e}"))?;
+    Ok(session.snapshot())
 }
 
 /// Container block types whose children are themselves blocks — recursed into so a
@@ -236,21 +291,17 @@ fn roundtrip_node(schema: &Rc<Schema>, node: Node, origin: &str) -> RoundTrip {
         Err(e) => return RoundTrip::flag(format!("could not canonicalize the original: {e}")),
     };
 
-    // 3. Project onto the CRDT. This is where unsupported shapes fail loud.
-    let state = EditorState::create(schema.clone(), node, default_plugins());
-    let mut session = match CollabSession::new(&state) {
-        Ok(s) => s,
-        Err(e) => {
-            return RoundTrip::flag(format!(
-                "editor-collab cannot project this body ({origin}): {e}"
-            ));
-        }
+    // 3. Project onto the CRDT — via the SAME endpoint the backfill emits from, so the
+    //    bytes validated here are byte-for-byte the bytes a blob would hold. Unsupported
+    //    shapes fail loud (flagged, never a blob).
+    let bytes = match project_node_to_snapshot(schema, node, origin) {
+        Ok(b) => b,
+        Err(reason) => return RoundTrip::flag(reason),
     };
 
     // 4. Materialize the CRDT back through the model to the durable shape. A save/load
     //    round-trip of the Automerge bytes is exercised so we validate the *durable*
     //    projection, not just the in-memory one.
-    let bytes = session.snapshot();
     let loaded = match CollabSession::from_bytes(&bytes) {
         Ok(s) => s,
         Err(e) => return RoundTrip::flag(format!("saved CRDT bytes did not reload: {e}")),
@@ -646,6 +697,83 @@ mod tests {
         assert!(
             reason.contains("blockquote"),
             "reason should name the unsupported block type, got: {reason}"
+        );
+    }
+
+    // ── project_body: the backfill emit endpoint ────────────────────────────────
+
+    /// `project_body` and `roundtrip_body` must agree on Clean vs Flagged for every
+    /// shape — they share the one projection front-end, so a body the audit certified
+    /// Clean yields blob bytes, and a flagged one yields the same-worded `Err`.
+    #[test]
+    fn project_body_agrees_with_roundtrip() {
+        let clean = r#"{"type":"doc","content":[
+            {"type":"paragraph","content":[{"type":"text","text":"hello"}]}
+        ]}"#;
+        let flagged = r#"{"type":"doc","content":[
+            {"type":"blockquote","content":[
+                {"type":"paragraph","content":[{"type":"text","text":"quoted"}]}
+            ]}
+        ]}"#;
+
+        // Clean → roundtrip Clean AND project Ok(non-empty bytes).
+        assert_eq!(roundtrip_body(clean, BodyKind::Chapter), RoundTrip::Clean);
+        let bytes = project_body(clean, BodyKind::Chapter).expect("clean body projects");
+        assert!(!bytes.is_empty(), "a clean projection must have bytes");
+
+        // Flagged → roundtrip Flagged AND project Err with the same reason.
+        let rt = roundtrip_body(flagged, BodyKind::Chapter);
+        let err = project_body(flagged, BodyKind::Chapter).expect_err("flagged body has no blob");
+        assert_eq!(rt.reason().unwrap(), err, "flag reason must match exactly");
+    }
+
+    /// An empty body projects to a real, loadable Automerge snapshot (a single empty
+    /// paragraph) — an empty body is Clean and migratable, not a hole in the store.
+    #[test]
+    fn project_body_empty_is_loadable() {
+        for kind in [BodyKind::Chapter, BodyKind::Note] {
+            assert_eq!(roundtrip_body("", kind), RoundTrip::Clean);
+            let bytes = project_body("", kind).expect("empty body projects");
+            assert!(!bytes.is_empty(), "empty-doc snapshot has bytes");
+            // It reloads as a real CRDT and materializes to a one-block doc.
+            let session = CollabSession::from_bytes(&bytes).expect("empty snapshot reloads");
+            let schema = Rc::new(Schema::starter_kit());
+            let doc = session
+                .projected_doc(&schema)
+                .expect("materializes")
+                .to_doc()
+                .expect("serializes");
+            assert_eq!(doc.node_type, "doc");
+            assert_eq!(doc.content.len(), 1, "empty body is a single empty block");
+        }
+    }
+
+    /// A projected blob loads back as a real Automerge doc and materializes to the
+    /// expected DocNode — proof the emitted bytes are a genuine, loadable CRDT, not
+    /// garbage. (The same guarantee the backfill relies on.)
+    #[test]
+    fn project_body_blob_materializes_to_expected_docnode() {
+        let json = r#"{"type":"doc","content":[
+            {"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Title"}]},
+            {"type":"paragraph","content":[{"type":"text","text":"Body text."}]}
+        ]}"#;
+        let bytes = project_body(json, BodyKind::Chapter).expect("projects");
+
+        let schema = Rc::new(Schema::starter_kit());
+        let session = CollabSession::from_bytes(&bytes).expect("blob reloads");
+        let materialized = session
+            .projected_doc(&schema)
+            .expect("materializes")
+            .to_doc()
+            .expect("serializes");
+
+        // Canonicalize the source through the same model for a fair compare.
+        let src: DocNode = serde_json::from_str(json).unwrap();
+        let canonical = schema.node_from_doc(&src).unwrap().to_doc().unwrap();
+        assert_eq!(
+            coalesce(&materialized),
+            coalesce(&canonical),
+            "the blob must materialize to the source DocNode"
         );
     }
 }

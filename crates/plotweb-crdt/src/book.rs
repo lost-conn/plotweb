@@ -100,11 +100,12 @@ impl BookStructureInput {
 /// project it back, and compare to the input. Any mismatch is a [`RoundTrip::Flagged`]
 /// naming the field that diverged.
 pub fn roundtrip_book_structure(input: &BookStructureInput) -> RoundTrip {
-    let mut doc = AutoCommit::new();
-    build_book_doc(&mut doc, input);
-
-    // Exercise the durable path (save → load) as well as the in-memory projection.
-    let bytes = doc.save();
+    // Build + save via the SAME endpoint the backfill emits from, so a validated
+    // `book:` structure is exactly the bytes a blob would hold.
+    let bytes = match project_book_structure(input) {
+        Ok(b) => b,
+        Err(e) => return RoundTrip::flag(e),
+    };
     let reloaded = match AutoCommit::load(&bytes) {
         Ok(d) => d,
         Err(e) => return RoundTrip::flag(format!("book doc did not reload: {e}")),
@@ -118,6 +119,17 @@ pub fn roundtrip_book_structure(input: &BookStructureInput) -> RoundTrip {
     } else {
         RoundTrip::flag(describe_book_diff(&expected, &actual))
     }
+}
+
+/// Project a `book:` structure to its canonical Automerge **snapshot bytes** — the
+/// migration backfill's emit endpoint, sharing [`build_book_doc`] with the
+/// [`roundtrip_book_structure`] validator so a backfilled blob is exactly what the
+/// audit certified. Construction never fails, so this is always `Ok`; the `Result`
+/// mirrors [`project_body`](crate::body::project_body) for a uniform call site.
+pub fn project_book_structure(input: &BookStructureInput) -> Result<Vec<u8>, String> {
+    let mut doc = AutoCommit::new();
+    build_book_doc(&mut doc, input);
+    Ok(doc.save())
 }
 
 // ── Construction (mirror of local_book::build_doc) ───────────────────────────

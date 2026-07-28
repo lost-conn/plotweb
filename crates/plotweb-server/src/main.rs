@@ -22,6 +22,14 @@ async fn main() {
         plotweb_server::audit::run(json_path).await;
         return;
     }
+    // `backfill-migration` runs the lock-free canonical Automerge backfill (Phase C):
+    // it WRITES a snapshot blob per clean document into `PLOTWEB_CRDT_DIR` and exits
+    // without starting the server. Additive + reversible (only the CRDT store is
+    // written); git and rhypedb are read-only.
+    if args.get(1).map(String::as_str) == Some("backfill-migration") {
+        plotweb_server::backfill::run().await;
+        return;
+    }
 
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:plotweb.db".into());
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
@@ -62,6 +70,21 @@ async fn main() {
         let dd = data_dir.clone();
         tokio::spawn(async move {
             plotweb_server::audit::run_boot_audit(dd).await;
+        });
+    }
+
+    // Opt-in boot-time canonical Automerge backfill (env `PLOTWEB_BACKFILL_ON_BOOT`).
+    // Runs the lock-free, additive content backfill in the background — alongside
+    // serving, no rhypedb lock — writing a snapshot blob per clean document into
+    // `PLOTWEB_CRDT_DIR`. Reversible: deleting that directory reverts to git-only.
+    if std::env::var("PLOTWEB_BACKFILL_ON_BOOT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        let dd = data_dir.clone();
+        let cd = std::env::var("PLOTWEB_CRDT_DIR").unwrap_or_else(|_| "data/crdt".into());
+        tokio::spawn(async move {
+            plotweb_server::backfill::run_boot_backfill(dd, cd).await;
         });
     }
 

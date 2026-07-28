@@ -35,18 +35,11 @@ fn sort_entries(entries: &mut [EntryNorm]) {
 /// Round-trip a `user:` index: build the doc, persist + reload, project back in
 /// dashboard order, and compare to the (sorted) input.
 pub fn roundtrip_user_index(input: &UserIndexInput) -> RoundTrip {
-    let mut doc = AutoCommit::new();
-    let books_obj = doc.put_object(ROOT, "books", ObjType::Map).unwrap();
-    for (id, title, cover_ref, updated_at) in &input.books {
-        let entry = doc.put_object(&books_obj, id.as_str(), ObjType::Map).unwrap();
-        let _ = doc.put(&entry, "title", title.as_str());
-        if let Some(c) = cover_ref {
-            let _ = doc.put(&entry, "cover_ref", c.as_str());
-        }
-        let _ = doc.put(&entry, "updated_at", updated_at.as_str());
-    }
-
-    let bytes = doc.save();
+    // Build + save via the SAME endpoint the backfill emits from.
+    let bytes = match project_user_index(input) {
+        Ok(b) => b,
+        Err(e) => return RoundTrip::flag(e),
+    };
     let reloaded = match AutoCommit::load(&bytes) {
         Ok(d) => d,
         Err(e) => return RoundTrip::flag(format!("user doc did not reload: {e}")),
@@ -72,6 +65,28 @@ pub fn roundtrip_user_index(input: &UserIndexInput) -> RoundTrip {
     } else {
         RoundTrip::flag("user index differs (book entries / order)".to_string())
     }
+}
+
+/// Project a `user:` index to its canonical Automerge **snapshot bytes** — the
+/// migration backfill's emit endpoint, sharing the build with the
+/// [`roundtrip_user_index`] validator. Construction never fails, so this is always
+/// `Ok`; the `Result` mirrors the other `project_*` endpoints for a uniform call site.
+///
+/// NOTE: user indices are DEFERRED in the lock-free backfill (ownership — which user
+/// owns which book — lives in rhypedb, which the running server holds locked). This
+/// endpoint exists so a later ownership-aware pass reuses the same projection.
+pub fn project_user_index(input: &UserIndexInput) -> Result<Vec<u8>, String> {
+    let mut doc = AutoCommit::new();
+    let books_obj = doc.put_object(ROOT, "books", ObjType::Map).unwrap();
+    for (id, title, cover_ref, updated_at) in &input.books {
+        let entry = doc.put_object(&books_obj, id.as_str(), ObjType::Map).unwrap();
+        let _ = doc.put(&entry, "title", title.as_str());
+        if let Some(c) = cover_ref {
+            let _ = doc.put(&entry, "cover_ref", c.as_str());
+        }
+        let _ = doc.put(&entry, "updated_at", updated_at.as_str());
+    }
+    Ok(doc.save())
 }
 
 fn read_entries(doc: &AutoCommit) -> Vec<EntryNorm> {
