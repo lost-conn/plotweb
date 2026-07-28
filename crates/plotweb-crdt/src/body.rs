@@ -123,7 +123,94 @@ pub fn roundtrip_body(content: &str, kind: BodyKind) -> RoundTrip {
         }
     };
 
+    // Option 3 (interim): the collab projection can't represent inline atoms yet
+    // (`hard_break` / `image` / `horizontal_rule`). Split text-blocks at `hard_break`
+    // into consecutive blocks — a legacy note's `<br>` becomes a paragraph break — so
+    // those notes migrate instead of flagging. No inline content is dropped; only the
+    // break atom becomes a block boundary. It is a no-op for content without breaks,
+    // and it is part of the canonical migration form, so the eventual backfill stores
+    // exactly what the audit validates here. (`image`/`horizontal_rule` atoms still
+    // flag — dropping them would be lossy — until the projection supports them.)
+    let node = {
+        let doc = match node.to_doc() {
+            Ok(d) => d,
+            Err(e) => {
+                return RoundTrip::flag(format!("could not read body to split breaks ({origin}): {e}"));
+            }
+        };
+        let split = split_hard_breaks_doc(&doc);
+        match schema.node_from_doc(&split) {
+            Ok(n) => n,
+            Err(e) => {
+                return RoundTrip::flag(format!("hard_break split produced an invalid doc ({origin}): {e}"));
+            }
+        }
+    };
+
     roundtrip_node(&schema, node, origin)
+}
+
+/// Container block types whose children are themselves blocks — recursed into so a
+/// `hard_break` inside e.g. a list item's paragraph is still split.
+fn is_container_type(t: &str) -> bool {
+    matches!(
+        t,
+        "bullet_list" | "ordered_list" | "list_item" | "blockquote" | "table" | "table_row"
+            | "table_cell"
+    )
+}
+
+/// Split every text-block that contains inline `hard_break` nodes into consecutive
+/// blocks of the same type, dropping the breaks; recurse into container blocks. No
+/// inline content is dropped — only `hard_break` atoms become block boundaries — so
+/// a legacy `<br>` reads as a paragraph break after migration (Option 3). A no-op for
+/// content with no breaks.
+fn split_hard_breaks_doc(node: &DocNode) -> DocNode {
+    let mut out: Vec<DocNode> = Vec::with_capacity(node.content.len());
+    for child in &node.content {
+        let has_break = child.content.iter().any(|g| g.node_type == "hard_break");
+        if has_break {
+            // Partition the inline content at each `hard_break`.
+            let mut segments: Vec<Vec<DocNode>> = vec![Vec::new()];
+            for inline in &child.content {
+                if inline.node_type == "hard_break" {
+                    segments.push(Vec::new());
+                } else {
+                    segments.last_mut().unwrap().push(inline.clone());
+                }
+            }
+            let mk_block = |content: Vec<DocNode>| DocNode {
+                node_type: child.node_type.clone(),
+                attrs: child.attrs.clone(),
+                content,
+                text: child.text.clone(),
+                marks: child.marks.clone(),
+            };
+            let mut emitted = 0usize;
+            for seg in segments {
+                if seg.is_empty() {
+                    continue; // drop empty segments (leading/trailing/consecutive breaks)
+                }
+                emitted += 1;
+                out.push(mk_block(seg));
+            }
+            if emitted == 0 {
+                // The block held only break(s): preserve one empty block of its type.
+                out.push(mk_block(Vec::new()));
+            }
+        } else if is_container_type(&child.node_type) {
+            out.push(split_hard_breaks_doc(child));
+        } else {
+            out.push(child.clone());
+        }
+    }
+    DocNode {
+        node_type: node.node_type.clone(),
+        attrs: node.attrs.clone(),
+        content: out,
+        text: node.text.clone(),
+        marks: node.marks.clone(),
+    }
 }
 
 /// Parse `content` as `DocNode` JSON, mirroring the editor's `load_docnode`: only
@@ -508,6 +595,43 @@ mod tests {
             roundtrip_body(html, BodyKind::Note),
             RoundTrip::Clean,
             "legacy HTML note must be Clean"
+        );
+    }
+
+    /// Option 3 (interim): a legacy HTML note with `<br>` (which becomes a
+    /// `hard_break` inline atom the collab projection can't represent yet) is split at
+    /// the break into paragraphs and migrates Clean, dropping no text.
+    #[test]
+    fn legacy_html_note_with_hard_break_is_clean() {
+        let html = "<p>First line.<br>Second line.<br>Third line.</p>";
+
+        // Structural: the converted note has one paragraph with a hard_break; the
+        // split turns it into three paragraphs and leaves no hard_break behind.
+        let schema = Schema::starter_kit();
+        let slice = slice_from_html(&schema, html).unwrap();
+        let doc = schema.branch("doc", slice.content.clone()).unwrap();
+        let before = doc.to_doc().unwrap();
+        let after = split_hard_breaks_doc(&before);
+        assert_eq!(
+            after.content.len(),
+            3,
+            "two <br> split one paragraph into three, got {} blocks",
+            after.content.len()
+        );
+        assert!(
+            after.content.iter().all(|b| b.node_type == "paragraph"),
+            "split blocks keep the paragraph type"
+        );
+        fn has_hb(n: &DocNode) -> bool {
+            n.node_type == "hard_break" || n.content.iter().any(has_hb)
+        }
+        assert!(!has_hb(&after), "no hard_break remains after the split");
+
+        // …and end-to-end it round-trips Clean (was flagged before Option 3).
+        assert_eq!(
+            roundtrip_body(html, BodyKind::Note),
+            RoundTrip::Clean,
+            "a note with <br> must split and be Clean"
         );
     }
 
