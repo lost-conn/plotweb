@@ -19,16 +19,19 @@
 //! Only CLEAN docs get blobs: a doc the projection flags (an unsupported block, a parse
 //! failure) produces no blob and stays git-only — never a partial/garbage blob.
 //!
-//! `user:` indices are **deferred**: they need rhypedb ownership (which user owns which
-//! book), and this lock-free `DATA_DIR` walk has no ownership. A later ownership-aware
-//! pass will emit them via [`plotweb_crdt::project_user_index`].
+//! `user:` indices need ownership (which user owns which book), which the lock-free
+//! `DATA_DIR` walk does not have — so they are emitted by a **separate ownership-aware
+//! pass**, [`run_user_backfill`], which takes an already-open rhypedb handle. In
+//! production that handle is the live server's own (`AppState.rhype`), so the pass runs
+//! in-process next to the content backfill with no lock contention at all.
 
 use std::future::Future;
 use std::path::PathBuf;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use plotweb_crdt::{
-    project_body, project_book_structure, BodyKind, BookStructureInput,
+    project_body, project_book_structure, project_user_index, BodyKind, BookStructureInput,
+    UserIndexInput,
 };
 use plotweb_git::BookStore;
 use rinch_storage::{FsStore, Store};
@@ -39,10 +42,15 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Default)]
 pub struct BackfillSummary {
     pub books: usize,
+    /// Users whose `user:` index was considered (the ownership-aware pass only).
+    pub users: usize,
     pub docs_seen: usize,
     pub written: usize,
     pub skipped_unchanged: usize,
     pub skipped_flagged: usize,
+    /// Docs a client has already synced — the backfill must never re-project these
+    /// (it would fork a second, history-disjoint copy of the same content).
+    pub skipped_synced: usize,
     /// `(doc_id, reason)` for every flagged (git-only) doc.
     pub flagged: Vec<(String, String)>,
     /// Doc-ids that received a fresh (or refreshed) blob this run.
@@ -56,6 +64,7 @@ enum DocOutcome {
     Written,
     SkippedUnchanged,
     SkippedFlagged(String),
+    SkippedSynced,
     Error(String),
 }
 
@@ -141,6 +150,17 @@ fn backfill_doc(
     src: &str,
     project: Result<Vec<u8>, String>,
 ) -> DocOutcome {
+    // Stop sign: once a client has synced this doc, the canonical Automerge document
+    // is owned by the clients and its history is live. Re-projecting it from git would
+    // build a SECOND document with no shared history, and merging those concatenates
+    // rather than deduplicates — the author would see their chapter twice. Git-sourced
+    // backfill is strictly a pre-sync operation (see `docs/sync-engine-design.md` §D8).
+    match crate::sync::read_manifest(store, doc_id) {
+        Ok(Some(m)) if m.synced_at.is_some() => return DocOutcome::SkippedSynced,
+        Ok(_) => {}
+        Err(e) => return DocOutcome::Error(format!("{doc_id}: read manifest: {e}")),
+    }
+
     let src_sha = sha256_hex(src);
     let sha_key = format!("{doc_id}/src-sha");
 
@@ -189,6 +209,7 @@ fn record(summary: &mut BackfillSummary, doc_id: &str, outcome: DocOutcome) {
             summary.written_ids.push(doc_id.to_string());
         }
         DocOutcome::SkippedUnchanged => summary.skipped_unchanged += 1,
+        DocOutcome::SkippedSynced => summary.skipped_synced += 1,
         DocOutcome::SkippedFlagged(reason) => {
             summary.skipped_flagged += 1;
             summary.flagged.push((doc_id.to_string(), reason));
@@ -324,6 +345,116 @@ pub async fn run_content_backfill(data_dir: &str, crdt_dir: &str) -> Result<Back
     Ok(summary)
 }
 
+/// Deterministic fingerprint of a `user:` index's source: one line per book entry, in
+/// book-id order (the projection's own newest-first sort is a *render* concern, so it
+/// must not decide whether the source changed).
+fn user_fingerprint(input: &UserIndexInput) -> String {
+    use std::fmt::Write as _;
+    let mut entries = input.books.clone();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut s = String::new();
+    for (id, title, cover, updated) in &entries {
+        let _ = writeln!(s, "book\t{id}\t{title}\t{cover:?}\t{updated}");
+    }
+    s
+}
+
+/// Ownership-aware `user:` index backfill — the pass the lock-free content walk cannot
+/// do (handoff step ②).
+///
+/// Enumerates every `Book` row from rhypedb (a bare scan spans all users), reads each
+/// book's cached dashboard fields from git with the *same* fallbacks the audit and the
+/// `books::list` route use (a book whose repo is unreadable falls back to the rhypedb
+/// row's title/created_at), groups them per owner, and emits one canonical
+/// `user:{user_id}` snapshot each.
+///
+/// Same guarantees as the content pass: additive (only `crdt_dir` is written), git and
+/// rhypedb read-only, idempotent via `src-sha`, and it never touches a doc a client has
+/// already synced.
+///
+/// Takes an **already-open** [`RhypeStore`] rather than a directory: rhypedb is
+/// single-writer, so passing the live server's handle lets this run in-process next to
+/// the content backfill instead of requiring a stopped server.
+pub async fn run_user_backfill(
+    rhype: &crate::rhype::RhypeStore,
+    books: &BookStore,
+    crdt_dir: &str,
+) -> Result<BackfillSummary, String> {
+    use std::collections::BTreeMap;
+
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| format!("failed to open CRDT store at {crdt_dir}: {e}"))?;
+
+    let mut rows = rhype
+        .find("Book")
+        .await
+        .map_err(|e| format!("rhypedb Book scan failed: {e}"))?;
+    rows.sort_by_key(|r| r.string("uuid"));
+
+    // owner → cached dashboard entries, exactly as `local_user`/the audit build them.
+    let mut per_user: BTreeMap<String, Vec<(String, String, Option<String>, String)>> =
+        BTreeMap::new();
+
+    for row in &rows {
+        let book_id = row.string("uuid").unwrap_or_default();
+        let user_id = row.string("user_id").unwrap_or_default();
+        if book_id.is_empty() || user_id.is_empty() {
+            continue;
+        }
+        let entry = match books.get_book(&book_id).await {
+            Ok(d) => (book_id, d.title, d.cover_image, d.updated_at),
+            // Repo unreadable → the rhypedb row's own fields, mirroring `books::list`.
+            Err(_) => (
+                book_id,
+                row.string("title").unwrap_or_default(),
+                None,
+                row.string("created_at").unwrap_or_default(),
+            ),
+        };
+        per_user.entry(user_id).or_default().push(entry);
+    }
+
+    println!(
+        "[backfill] {} book row(s) across {} user(s) — emitting user: indices",
+        rows.len(),
+        per_user.len()
+    );
+
+    let mut summary = BackfillSummary::default();
+    for (user_id, entries) in &per_user {
+        let doc_id = format!("user:{user_id}");
+        let input = UserIndexInput {
+            books: entries.clone(),
+        };
+        let fp = user_fingerprint(&input);
+        let outcome = backfill_doc(&store, &doc_id, "user", &fp, project_user_index(&input));
+        record(&mut summary, &doc_id, outcome);
+    }
+    summary.users = per_user.len();
+    Ok(summary)
+}
+
+/// Human summary of a `user:` index backfill pass.
+pub fn print_user_summary(crdt_dir: &str, summary: &BackfillSummary) {
+    println!();
+    println!("────────────────────────────────────────");
+    println!("PlotWeb migration backfill — user: indices (ownership-aware)");
+    println!("  Additive: the ONLY writes go to {crdt_dir}. Git + rhypedb read-only.");
+    println!("  users scanned      : {}", summary.users);
+    println!("  blobs written      : {}", summary.written);
+    println!("  skipped-unchanged  : {}", summary.skipped_unchanged);
+    println!("  skipped-synced     : {}", summary.skipped_synced);
+    if !summary.flagged.is_empty() {
+        println!("  flagged            : {}", summary.flagged.len());
+        for (doc_id, reason) in &summary.flagged {
+            println!("    {doc_id} — {reason}");
+        }
+    }
+    for e in &summary.errors {
+        println!("    ! {e}");
+    }
+}
+
 /// Human summary of a backfill run (grand totals + flagged list).
 pub fn print_summary(data_dir: &str, crdt_dir: &str, summary: &BackfillSummary) {
     println!();
@@ -339,7 +470,11 @@ pub fn print_summary(data_dir: &str, crdt_dir: &str, summary: &BackfillSummary) 
     println!("  blobs written      : {}", summary.written);
     println!("  skipped-unchanged  : {}", summary.skipped_unchanged);
     println!("  skipped-flagged    : {}", summary.skipped_flagged);
-    println!("  user: indices      : deferred — rhypedb-owned (ownership not in this lock-free walk)");
+    println!(
+        "  skipped-synced     : {} (client-owned; never re-projected from git)",
+        summary.skipped_synced
+    );
+    println!("  user: indices      : emitted by the ownership-aware pass (run_user_backfill), not this walk");
     if !summary.errors.is_empty() {
         println!("  store/read errors  : {}", summary.errors.len());
         for e in &summary.errors {
@@ -359,36 +494,70 @@ pub fn print_summary(data_dir: &str, crdt_dir: &str, summary: &BackfillSummary) 
 
 /// Entry point for `plotweb-server backfill-migration`.
 ///
-/// Opens `PLOTWEB_CRDT_DIR` (default `data/crdt`), runs the lock-free content
-/// backfill against `DATA_DIR`, prints the summary, and returns. Never starts the
-/// server; only the CRDT store is written.
+/// Runs the lock-free content backfill against `DATA_DIR` into `PLOTWEB_CRDT_DIR`, then
+/// attempts the ownership-aware `user:` pass. The second needs the rhypedb writer lock,
+/// so it only runs with the server **stopped**; when the lock is held the pass is
+/// skipped with a note (use the boot hook instead, which runs in the server's own
+/// process). Never starts the server; only the CRDT store is written.
 pub async fn run() {
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
     let crdt_dir = std::env::var("PLOTWEB_CRDT_DIR").unwrap_or_else(|_| "data/crdt".into());
+    let rhype_dir = std::env::var("RHYPEDB_DATA_DIR").unwrap_or_else(|_| "data/rhypedb".into());
 
     println!(
         "[backfill] starting canonical Automerge backfill — additive, reversible, \
-         lock-free, content only (user: indices deferred)"
+         lock-free content pass, then the ownership-aware user: pass"
     );
+
     match run_content_backfill(&data_dir, &crdt_dir).await {
         Ok(summary) => print_summary(&data_dir, &crdt_dir, &summary),
         Err(e) => eprintln!("backfill-migration: {e}"),
     }
+
+    // ── The user: pass, if rhypedb is available to us. ──
+    match crate::rhype::RhypeStore::open(&rhype_dir) {
+        Ok(rhype) => {
+            let books = BookStore::new(PathBuf::from(&data_dir));
+            match run_user_backfill(&rhype, &books, &crdt_dir).await {
+                Ok(summary) => print_user_summary(&crdt_dir, &summary),
+                Err(e) => eprintln!("[backfill] user: pass failed: {e}"),
+            }
+        }
+        Err(e) => {
+            println!(
+                "[backfill] user: pass SKIPPED — rhypedb at {rhype_dir} is unavailable \
+                 ({e}). It is single-writer: stop the server and re-run, or use the \
+                 in-process boot hook (PLOTWEB_BACKFILL_ON_BOOT), which shares the \
+                 server's own handle."
+            );
+        }
+    }
+
     println!("[backfill] backfill complete");
 }
 
-/// Boot-time hook (env `PLOTWEB_BACKFILL_ON_BOOT`): run the lock-free content
-/// backfill against the live `DATA_DIR`, writing blobs into `PLOTWEB_CRDT_DIR`,
-/// concurrently with serving. Lock-free and additive (writes only the CRDT store),
-/// so it is safe next to the live server.
-pub async fn run_boot_backfill(data_dir: String, crdt_dir: String) {
+/// Boot-time hook (env `PLOTWEB_BACKFILL_ON_BOOT`): run the content backfill against
+/// the live `DATA_DIR` and then the ownership-aware `user:` pass, writing blobs into
+/// `PLOTWEB_CRDT_DIR`, concurrently with serving. Additive (writes only the CRDT
+/// store); the content walk is lock-free and the `user:` pass borrows the **server's
+/// own** rhypedb handle, so neither contends with the live server.
+pub async fn run_boot_backfill(
+    data_dir: String,
+    crdt_dir: String,
+    rhype: crate::rhype::RhypeStore,
+    books: std::sync::Arc<BookStore>,
+) {
     println!(
         "[boot-backfill] starting canonical Automerge backfill — additive, reversible, \
-         lock-free, writes only PLOTWEB_CRDT_DIR"
+         writes only PLOTWEB_CRDT_DIR"
     );
     match run_content_backfill(&data_dir, &crdt_dir).await {
         Ok(summary) => print_summary(&data_dir, &crdt_dir, &summary),
         Err(e) => eprintln!("[boot-backfill] {e}"),
+    }
+    match run_user_backfill(&rhype, &books, &crdt_dir).await {
+        Ok(summary) => print_user_summary(&crdt_dir, &summary),
+        Err(e) => eprintln!("[boot-backfill] user: pass failed: {e}"),
     }
     println!("[boot-backfill] backfill complete");
 }

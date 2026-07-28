@@ -34,14 +34,24 @@ async fn main() {
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:plotweb.db".into());
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
     let rhype_dir = std::env::var("RHYPEDB_DATA_DIR").unwrap_or_else(|_| "data/rhypedb".into());
+    let crdt_dir = std::env::var("PLOTWEB_CRDT_DIR")
+        .unwrap_or_else(|_| plotweb_server::sync::DEFAULT_CRDT_DIR.into());
 
     let state = build_state(
         &db_url,
         PathBuf::from(&data_dir),
         &rhype_dir,
+        PathBuf::from(&crdt_dir),
         EmailService::from_env(),
     )
     .await;
+
+    // Handles for the boot-time migration hooks below. Cloned before `api_router`
+    // consumes the state — the `user:` backfill pass reuses the server's own rhypedb
+    // handle (rhypedb is single-writer, so an in-process share is the only way to run
+    // it without stopping the server).
+    let boot_rhype = state.rhype.clone();
+    let boot_books = state.books.clone();
 
     // Static files — serve the built frontend, with SPA fallback to index.html
     let dist_path = std::env::var("DIST_DIR").unwrap_or_else(|_| "../plotweb-web/dist".into());
@@ -82,9 +92,9 @@ async fn main() {
         .unwrap_or(false)
     {
         let dd = data_dir.clone();
-        let cd = std::env::var("PLOTWEB_CRDT_DIR").unwrap_or_else(|_| "data/crdt".into());
+        let cd = crdt_dir.clone();
         tokio::spawn(async move {
-            plotweb_server::backfill::run_boot_backfill(dd, cd).await;
+            plotweb_server::backfill::run_boot_backfill(dd, cd, boot_rhype, boot_books).await;
         });
     }
 
