@@ -112,6 +112,43 @@ pub fn put<B: Serialize, T: DeserializeOwned + 'static>(
     fetch(req, move |res| on_done(parse::<T>(res)));
 }
 
+/// A failed binary request: the HTTP status (0 = transport failure, i.e. offline)
+/// plus a message. The sync engine branches on `status` — 401 is a *state*
+/// (signed out), not an error to retry.
+#[derive(Debug, Clone)]
+pub struct BinError {
+    pub status: u16,
+    pub message: String,
+}
+
+/// `POST url` with a raw byte body, yielding the raw response bytes.
+///
+/// The sync endpoints speak `application/octet-stream` in both directions
+/// (Automerge sync messages), so neither side of this goes through JSON.
+pub fn post_bytes(
+    url: &str,
+    body: Vec<u8>,
+    on_done: impl FnOnce(Result<Vec<u8>, BinError>) + 'static,
+) {
+    let req = Request::post(&full_url(url))
+        .header("Content-Type", "application/octet-stream")
+        .body(body);
+    fetch(req, move |res| {
+        on_done(match res {
+            // A transport error means we could not reach the server at all.
+            Err(e) => Err(BinError {
+                status: 0,
+                message: e.to_string(),
+            }),
+            Ok(resp) if resp.status >= 400 => Err(BinError {
+                status: resp.status,
+                message: resp.text(),
+            }),
+            Ok(resp) => Ok(resp.body),
+        })
+    });
+}
+
 /// `DELETE url`, deserializing the JSON response into `T`.
 pub fn delete_req<T: DeserializeOwned + 'static>(url: &str, on_done: impl ApiCallback<T>) {
     let req = Request::delete(&full_url(url)).header("Content-Type", "application/json");

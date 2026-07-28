@@ -9,4 +9,3 @@ pub mod reader;
 pub mod theme_preview;
 pub mod editor_spike;
 pub mod opfs_spike;
-pub mod sync_spike;
