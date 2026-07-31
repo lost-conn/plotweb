@@ -2244,6 +2244,7 @@ fn do_switch_chapter_inner(
             // keystroke's change delta is persisted locally.
             crate::local_store::attach_chapter(
                 handle.clone(),
+                bid.clone(),
                 new_cid.clone(),
                 chapter.content.clone(),
             );
@@ -2637,6 +2638,7 @@ fn render_note_card(
                                 // mirror of the chapter path. Additive/dual-write.
                                 crate::local_store::attach_note(
                                     handle.clone(),
+                                    bid.clone(),
                                     n.clone(),
                                     note.content.clone(),
                                 );

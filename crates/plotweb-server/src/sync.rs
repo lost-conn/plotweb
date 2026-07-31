@@ -243,6 +243,64 @@ fn now_stamp() -> String {
 /// "client pushes local as canonical" case (a doc created offline, or one the
 /// migration flagged and left git-only). Route-level authorization decides *whether*
 /// this doc-id is allowed to exist at all — this function never sees an unvetted id.
+/// The canonical document's full snapshot bytes, or `None` when the server has never
+/// held this document. Read-only.
+pub fn canonical_snapshot(crdt_dir: &Path, doc_id: &str) -> Result<Option<Vec<u8>>, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let manifest = read_manifest(&store, doc_id)?;
+    load_snapshot(&store, doc_id, manifest.as_ref())
+}
+
+/// Outcome of a client's bid to take ownership of a document (see [`adopt_doc`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Adoption {
+    /// The canonical doc was replaced by the client's; it now owns this document.
+    Adopted,
+    /// A client already owns this document — use the sync protocol, not adoption.
+    AlreadyOwned,
+}
+
+/// Let a client replace a **pristine** canonical document with its own.
+///
+/// Needed only for the migration era, and only for bodies. The phase-C backfill
+/// projected each git document into an Automerge doc, but git keeps moving: every
+/// REST save since is in git and *not* in that blob, so the canonical copy of a body
+/// is frozen at backfill time. Neither of the obvious moves is safe:
+///
+/// - **Merging** the client's doc with the backfilled one concatenates rather than
+///   deduplicates — they share no history (`docs/sync-engine-design.md` §D8), so the
+///   author would see their chapter twice.
+/// - **Adopting the server's** could hand back backfill-era text, older than git, and
+///   the client's autosave would then write that over the current content.
+///
+/// So the backfill blob is treated as **provisional**: the first client to sync a
+/// document replaces it with its own git-current doc and takes ownership. Afterwards
+/// (`synced_at` present) this returns [`Adoption::AlreadyOwned`] and callers must use
+/// the sync protocol — adoption would discard a peer's changes.
+pub fn adopt_doc(
+    crdt_dir: &Path,
+    doc_id: &str,
+    doc_type: &str,
+    full_doc: &[u8],
+) -> Result<Adoption, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+
+    let manifest = read_manifest(&store, doc_id)?;
+    if manifest.as_ref().is_some_and(|m| m.synced_at.is_some()) {
+        return Ok(Adoption::AlreadyOwned);
+    }
+
+    // Validate before writing: a doc we can't load is not a doc we should canonicalize.
+    let mut doc = AutoCommit::load(full_doc)
+        .map_err(|e| SyncError::BadMessage(format!("not a loadable Automerge document: {e}")))?;
+    let heads = doc.get_heads().iter().map(|h| h.to_string()).collect();
+
+    save_snapshot(&store, doc_id, doc_type, manifest.as_ref(), full_doc, heads)?;
+    Ok(Adoption::Adopted)
+}
+
 pub fn sync_round(
     crdt_dir: &Path,
     doc_id: &str,

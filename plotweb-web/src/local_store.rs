@@ -464,25 +464,188 @@ async fn body_docs_adoptable(backend: &Rc<dyn Store>) -> StorageResult<bool> {
 /// detached first so seeding / guest-load can never record onto the wrong doc's
 /// CRDT or fire the wrong `outbound`. Superseded by the next call for this surface —
 /// see the surface-binding note above.
-pub fn attach_chapter(handle: EditorHandle, chapter_id: String, seed_content: String) {
+pub fn attach_chapter(
+    handle: EditorHandle,
+    book_id: String,
+    chapter_id: String,
+    seed_content: String,
+) {
     let doc_id = format!("chapter:{chapter_id}");
     claim_surface(BodyKind::Chapter, &doc_id);
     spawn(async move {
-        if let Err(e) = attach_body_inner(&handle, &doc_id, &seed_content, BodyKind::Chapter).await {
-            log::warn!("local-first: {doc_id}: {e}");
+        match attach_body_inner(&handle, &doc_id, &seed_content, BodyKind::Chapter).await {
+            Ok(Some(sink)) => register_body_session(BodySession {
+                doc_id,
+                book_id,
+                kind: BodyKind::Chapter,
+                handle,
+                sink,
+            }),
+            Ok(None) => {}
+            Err(e) => log::warn!("local-first: {doc_id}: {e}"),
         }
     });
+}
+
+// ── The open body document, for the sync engine ──────────────────────────────
+
+/// Everything sync needs for the body document an editor currently holds: the live
+/// editor (which owns the CRDT), and the sink whose generation must be re-pointed
+/// after a remote change is merged in.
+pub(crate) struct BodySession {
+    pub doc_id: String,
+    /// Body sync endpoints are book-scoped, so the attach carries the book through.
+    pub book_id: String,
+    kind: BodyKind,
+    pub handle: EditorHandle,
+    sink: Rc<OutboundSink>,
+}
+
+thread_local! {
+    static CHAPTER_SESSION: RefCell<Option<BodySession>> = const { RefCell::new(None) };
+    static NOTE_SESSION: RefCell<Option<BodySession>> = const { RefCell::new(None) };
+}
+
+fn session_slot(kind: BodyKind) -> &'static std::thread::LocalKey<RefCell<Option<BodySession>>> {
+    match kind {
+        BodyKind::Chapter => &CHAPTER_SESSION,
+        BodyKind::Note => &NOTE_SESSION,
+    }
+}
+
+/// Publish a freshly-attached body session, and offer it to the sync engine.
+fn register_body_session(session: BodySession) {
+    // Superseded between the attach finishing and this call: drop it rather than
+    // overwrite the surface's current session.
+    if !surface_holds(session.kind, &session.doc_id) {
+        return;
+    }
+    let (kind, doc_id, book_id) = (session.kind, session.doc_id.clone(), session.book_id.clone());
+    session_slot(kind).with(|s| *s.borrow_mut() = Some(session));
+    crate::sync::register_body(&doc_id, &book_id);
+}
+
+/// Run `f` against the open body session for `doc_id`, or `None` if that document is
+/// no longer the one its surface holds (the author moved on).
+pub(crate) fn with_body_session<R>(doc_id: &str, f: impl FnOnce(&BodySession) -> R) -> Option<R> {
+    // Which surface (if either) currently holds this document — resolved before `f`
+    // is consumed, since it can only be called once.
+    let kind = [BodyKind::Chapter, BodyKind::Note].into_iter().find(|&kind| {
+        session_slot(kind).with(|s| {
+            s.borrow()
+                .as_ref()
+                .is_some_and(|session| session.doc_id == doc_id)
+        }) && surface_holds(kind, doc_id)
+    })?;
+    session_slot(kind).with(|s| s.borrow().as_ref().map(f))
+}
+
+// ── Provenance (design §D8) ──────────────────────────────────────────────────
+//
+// A body doc seeded locally from REST and the server's canonical copy of the same
+// chapter share **no history** — both were built independently from the same git
+// content. Automerge merges them by concatenation, not deduplication, so the author
+// would see their chapter twice. A doc is therefore marked once it provably shares
+// history with the server's (we adopted theirs, or they adopted ours), and only then
+// may the sync protocol run against it.
+
+fn origin_key(doc_id: &str) -> String {
+    format!("{doc_id}/origin")
+}
+
+/// Whether this body doc shares history with the server's canonical copy.
+pub(crate) async fn body_shares_server_history(doc_id: &str) -> StorageResult<bool> {
+    let backend = backend().await?;
+    Ok(backend.get(&origin_key(doc_id)).await?.as_deref() == Some(b"synced"))
+}
+
+/// Record that this body doc now shares history with the server's.
+pub(crate) async fn mark_body_shares_server_history(doc_id: &str) -> StorageResult<()> {
+    let backend = backend().await?;
+    backend.put(&origin_key(doc_id), b"synced").await
+}
+
+/// Replace the open body document with the server's canonical one.
+///
+/// The §D8 resolution when the server's copy is owned by another device: our
+/// independently-seeded doc can never be merged into it, so we take theirs wholesale.
+/// Safe pre-cutover — the peer's doc is git-current (it dual-writes like we do), and
+/// our own content reached git the same way.
+///
+/// Installing goes through `start_collaboration_guest`, which loads the document and
+/// *then* attaches, so the load is never recorded into the session we are replacing.
+pub(crate) async fn install_server_body(doc_id: &str, bytes: &[u8]) -> StorageResult<bool> {
+    let Some((handle, book_id, kind, store)) = with_body_session(doc_id, |s| {
+        (
+            s.handle.clone(),
+            s.book_id.clone(),
+            s.kind,
+            s.sink.store.clone(),
+        )
+    }) else {
+        return Ok(false);
+    };
+
+    let sink = OutboundSink::new(store.clone());
+    let out = sink.clone();
+    if handle
+        .start_collaboration_guest(bytes, move |delta| out.record(delta))
+        .is_err()
+    {
+        log::warn!("local-first: {doc_id}: server document is outside the collab scope");
+        return Ok(false);
+    }
+
+    let generation = store.publish_snapshot(bytes).await?;
+    sink.publish(generation);
+    mark_body_shares_server_history(doc_id).await?;
+
+    register_body_session(BodySession {
+        doc_id: doc_id.to_string(),
+        book_id,
+        kind,
+        handle,
+        sink,
+    });
+    Ok(true)
+}
+
+/// Persist the body document as it now stands and re-point its delta log.
+///
+/// Called after the sync engine merges a peer's changes into the live session. The
+/// merged state must become the new base: leaving it unpublished would keep the
+/// stored snapshot (plus a delta log that never saw those changes) behind the CRDT,
+/// so a reopen would silently lose the merged content. Publishing a fresh generation
+/// and re-pointing the sink keeps subsequent local deltas anchored to it.
+pub(crate) async fn republish_body(doc_id: &str) -> StorageResult<()> {
+    let Some((store, sink, snapshot)) = with_body_session(doc_id, |session| {
+        (
+            session.sink.store.clone(),
+            session.sink.clone(),
+            session.handle.collab_snapshot(),
+        )
+    }) else {
+        return Ok(());
+    };
+    let Some(snapshot) = snapshot else {
+        return Ok(());
+    };
+    let generation = store.publish_snapshot(&snapshot).await?;
+    sink.publish(generation);
+    Ok(())
 }
 
 /// Shared body-doc attach for a chapter or a note (they differ only in `kind`'s
 /// legacy-content seed loader). Adopts a local doc if one exists (guest + delta
 /// replay + compaction), else seeds a fresh host doc from `seed_content`.
+/// Returns the sink for the attached session, or `None` when no session was attached
+/// (superseded mid-attach, or content outside the staged collab scope).
 async fn attach_body_inner(
     handle: &EditorHandle,
     doc_id: &str,
     seed_content: &str,
     kind: BodyKind,
-) -> StorageResult<()> {
+) -> StorageResult<Option<Rc<OutboundSink>>> {
     // Detach any prior session before touching the editor model.
     handle.stop_collaboration();
 
@@ -491,7 +654,7 @@ async fn attach_body_inner(
     // Superseded while the backend was opening: the surface has moved to another
     // document, so everything below would write this one's content into it.
     if !surface_holds(kind, doc_id) {
-        return Ok(());
+        return Ok(None);
     }
 
     // One-time recovery for documents written before the surface-binding fix; also
@@ -502,7 +665,7 @@ async fn attach_body_inner(
 
     // Same check after the (IndexedDB) reads — this is the wide window in practice.
     if !surface_holds(kind, doc_id) {
-        return Ok(());
+        return Ok(None);
     }
 
     match loaded {
@@ -530,7 +693,7 @@ async fn attach_body_inner(
                 .unwrap_or_else(|| persisted.snapshot.clone());
             let generation = store.publish_snapshot(&snapshot).await?;
             sink.publish(generation);
-            Ok(())
+            Ok(Some(sink))
         }
         None => seed_and_host_kind(handle, &store, seed_content, kind).await,
     }
@@ -541,12 +704,25 @@ async fn attach_body_inner(
 /// same dual-write). Seeds from `seed_content` (the REST-fetched note body) when no
 /// local document exists yet. Note *structure* (title/color/tree position) is not a
 /// body concern — it lives in the `book:` doc (see [`crate::local_book`]).
-pub fn attach_note(handle: EditorHandle, note_id: String, seed_content: String) {
+pub fn attach_note(
+    handle: EditorHandle,
+    book_id: String,
+    note_id: String,
+    seed_content: String,
+) {
     let doc_id = format!("note:{note_id}");
     claim_surface(BodyKind::Note, &doc_id);
     spawn(async move {
-        if let Err(e) = attach_body_inner(&handle, &doc_id, &seed_content, BodyKind::Note).await {
-            log::warn!("local-first: {doc_id}: {e}");
+        match attach_body_inner(&handle, &doc_id, &seed_content, BodyKind::Note).await {
+            Ok(Some(sink)) => register_body_session(BodySession {
+                doc_id,
+                book_id,
+                kind: BodyKind::Note,
+                handle,
+                sink,
+            }),
+            Ok(None) => {}
+            Err(e) => log::warn!("local-first: {doc_id}: {e}"),
         }
     });
 }
@@ -554,7 +730,7 @@ pub fn attach_note(handle: EditorHandle, note_id: String, seed_content: String) 
 /// Which editor loader seeds a fresh body doc (chapter vs note). The two differ only
 /// in the legacy-content fallback (`load_chapter_content` / `load_note_content`); the
 /// CRDT collab seam and dual-write are identical.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum BodyKind {
     Chapter,
     Note,
@@ -578,7 +754,7 @@ async fn seed_and_host_kind(
     store: &DocStore,
     seed_content: &str,
     kind: BodyKind,
-) -> StorageResult<()> {
+) -> StorageResult<Option<Rc<OutboundSink>>> {
     kind.seed_editor(handle, seed_content);
 
     let sink = OutboundSink::new(store.clone());
@@ -590,12 +766,12 @@ async fn seed_and_host_kind(
             // a follow-up deliverable). Leave the editor in normal REST-only mode —
             // no local doc this deliverable, no regression to editing/autosave.
             handle.stop_collaboration();
-            return Ok(());
+            return Ok(None);
         }
     };
     let generation = store.publish_snapshot(&snapshot).await?;
     sink.publish(generation);
-    Ok(())
+    Ok(Some(sink))
 }
 
 // ── Surface-binding tests ────────────────────────────────────────────────────

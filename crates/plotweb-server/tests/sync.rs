@@ -303,6 +303,94 @@ async fn the_backfill_never_reprojects_a_doc_a_client_has_synced() {
 }
 
 #[tokio::test]
+async fn the_first_client_takes_ownership_of_a_backfilled_body() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = book_with_chapter(&mut app).await;
+
+    // Chapter content in git, then migrated — the canonical copy is now the
+    // backfill's, and it freezes here while git keeps moving.
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+            &json!({ "title": "Chapter One", "content": "backfill-era text" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    plotweb_server::backfill::run_content_backfill(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("backfill");
+
+    // A device holding the *current* (git-newer) body claims the document.
+    let mut device = Device::new();
+    device.doc.put(ROOT, "body", "current text, newer than backfill").unwrap();
+    let uri = format!("/api/books/{book_id}/sync/chapter:{chapter_id}/adopt");
+    let (status, body) = app.post_bytes(&uri, &device.doc.save()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["adopted"],
+        serde_json::json!(true),
+        "a pristine backfill blob is provisional — the first client replaces it"
+    );
+
+    // A second device syncing normally now gets the adopting device's document,
+    // not the backfilled one — and no duplicate of it.
+    let mut other = Device::new();
+    other.sync(&mut app, &chapter_uri(&book_id, &chapter_id)).await;
+    assert_eq!(
+        other.str_at("body").as_deref(),
+        Some("current text, newer than backfill")
+    );
+
+    // And ownership is once-only: a later claim is refused so it cannot discard the
+    // peer's changes.
+    let mut latecomer = Device::new();
+    latecomer.doc.put(ROOT, "body", "would clobber").unwrap();
+    let (status, body) = app.post_bytes(&uri, &latecomer.doc.save()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["adopted"],
+        serde_json::json!(false),
+        "an owned document must be synced, never adopted over"
+    );
+
+    let mut check = Device::new();
+    check.sync(&mut app, &chapter_uri(&book_id, &chapter_id)).await;
+    assert_eq!(
+        check.str_at("body").as_deref(),
+        Some("current text, newer than backfill"),
+        "the refused claim left the canonical document untouched"
+    );
+}
+
+#[tokio::test]
+async fn adopt_rejects_junk_and_other_peoples_books() {
+    let mut app = TestApp::new().await;
+    app.register("owner", "password123").await;
+    let (book_id, chapter_id) = book_with_chapter(&mut app).await;
+    let uri = format!("/api/books/{book_id}/sync/chapter:{chapter_id}/adopt");
+
+    let (status, _) = app.post_bytes(&uri, b"not an automerge document").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _) = app
+        .post_bytes(
+            &format!("/api/books/{book_id}/sync/chapter:nope/adopt"),
+            &AutoCommit::new().save(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "unknown doc id");
+
+    app.logout_local();
+    app.register("intruder", "password123").await;
+    let (status, _) = app.post_bytes(&uri, &AutoCommit::new().save()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "another user's book");
+}
+
+#[tokio::test]
 async fn sync_rejects_another_users_book() {
     let mut app = TestApp::new().await;
     app.register("owner", "password123").await;
