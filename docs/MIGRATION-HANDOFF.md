@@ -1,0 +1,198 @@
+# PlotWeb Offline-First Migration — Handoff
+
+**Purpose:** hand this work to a future session. Read this + `docs/offline-first-rinch-plan.md`
+(the locked architecture + v1 Automerge schema) and you can pick up the next steps.
+
+---
+
+## TL;DR
+
+PlotWeb is migrating from **git-backed storage** to **local-first Automerge CRDTs**
+(offline-first, multi-device). The client local-first layer is built for all four
+doc types; the git→Automerge migration has been **audited clean and backfilled on
+production**, with git untouched throughout. **Nothing Automerge is live yet** — the
+canonical store is staged but unread. The remaining work is the *sync engine* and the
+*cutover* (make Automerge authoritative), each reversible.
+
+Production is on **v16**, healthy. Real data: 4 books, **92/92 docs audit-clean**,
+**92 Automerge blobs backfilled**.
+
+---
+
+## What's done (this arc), with commits
+
+All on `origin/main`. Deploy = push to `origin` → GitHub Action → jkbase build (see Runbook).
+
+**Native port + upstream rinch** (earlier in the arc):
+- Pure-rinch frontend runs on web *and* native desktop. Fixed the native crash classes
+  (`Closure::wrap` panics off-wasm even behind a `platform::` guard — use the `web_only!`
+  macro), `set_inner_html` via `NodeHandle`, reactive inputs, `key:` on loops, Typography
+  panel rewrite. Commits `7e109fa`,`c15fc78`,`d9cac44`,`0d5762e`,`04d8877`,`fdd17be`.
+- Six upstream rinch PRs merged (#113 text_align, #114 rinch-ws, #115 rinch-storage,
+  #116 render_surface, #117 editor-collab lists, #118 rinch-dom viewport relayout).
+  PlotWeb repinned to rinch `f7e1c37` (`85f3218`).
+
+**Phase 2 — client local-first store** (all 4 v1 doc types; each proven natively via the
+rinch MCP — local edit beats a divergent server after restart):
+- `72f8467` chapter bodies · `150979f` note bodies + book structure · `11f07d4` user-index
+  (dashboard). Files: `plotweb-web/src/local_store.rs`, `local_book.rs`, `local_user.rs`.
+- **Dual-write**: every existing REST save stays; the local Automerge write is *additive*.
+  Local docs seed from the REST API when absent. Nothing lost; web behavior unchanged.
+
+**Migration (git → Automerge), reversible/git-as-fallback:**
+- `fb3ffd0` the plan (in `docs/offline-first-rinch-plan.md`, §"Migration off git").
+- `da3fcac` **A+B**: `crates/plotweb-crdt` = canonical projection + `roundtrip_*` validators;
+  `plotweb-server audit-migration` read-only dry-run.
+- `6b67d31` **boot-time lock-free audit** (env `PLOTWEB_AUDIT_ON_BOOT`) — runs the content
+  audit alongside the live server, logs to `jkbase logs`.
+- `9039640` **legacy-tolerant**: converts pre-DocNode content (Markdown chapters / HTML
+  notes) the same way the editor does. `plotweb_common::markdown_to_html` (line-based, no
+  paragraph collapse) + `slice_from_html` mirror of `EditorHandle::load_html`.
+- `d3fa62b` **Option 3**: split `hard_break`→paragraphs so legacy `<br>` notes migrate.
+- `e220df7` **Phase C backfill**: `plotweb-server backfill-migration` (+ env
+  `PLOTWEB_BACKFILL_ON_BOOT`) writes one Automerge snapshot per clean doc into
+  `PLOTWEB_CRDT_DIR` (default `data/crdt`). Additive, reversible, idempotent, lock-free.
+
+**Prod audit progression** (each an app restart with the audit flag on): 50 flagged →
+5 → **0**. Then backfill: **92 blobs, 0 flagged**. Git byte-identical throughout.
+
+---
+
+## Codebase map
+
+- **`crates/plotweb-crdt/`** — the ONE canonical git-DocNode→Automerge projection, shared
+  by validate (audit) and emit (backfill). `body.rs` (`roundtrip_body`/`project_body` +
+  `BodyKind` + `prepare_body_node` + `split_hard_breaks_doc`), `book.rs`
+  (`roundtrip_book_structure`/`project_book_structure`), `user.rs` (user index). **Equality
+  is semantic**: `coalesce` merges adjacent same-mark text runs before comparing (so inline
+  segmentation isn't a false diff). Change the projection ONLY here so client + server + the
+  audit's "clean" verdict never diverge.
+- **`crates/plotweb-server/src/audit.rs`** — `run` (the `audit-migration` subcommand, rhypedb-
+  enumerated, incl. `user:`), `run_content_audit`/`run_boot_audit` (lock-free, DATA_DIR-
+  enumerated, content-only), `audit_one_book` (shared per-book walk).
+- **`crates/plotweb-server/src/backfill.rs`** — `run` (subcommand) / `run_boot_backfill` /
+  `run_content_backfill`. FsStore blob store, keyed `{doc_id}/{snapshot,manifest,src-sha}`.
+  Idempotent via `src-sha` = sha256 of the **source** content (Automerge `save()` bytes have
+  a random actor id, so blob-hashing wouldn't be stable).
+- **`crates/plotweb-server/src/main.rs`** — subcommand dispatch (`audit-migration`,
+  `backfill-migration`) + the two boot hooks (env-gated).
+- **`plotweb-web/src/local_store.rs`** — client `DocStore` (generation + manifest pointer-
+  flip recipe), the cross-platform `spawn` for `!Send` storage futures, `attach_chapter`/
+  `attach_note`. `local_book.rs`/`local_user.rs` — hand-projected `book:`/`user:` docs.
+- **`docs/offline-first-rinch-plan.md`** — architecture + **v1 Automerge schema** (doc types
+  `user:` / `book:` / `chapter:` / `note:`) + the migration phase list.
+
+---
+
+## Operational runbook (READ THIS — non-obvious)
+
+**Deploy.** `git push origin main` → GitHub Action `.github/workflows/jkbase-deploy.yml`
+does `git push jkbase main` → jkbase builds + deploys. **`deploy.sh` is LEGACY, unused.**
+The jkbase build is a **Rust/Trunk buildpack** (`~/projects/personal/jkbase`
+`crates/jkbuild/src/buildpacks/{rust,trunk}.rs`), NOT the Dockerfile (also legacy). The
+buildpack caches `CARGO_HOME` but **NOT `target/`** → every deploy is a full recompile;
+**build-minutes are metered** and the monthly quota is the real constraint (we hit it once;
+it was raised). A cheap win is carded: point `CARGO_TARGET_DIR` at the jkbase `/cache` drive
+in `rust.rs`. Watch a deploy with `jkbase project info plotweb` (Version bumps vN→vN+1) +
+`https://pw.lostconnection.dev/health`. jkbase health-checks before cutover — a broken build
+keeps the old version (fail-safe). Builds take several minutes.
+
+**jkbase CLI** (`~/.cargo/bin/jkbase`, authed). Read-only: `deployments`, `logs
+--project plotweb -n N`, `project info plotweb`, `usage`, `quota`. **The installed CLI is
+older than `~/projects/personal/jkbase`** (it lacks `restart`, `db`, `backup`). Setting a
+secret does NOT auto-apply — it needs a **restart** to re-inject env. The CLI can't
+`restart`; the user restarts from the jkbase console (or `jkbase deploy` = full rebuild).
+
+**The migration flags** (env, via `jkbase secret set NAME=1` + restart; unset with `=0`):
+- `PLOTWEB_AUDIT_ON_BOOT` — runs the read-only content audit on boot, logs `[boot-audit]`.
+- `PLOTWEB_BACKFILL_ON_BOOT` — runs the backfill on boot, logs `[backfill]`. Writes only
+  `PLOTWEB_CRDT_DIR`; git+rhypedb read-only. Idempotent (re-runs skip unchanged).
+- Both are lock-free (no rhypedb lock) so they run alongside the live server. Turn them off
+  when not in use (they re-run every restart otherwise — harmless, just log noise).
+
+**Run the migration tooling locally** (subcommands; server can be stopped or not — lock-free):
+```
+DATABASE_URL=sqlite:$S/plotweb.db DATA_DIR=$S/books RHYPEDB_DATA_DIR=$S/rhypedb \
+  ./target/release/plotweb-server audit-migration [--json report.json]
+... PLOTWEB_CRDT_DIR=$C ./target/release/plotweb-server backfill-migration
+```
+
+**`plotweb-git` reads COMMITTED content, not the working tree.** To seed legacy/flagged test
+content, set it via the REST API (`PUT /api/books/{b}/chapters/{c}` with a `content` string) —
+editing the on-disk JSON file WITHOUT committing is NOT seen (cost real debugging time).
+Book layout: `DATA_DIR/<book_id>/manuscript/{book.json,chapters/<id>.json}` +
+`notes/`. Chapter/note content is the `content` field (DocNode JSON for new, raw
+Markdown/HTML for legacy). `POST /api/books` needs a `description` field.
+
+**Native desktop + rinch MCP** (drive the real GUI) — see the `plotweb-native-desktop-build`
+memory. Build `cd plotweb-web && cargo build --features debug-mcp`, run with
+`PLOTWEB_LOCAL_DATA=<dir>` (client local store) + `PLOTWEB_SERVER=http://127.0.0.1:3000`,
+then rinch MCP `list_apps`→`connect <PID>`→`click`/`type_text`/`screenshot`. Window size
+varies per launch — `query_selector` for real coordinates, don't hardcode. For rinch co-dev,
+`plotweb-web/Cargo.toml` takes an **uncommitted** `[patch."…/rinch"]` → `../../rinch` (see
+DEPLOY.md; committing it breaks the jkbase build).
+
+**Verification bar used throughout:** builds at **16 frontend warnings** (baseline), full
+`cargo test`, `e2e` (26 specs — see below), and for anything user-facing a **native MCP
+drive** proving local beats a divergent server.
+
+---
+
+## Next steps (the work to pick up)
+
+The canonical Automerge store is **staged but unread**. Everything below is where Automerge
+*goes live* — weightier than the additive work so far; open each with a written design.
+
+1. **Sync engine (the big one).** Server serves/accepts Automerge sync-message bytes
+   (`POST /api/sync/{doc_id}`); the client (already local-first, `local_store.rs` holds the
+   docs) runs Automerge's sync protocol against it per doc, keeping per-doc `SyncState`.
+   Spike ③ (`docs/…plan.md`) proved the transport with a dumb relay; the real server persists
+   canonical Automerge (the backfilled `data/crdt` store). Forks to decide: periodic-HTTP vs
+   live-WS (rinch-ws #114 exists); how heads are indexed (rhypedb — see the deferred `user:`
+   note); auth (token — a later slice, currently session cookies). This is the payoff and the
+   largest remaining build.
+2. **`user:` index backfill.** Deferred in phase C because it needs rhypedb ownership (the
+   lock-free walk has none). Do it via the rhypedb-enumerated path (`audit.rs::run` already
+   walks ownership) — a small backfill variant, server stopped or lock-aware.
+3. **Phase D — shadow read.** Serve from git (authoritative) but also read the Automerge copy
+   and log any divergence during a soak. Confidence before flipping.
+4. **Phase E — cutover.** A reversible per-book (or global) `canonical = automerge` flag.
+   Reads/writes hit Automerge; sync goes live. Git stays on disk; **flag flips back**.
+5. **Phase F — retire git.** Last, manual, with a backup/tag. The one hard-to-reverse step.
+
+**Also worth landing** (would remove Option-3's compromise): extend `rinch-editor-collab`'s
+projection to **inline atoms** (`hard_break`/`image`/`horizontal_rule`) — upstream rinch PR,
+like #117 did for lists. Then legacy `<br>` notes keep their line breaks instead of splitting.
+
+---
+
+## Known issues / open cards (Overboard project `cmr2954t9007fk4f3d3fbzagp`, lane TODO)
+
+- **rinch-dom native layout** — inline-block `%`-width collapses; native `<select>` renders
+  options inline (needs a real combobox widget). Framework gaps; the Typography panel is
+  functional but visually cramped natively.
+- **Import paragraph-collapse** — `plotweb-import` (external `.md` import) collapses
+  single-newline-separated paragraphs into one block (CommonMark soft-break). Does NOT affect
+  the migration (legacy *stored* content uses the line-based `markdown_to_html`, which is
+  fine), but affects importing manuscripts.
+- **`chapter-reorder.spec.ts` e2e** — regressed mid-session; fails on the deployed baseline
+  too (not migration-related). Likely environmental (`:3000` squatter breaking Playwright
+  cookie auth) or a flake. The reorder feature itself works (verified natively).
+- **Pre-existing, non-fatal** (seen in `jkbase logs`, not from this work): legacy SQLite
+  migration warning `no such column: description` on every boot (content lives in
+  git/rhypedb, not that column); Resend email fails (`pw.lostconnection.dev` unverified on
+  Resend + a malformed `from`) — password-reset email won't send until fixed.
+
+---
+
+## How to verify (quick reference)
+
+- **Builds:** `cargo build` (workspace) + `cargo build --release -p plotweb-server` (deploy
+  mirror) + `cd plotweb-web && cargo build --target wasm32-unknown-unknown` (16 warnings).
+- **Tests:** `cargo test` (workspace); `cargo test -p plotweb-crdt` (20 — the projection +
+  audit fixtures); `cargo test -p plotweb-server` (integration + `tests/backfill.rs`).
+- **e2e:** `pkill -x plotweb-server; cd e2e && npx playwright test` (26 specs; `chapter-reorder`
+  currently fails pre-existing).
+- **Migration on real data:** flip `PLOTWEB_AUDIT_ON_BOOT`/`PLOTWEB_BACKFILL_ON_BOOT`, read
+  `jkbase logs`. Locally: the subcommands above against a seeded tempdir (seed content via the
+  REST API, not file edits).
