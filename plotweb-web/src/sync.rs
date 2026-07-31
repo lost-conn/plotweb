@@ -100,12 +100,20 @@ impl Doc {
                 d.sync().generate_sync_message(state).map(|m| m.encode())
             })
             .flatten(),
-            // The editor owns the CRDT; generating only advances protocol state, so
-            // nothing needs persisting as a result.
+            // The editor owns the CRDT while a body is open; generating only advances
+            // protocol state, so nothing needs persisting as a result. A body being
+            // swept has no editor — drive the plain document instead.
             Doc::Body { doc_id, .. } => crate::local_store::with_body_session(doc_id, |s| {
                 s.handle
                     .collab_generate_sync_message(state)
                     .map(|m| m.encode())
+            })
+            .or_else(|| {
+                HEADLESS.with(|h| {
+                    h.borrow_mut()
+                        .get_mut(doc_id)
+                        .map(|d| d.sync().generate_sync_message(state).map(|m| m.encode()))
+                })
             })
             .flatten(),
         }
@@ -127,9 +135,22 @@ impl Doc {
             // the CRDT in step: it rebuilds the model from the converged document and
             // re-projects the view. Never load content into the editor behind the
             // session's back — that is the chapter-crosstalk failure mode.
-            Doc::Body { doc_id, .. } => crate::local_store::with_body_session(doc_id, |s| {
-                s.handle.collab_receive_sync_message(state, message)
-            }),
+            Doc::Body { doc_id, .. } => {
+                // `message` can only be consumed once, so pick the target first.
+                if crate::local_store::body_is_open(doc_id) {
+                    crate::local_store::with_body_session(doc_id, |s| {
+                        s.handle.collab_receive_sync_message(state, message)
+                    })
+                } else {
+                    HEADLESS.with(|h| {
+                        h.borrow_mut().get_mut(doc_id).map(|d| {
+                            let before = d.get_heads();
+                            d.sync().receive_sync_message(state, message).is_ok()
+                                && d.get_heads() != before
+                        })
+                    })
+                }
+            }
         }
     }
 
@@ -149,6 +170,11 @@ impl Doc {
             // the merged state must become the stored base, or a reopen would replay a
             // delta log that never saw these changes.
             Doc::Body { doc_id, .. } => {
+                // A swept body is published when its exchange ends (`finish_headless`),
+                // not per round — there is no editor to keep in step meanwhile.
+                if !crate::local_store::body_is_open(doc_id) {
+                    return;
+                }
                 let doc_id = doc_id.clone();
                 crate::local_store::spawn(async move {
                     if let Err(e) = crate::local_store::republish_body(&doc_id).await {
@@ -166,7 +192,8 @@ impl Doc {
             Doc::User(id) => crate::local_user::open_user_id().as_deref() == Some(id),
             Doc::Book(id) => crate::local_book::open_book_id().as_deref() == Some(id),
             Doc::Body { doc_id, .. } => {
-                crate::local_store::with_body_session(doc_id, |_| ()).is_some()
+                crate::local_store::body_is_open(doc_id)
+                    || HEADLESS.with(|h| h.borrow().contains_key(doc_id))
             }
         }
     }
@@ -231,6 +258,9 @@ pub fn register_user(user_id: &str, store: AppStore) {
 /// Register the open book's `book:` doc and sync it now.
 pub fn register_book(book_id: &str, store: AppStore) {
     register(Doc::Book(book_id.to_string()), store);
+    if enabled() {
+        arm_sweep(book_id);
+    }
 }
 
 /// Register the body document an editor just attached (`chapter:` / `note:`), and
@@ -298,6 +328,159 @@ pub fn nudge(label_owner: &str, is_book: bool) {
         format!("user:{label_owner}")
     };
     arm_timer(&label, NUDGE_DEBOUNCE_MS);
+}
+
+// ── Background sweep over a book's other bodies (slice 5) ────────────────────
+
+/// How often a book's unopened bodies are swept. Deliberately slower than the
+/// per-document poll: it is a catch-up pass, not a latency path.
+const SWEEP_INTERVAL_MS: u32 = 60_000;
+
+thread_local! {
+    /// Bodies currently being synced without an editor, by doc-id. Held for the life
+    /// of one exchange, then published and dropped.
+    static HEADLESS: RefCell<HashMap<String, automerge::AutoCommit>> =
+        RefCell::new(HashMap::new());
+    /// Books with a sweep timer already armed, so re-registering a book doesn't stack
+    /// sweeps on top of each other.
+    static SWEEPING: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Arm the recurring sweep for `book_id` (idempotent).
+fn arm_sweep(book_id: &str) {
+    let fresh = SWEEPING.with(|s| s.borrow_mut().insert(book_id.to_string()));
+    if !fresh {
+        return;
+    }
+    schedule_sweep(book_id.to_string());
+}
+
+fn schedule_sweep(book_id: String) {
+    rinch_core::set_timeout(SWEEP_INTERVAL_MS, move || {
+        // Stop sweeping a book the author has left; the next open re-arms it.
+        if crate::local_book::open_book_id().as_deref() != Some(book_id.as_str()) {
+            SWEEPING.with(|s| {
+                s.borrow_mut().remove(&book_id);
+            });
+            return;
+        }
+        sweep_book(book_id.clone());
+        schedule_sweep(book_id);
+    });
+}
+
+/// Sync the bodies of `book_id` that no editor currently holds.
+///
+/// Without this a device only ever converges the one chapter its author happens to
+/// have open. The heads listing is what keeps it cheap: one request says which
+/// documents actually moved, so a quiet book costs a single round trip per sweep
+/// rather than one per chapter.
+fn sweep_book(book_id: String) {
+    let url = format!("/api/books/{book_id}/sync/heads");
+    crate::api::get::<HashMap<String, Vec<String>>>(&url, move |result| {
+        let Ok(server_heads) = result else { return };
+        for (doc_id, heads) in server_heads {
+            // The open body syncs on its own loop; the structure doc likewise.
+            if !doc_id.starts_with("chapter:") && !doc_id.starts_with("note:") {
+                continue;
+            }
+            if crate::local_store::body_is_open(&doc_id) {
+                continue;
+            }
+            sweep_one_body(doc_id, book_id.clone(), heads);
+        }
+    });
+}
+
+/// Bring one unopened body level with the server, if it isn't already.
+fn sweep_one_body(doc_id: String, book_id: String, server_heads: Vec<String>) {
+    crate::local_store::spawn(async move {
+        // Provenance first: a body whose history is disjoint from the server's must
+        // not be merged into it (§D8). A locally-seeded document is settled when the
+        // author opens it — the handshake can replace editor content, which is not
+        // something a background pass should do — so the sweep skips it until then.
+        // Documents we have never stored are a different case, handled below.
+        let known = crate::local_store::load_headless_body(&doc_id).await.is_ok_and(|d| d.is_some());
+        match crate::local_store::body_shares_server_history(&doc_id).await {
+            Ok(true) => {}
+            Ok(false) if known => return,
+            Ok(false) => {}
+            Err(e) => {
+                log::warn!("sync sweep {doc_id}: {e}");
+                return;
+            }
+        }
+
+        let doc = match crate::local_store::load_headless_body(&doc_id).await {
+            Ok(Some(doc)) => doc,
+            // Never stored here. Fetch the canonical document outright: everything the
+            // heads listing reports is client-owned, so it is git-current and there is
+            // no history to reconcile — this is how a device ends up holding a book's
+            // chapters offline without opening each one.
+            Ok(None) => {
+                fetch_unknown_body(doc_id, book_id);
+                return;
+            }
+            Err(e) => {
+                log::warn!("sync sweep {doc_id}: {e}");
+                return;
+            }
+        };
+
+        // Already level with the server — the point of the heads listing.
+        let mut doc = doc;
+        let local: Vec<String> = doc.get_heads().iter().map(|h| h.to_string()).collect();
+        if local == server_heads {
+            return;
+        }
+
+        HEADLESS.with(|h| h.borrow_mut().insert(doc_id.clone(), doc));
+        let label = doc_id.clone();
+        ENGINE.with(|e| {
+            e.borrow_mut().insert(
+                label.clone(),
+                Entry {
+                    doc: Doc::Body { doc_id, book_id },
+                    phase: Phase::Idle,
+                    failures: 0,
+                    again: false,
+                    armed: false,
+                },
+            );
+        });
+        start_cycle(&label);
+    });
+}
+
+/// Store a body this device has never held, from the server's canonical copy.
+fn fetch_unknown_body(doc_id: String, book_id: String) {
+    let url = format!("/api/books/{book_id}/sync/{doc_id}");
+    crate::api::get_bytes(&url, move |result| {
+        let Ok(Some(bytes)) = result else { return };
+        crate::local_store::spawn(async move {
+            if let Err(e) = crate::local_store::install_headless_body(&doc_id, &bytes).await {
+                log::warn!("sync sweep {doc_id}: install failed: {e}");
+            }
+        });
+    });
+}
+
+/// Publish and drop a headless document once its exchange is over.
+fn finish_headless(doc_id: &str) {
+    let Some(mut doc) = HEADLESS.with(|h| h.borrow_mut().remove(doc_id)) else {
+        return;
+    };
+    let doc_id = doc_id.to_string();
+    // The sweep re-registers it next time round; keep the engine map small.
+    ENGINE.with(|e| {
+        e.borrow_mut().remove(&doc_id);
+    });
+    crate::local_store::spawn(async move {
+        if let Err(e) = crate::local_store::publish_headless_body(&doc_id, &mut doc).await {
+            log::warn!("sync sweep {doc_id}: publish failed: {e}");
+        }
+    });
 }
 
 // ── Provenance handshake for bodies (design §D8) ─────────────────────────────
@@ -527,6 +710,12 @@ fn round(label: String, state: Rc<RefCell<SyncState>>, n: u32) {
 
 /// End an exchange: reset or advance the backoff, then arm the next attempt.
 fn finish(label: &str, success: bool) {
+    // A swept body's exchange is over: publish it and let the next sweep decide
+    // whether it needs another.
+    if HEADLESS.with(|h| h.borrow().contains_key(label)) {
+        finish_headless(label);
+        return;
+    }
     let next = ENGINE.with(|e| {
         let mut map = e.borrow_mut();
         let Some(entry) = map.get_mut(label) else {

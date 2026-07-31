@@ -151,6 +151,52 @@ pub async fn get_canonical_doc(
     }
 }
 
+/// `GET /api/books/{book_id}/sync/heads` — the canonical heads of every document in
+/// this book, as `{ "chapter:…": ["<hash>", …], … }`.
+///
+/// One request tells a client which documents have moved since it last looked, so a
+/// background sweep can sync only those instead of polling each document in turn.
+/// Documents the server has no canonical copy of are absent from the map.
+///
+/// Note this route is matched before `/sync/{doc_id}`: `heads` is a static segment,
+/// and no document id can collide with it (ids always carry a `chapter:` / `note:` /
+/// `book:` prefix).
+pub async fn get_book_heads(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+    Path(book_id): Path<String>,
+) -> Response {
+    if !super::verify_book_ownership(&state, &book_id, &user_id).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Every document this book owns, from git — the same membership rule the sync
+    // and adopt routes authorize against.
+    let mut doc_ids = vec![format!("book:{book_id}")];
+    if let Ok(chapters) = state.books.list_chapters(&book_id).await {
+        doc_ids.extend(chapters.iter().map(|c| format!("chapter:{}", c.id)));
+    }
+    if let Ok((notes, _tree)) = state.books.list_notes(&book_id).await {
+        doc_ids.extend(notes.iter().map(|n| format!("note:{}", n.id)));
+    }
+
+    let crdt_dir = state.crdt_dir.clone();
+    let result =
+        tokio::task::spawn_blocking(move || sync::canonical_heads(&crdt_dir, &doc_ids)).await;
+
+    match result {
+        Ok(Ok(heads)) => axum::Json(heads).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] heads {book_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] heads worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 /// `POST /api/sync/user` — one round for the caller's own `user:` index doc.
 pub async fn sync_user_doc(
     State(state): State<AppState>,

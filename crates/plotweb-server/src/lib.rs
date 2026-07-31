@@ -133,6 +133,11 @@ pub fn api_router(state: AppState) -> Router {
             "/api/books/{book_id}/sync/{doc_id}",
             get(routes::sync::get_canonical_doc),
         )
+        // Static segment, matched ahead of `{doc_id}` above.
+        .route(
+            "/api/books/{book_id}/sync/heads",
+            get(routes::sync::get_book_heads),
+        )
         // Migration-era ownership handover for a doc still holding the backfill's
         // canonical copy (see routes::sync::adopt_book_doc).
         .route(

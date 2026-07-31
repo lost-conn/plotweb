@@ -367,6 +367,56 @@ async fn the_first_client_takes_ownership_of_a_backfilled_body() {
 }
 
 #[tokio::test]
+async fn the_heads_listing_reports_only_documents_the_server_holds() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Heads Book").await;
+    let synced_id = app.create_chapter(&book_id, "Synced").await;
+    let untouched_id = app.create_chapter(&book_id, "Untouched").await;
+
+    // Only one chapter is ever synced.
+    let mut device = Device::new();
+    device.doc.put(ROOT, "body", "text").unwrap();
+    device.sync(&mut app, &chapter_uri(&book_id, &synced_id)).await;
+
+    let r = app.get(&format!("/api/books/{book_id}/sync/heads")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let heads = r.json.as_object().expect("a doc-id → heads map");
+
+    let synced_key = format!("chapter:{synced_id}");
+    assert!(
+        heads.contains_key(&synced_key),
+        "a synced document is listed: {heads:?}"
+    );
+    assert_eq!(
+        heads[&synced_key].as_array().map(|a| a.len()),
+        Some(1),
+        "with its current frontier"
+    );
+    assert!(
+        !heads.contains_key(&format!("chapter:{untouched_id}")),
+        "a document the server has no copy of is absent, so a client knows not to \
+         bother pulling it: {heads:?}"
+    );
+
+    // Heads move when the document moves — this is what lets a sweep skip the quiet
+    // ones and pick up only what changed.
+    device.doc.put(ROOT, "body", "text, revised").unwrap();
+    device.sync(&mut app, &chapter_uri(&book_id, &synced_id)).await;
+    let after = app.get(&format!("/api/books/{book_id}/sync/heads")).await;
+    assert_ne!(
+        after.json[&synced_key], heads[&synced_key],
+        "an edited document reports a new frontier"
+    );
+
+    // Another user's book is not enumerable.
+    app.logout_local();
+    app.register("intruder", "password123").await;
+    let r = app.get(&format!("/api/books/{book_id}/sync/heads")).await;
+    assert_eq!(r.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn adopt_rejects_junk_and_other_peoples_books() {
     let mut app = TestApp::new().await;
     app.register("owner", "password123").await;

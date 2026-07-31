@@ -243,6 +243,38 @@ fn now_stamp() -> String {
 /// "client pushes local as canonical" case (a doc created offline, or one the
 /// migration flagged and left git-only). Route-level authorization decides *whether*
 /// this doc-id is allowed to exist at all — this function never sees an unvetted id.
+/// The heads (change frontier) the server holds for each of `doc_ids` that it has a
+/// canonical copy of. Ids with no canonical document are simply absent.
+///
+/// Lets a client skip documents it is already level with instead of paying a round
+/// trip per document per poll — the difference between a constant trickle and a burst
+/// of requests for a book with many chapters. Read from the manifests; no document is
+/// loaded.
+pub fn canonical_heads(
+    crdt_dir: &Path,
+    doc_ids: &[String],
+) -> Result<HashMap<String, Vec<String>>, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let mut out = HashMap::new();
+    for doc_id in doc_ids {
+        if let Some(manifest) = read_manifest(&store, doc_id)? {
+            // Only **client-owned** documents are listed. A pristine backfill blob is
+            // frozen at backfill time while git kept moving, so a client that cached
+            // it would show backfill-era text — and, because a local body doc wins
+            // over the REST copy when a chapter is opened, would then autosave that
+            // stale text over the current content. Such a document becomes safe to
+            // share only once a device claims it (`adopt`), which republishes it from
+            // git-current content.
+            if manifest.synced_at.is_none() {
+                continue;
+            }
+            out.insert(doc_id.clone(), manifest.heads);
+        }
+    }
+    Ok(out)
+}
+
 /// The canonical document's full snapshot bytes, or `None` when the server has never
 /// held this document. Read-only.
 pub fn canonical_snapshot(crdt_dir: &Path, doc_id: &str) -> Result<Option<Vec<u8>>, SyncError> {

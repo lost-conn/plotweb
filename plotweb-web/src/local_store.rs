@@ -44,6 +44,7 @@ use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::rc::Rc;
 
+use automerge::AutoCommit;
 use rinch_storage::{StorageResult, Store};
 
 #[cfg(target_arch = "wasm32")]
@@ -608,6 +609,58 @@ pub(crate) async fn install_server_body(doc_id: &str, bytes: &[u8]) -> StorageRe
         sink,
     });
     Ok(true)
+}
+
+// ── Headless bodies (sync engine slice 5) ────────────────────────────────────
+//
+// A body only has an editor session while it is open, but the *other* chapters of an
+// open book still need to converge — otherwise a device only ever learns about the
+// one chapter its author happens to be looking at. Those are synced "headless": the
+// stored document is loaded as a plain `AutoCommit`, the protocol runs against it,
+// and the result is published back. No editor is involved, so nothing can be
+// projected into the wrong surface.
+
+/// Load a stored body document as a plain Automerge doc, or `None` if this device has
+/// never stored it. Never call this for the doc an editor currently holds — the
+/// session owns that one, and a second copy would diverge from it.
+pub(crate) async fn load_headless_body(doc_id: &str) -> StorageResult<Option<AutoCommit>> {
+    let store = DocStore::open(doc_id).await?;
+    let Some(persisted) = store.load().await? else {
+        return Ok(None);
+    };
+    let Ok(mut doc) = AutoCommit::load(&persisted.snapshot) else {
+        log::warn!("local-first: {doc_id}: unreadable snapshot; ignoring");
+        return Ok(None);
+    };
+    for delta in &persisted.deltas {
+        let _ = doc.load_incremental(delta);
+    }
+    Ok(Some(doc))
+}
+
+/// Publish a headless body document as its new base, compacting the delta log.
+pub(crate) async fn publish_headless_body(doc_id: &str, doc: &mut AutoCommit) -> StorageResult<()> {
+    let store = DocStore::open(doc_id).await?;
+    store.publish_snapshot(&doc.save()).await?;
+    Ok(())
+}
+
+/// Store a canonical body document this device has never held, and record that it
+/// shares history with the server's. No editor is involved and nothing is merged —
+/// the server's copy simply becomes ours.
+pub(crate) async fn install_headless_body(doc_id: &str, bytes: &[u8]) -> StorageResult<()> {
+    // Refuse to overwrite a document an editor is driving.
+    if body_is_open(doc_id) {
+        return Ok(());
+    }
+    let store = DocStore::open(doc_id).await?;
+    store.publish_snapshot(bytes).await?;
+    mark_body_shares_server_history(doc_id).await
+}
+
+/// Whether either editor surface currently holds `doc_id`.
+pub(crate) fn body_is_open(doc_id: &str) -> bool {
+    with_body_session(doc_id, |_| ()).is_some()
 }
 
 /// Persist the body document as it now stands and re-point its delta log.

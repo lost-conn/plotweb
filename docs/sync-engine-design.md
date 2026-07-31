@@ -288,8 +288,9 @@ serializes; both converge).
 
 ## 8. Slices (each shippable, verifiable, reversible)
 
-Status: **slices 0, 1 and 3 are done**, as is handoff step ② (`user:` backfill). Slice 2
-(the upstream rinch seam) and slice 4 (bodies) are the next work; 5–6 remain optional.
+Status: **slices 0–5 are done**, as is handoff step ② (`user:` backfill). Slice 2 ships as
+rinch PR #182 (unmerged — see §8b for the pinning situation); slices 4 and 5 ride on the
+branch that pins it. Slice 6 (WebSocket transport) remains optional.
 
 **Slice 0 — remove the spike relay.** ✅ `routes/sync.rs`'s three routes are live in
 production, unauthenticated, and back an unbounded process-global `HashMap` any anonymous
@@ -369,7 +370,23 @@ Note also that both defects were invisible natively (the storage futures resolve
 poll, so those windows never open) — so slice 4 needs browser verification, not only the
 usual native MCP drive.
 
-**Slice 5 — `heads` listing + background sweep** (§D6) if polling cost warrants.
+**Slice 5 — `heads` listing + background sweep.** ✅ `GET /api/books/{id}/sync/heads`
+returns one map of doc-id → heads, so a sweep costs a single request for a quiet book
+instead of one per chapter. Every 60s the client reconciles the open book's bodies that
+no editor holds, driving them "headless" (the stored document loaded as a plain
+`AutoCommit`, no editor involved) and fetching outright any it has never stored.
+
+Two rules keep it safe:
+
+- **The listing reports only client-owned documents.** A pristine backfill blob is
+  frozen at backfill time while git kept moving, so a device that cached one would show
+  backfill-era text — and, since a local body doc wins over the REST copy on open, would
+  then autosave that stale text over current content. Such a document becomes shareable
+  only once a device claims it via `adopt`, which republishes it from git-current
+  content.
+- **The sweep never runs the §D8 handshake.** Settling provenance can replace editor
+  content, which is not something a background pass should do; a locally-seeded document
+  waits until its author opens it.
 
 **Slice 6 — optional WS live transport** (`rinch-ws`). Transport swap only.
 
