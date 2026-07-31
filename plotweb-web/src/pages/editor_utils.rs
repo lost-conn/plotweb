@@ -21,9 +21,29 @@ pub use plotweb_common::markdown_to_html;
 // chapter Markdown / note HTML. Loads are legacy-tolerant: try DocNode JSON first,
 // fall back to the pre-8a HTML path. A later card bulk-migrates legacy content.
 
+/// Detach any collaboration session before replacing this editor's document.
+///
+/// **Load-bearing.** An attached session records document changes into that
+/// document's CRDT, and a load is a document change — `start_collaboration_guest`
+/// relies on exactly this, loading the peer's document *before* attaching so the
+/// load isn't recorded back. So loading chapter B into an editor still bound to
+/// chapter A's session writes B's content into **A's** local document.
+///
+/// That was the chapter-crosstalk bug: each switch overwrote the previous chapter's
+/// local doc with the next chapter's content, and since a local doc is adopted in
+/// preference to the server copy when a chapter is reopened, chapters appeared
+/// swapped or blank even though the server held the right text. Detaching is
+/// synchronous and belongs *here*, at the single choke point every load goes
+/// through, rather than at each call site where a future one could forget it.
+/// `local_store` re-attaches after it has decided which document this editor holds.
+fn detach_before_load(handle: &EditorHandle) {
+    handle.stop_collaboration();
+}
+
 /// Load stored chapter content into `handle`. Tries `DocNode` JSON (new format),
 /// falling back to the legacy Markdown → HTML path (`markdown_to_html`).
 pub fn load_chapter_content(handle: &EditorHandle, content: &str) {
+    detach_before_load(handle);
     if load_docnode(handle, content) {
         return;
     }
@@ -35,6 +55,7 @@ pub fn load_chapter_content(handle: &EditorHandle, content: &str) {
 /// Load stored note content into `handle`. Tries `DocNode` JSON (new format),
 /// falling back to the legacy raw-HTML path (notes were already HTML).
 pub fn load_note_content(handle: &EditorHandle, content: &str) {
+    detach_before_load(handle);
     if load_docnode(handle, content) {
         return;
     }

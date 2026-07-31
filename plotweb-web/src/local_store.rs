@@ -342,6 +342,118 @@ impl OutboundSink {
     }
 }
 
+// ── Which document each editor surface is bound to ───────────────────────────
+//
+// Attaching is asynchronous — opening the backend, reading the manifest, listing
+// deltas — and on web those awaits are *real* (IndexedDB), unlike native where the
+// `FsStore` futures resolve on first poll. An author who switches chapters during
+// that window would otherwise have the earlier chapter's continuation resume against
+// the editor now showing the *later* chapter, and every path here writes to the
+// editor: the adopt path calls `start_collaboration_guest`, which replaces the
+// document, and the seed path loads `seed_content` into it. The editor would then
+// display chapter A while the page believes it holds chapter B — and the REST
+// autosave, which only checks that the page's own load finished, would persist A's
+// text over chapter B. (The stale `OutboundSink` would likewise record B's keystrokes
+// into A's local doc.)
+//
+// So each surface records the doc-id it is currently bound to, set **synchronously**
+// when the attach is requested. Every continuation re-checks it before touching the
+// editor and abandons itself if it has been superseded. Chapter and note editors are
+// separate surfaces with separate handles, so they track separately — opening a note
+// must not abandon an in-flight chapter attach.
+
+thread_local! {
+    /// Doc-id the chapter editor surface is bound to.
+    static ACTIVE_CHAPTER_BODY: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// Doc-id the note editor surface is bound to.
+    static ACTIVE_NOTE_BODY: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+/// Bind `kind`'s surface to `doc_id`, superseding whatever it held. Call
+/// **synchronously** with the request, before any await.
+fn claim_surface(kind: BodyKind, doc_id: &str) {
+    let slot = match kind {
+        BodyKind::Chapter => &ACTIVE_CHAPTER_BODY,
+        BodyKind::Note => &ACTIVE_NOTE_BODY,
+    };
+    slot.with(|a| *a.borrow_mut() = Some(doc_id.to_string()));
+}
+
+/// Whether `doc_id` is still what `kind`'s surface is bound to.
+fn surface_holds(kind: BodyKind, doc_id: &str) -> bool {
+    let slot = match kind {
+        BodyKind::Chapter => &ACTIVE_CHAPTER_BODY,
+        BodyKind::Note => &ACTIVE_NOTE_BODY,
+    };
+    slot.with(|a| a.borrow().as_deref() == Some(doc_id))
+}
+
+// ── One-time recovery sweep ──────────────────────────────────────────────────
+
+/// Bumped when locally-stored body documents must be discarded and re-seeded.
+///
+/// `2` discards every body doc written before the chapter-crosstalk fixes. Until
+/// those landed, switching chapters recorded the *next* chapter's content into the
+/// *previous* chapter's document (a load is a document change, and the previous
+/// chapter's session was still attached — see `editor_utils::detach_before_load`),
+/// and a stale attach could do the same asynchronously. Devices that hit either one
+/// are carrying documents holding the wrong chapter's text, and because a local body
+/// doc is adopted in preference to the server copy on reopen, they would keep showing
+/// it even once the causes were fixed.
+///
+/// Dropping the body docs once is safe and is the recovery path: they are a
+/// dual-write cache, git remains authoritative, and the next open re-seeds each body
+/// from the server.
+const BODY_STORE_VERSION: &[u8] = b"2";
+const BODY_STORE_VERSION_KEY: &str = "local-store/body-version";
+
+/// Progress of the one-time sweep, so a second attach can't adopt a document the
+/// sweep is about to delete.
+#[derive(Clone, Copy, PartialEq)]
+enum Recovery {
+    NotStarted,
+    Running,
+    Done,
+}
+
+thread_local! {
+    static BODY_RECOVERY: Cell<Recovery> = const { Cell::new(Recovery::NotStarted) };
+}
+
+/// Ensure the one-time body-doc sweep has happened, returning whether it is now safe
+/// to **adopt** a stored body document.
+///
+/// The first caller performs the sweep (the state flips synchronously, before any
+/// await, so a second caller can't start a second one). A caller arriving while the
+/// sweep is in flight gets `false` and seeds from REST instead of adopting — adopting
+/// there would race the deletion and could resurrect exactly what is being discarded.
+///
+/// Structure docs (`book:` / `user:`) are untouched: they were never written by the
+/// affected path, since their mutations are already guarded by book/user id.
+async fn body_docs_adoptable(backend: &Rc<dyn Store>) -> StorageResult<bool> {
+    match BODY_RECOVERY.with(|r| r.get()) {
+        Recovery::Done => return Ok(true),
+        Recovery::Running => return Ok(false),
+        Recovery::NotStarted => BODY_RECOVERY.with(|r| r.set(Recovery::Running)),
+    }
+
+    if backend.get(BODY_STORE_VERSION_KEY).await?.as_deref() != Some(BODY_STORE_VERSION) {
+        for prefix in ["chapter:", "note:"] {
+            for key in backend.list(prefix).await? {
+                backend.delete(&key).await?;
+            }
+        }
+        // Written last: an interrupted sweep simply runs again next time.
+        backend
+            .put(BODY_STORE_VERSION_KEY, BODY_STORE_VERSION)
+            .await?;
+        log::info!("local-first: discarded local body docs once (recovery sweep)");
+    }
+
+    BODY_RECOVERY.with(|r| r.set(Recovery::Done));
+    Ok(true)
+}
+
 // ── Public entry point wired from book.rs ────────────────────────────────────
 
 /// Attach local-first persistence to `handle` for chapter `chapter_id`, seeding
@@ -350,9 +462,11 @@ impl OutboundSink {
 ///
 /// Idempotent per open: any collaboration session from a previously-open chapter is
 /// detached first so seeding / guest-load can never record onto the wrong doc's
-/// CRDT or fire the wrong `outbound`.
+/// CRDT or fire the wrong `outbound`. Superseded by the next call for this surface —
+/// see the surface-binding note above.
 pub fn attach_chapter(handle: EditorHandle, chapter_id: String, seed_content: String) {
     let doc_id = format!("chapter:{chapter_id}");
+    claim_surface(BodyKind::Chapter, &doc_id);
     spawn(async move {
         if let Err(e) = attach_body_inner(&handle, &doc_id, &seed_content, BodyKind::Chapter).await {
             log::warn!("local-first: {doc_id}: {e}");
@@ -374,7 +488,24 @@ async fn attach_body_inner(
 
     let store = DocStore::open(doc_id).await?;
 
-    match store.load().await? {
+    // Superseded while the backend was opening: the surface has moved to another
+    // document, so everything below would write this one's content into it.
+    if !surface_holds(kind, doc_id) {
+        return Ok(());
+    }
+
+    // One-time recovery for documents written before the surface-binding fix; also
+    // decides whether adopting a stored body doc is safe right now.
+    let adoptable = body_docs_adoptable(&store.backend).await?;
+
+    let loaded = if adoptable { store.load().await? } else { None };
+
+    // Same check after the (IndexedDB) reads — this is the wide window in practice.
+    if !surface_holds(kind, doc_id) {
+        return Ok(());
+    }
+
+    match loaded {
         Some(persisted) => {
             let sink = OutboundSink::new(store.clone());
             let out = sink.clone();
@@ -412,6 +543,7 @@ async fn attach_body_inner(
 /// body concern — it lives in the `book:` doc (see [`crate::local_book`]).
 pub fn attach_note(handle: EditorHandle, note_id: String, seed_content: String) {
     let doc_id = format!("note:{note_id}");
+    claim_surface(BodyKind::Note, &doc_id);
     spawn(async move {
         if let Err(e) = attach_body_inner(&handle, &doc_id, &seed_content, BodyKind::Note).await {
             log::warn!("local-first: {doc_id}: {e}");
@@ -466,6 +598,53 @@ async fn seed_and_host_kind(
     Ok(())
 }
 
+// ── Surface-binding tests ────────────────────────────────────────────────────
+//
+// The race these guard against lives on web (`spawn_local` + IndexedDB); natively the
+// storage futures resolve on first poll, so an attach runs start-to-finish
+// synchronously and the window never opens. These test the decision function itself —
+// the thing every continuation consults — rather than trying to stage a race that
+// cannot occur on this target.
+
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    #[test]
+    fn the_latest_attach_owns_the_surface() {
+        claim_surface(BodyKind::Chapter, "chapter:a");
+        assert!(surface_holds(BodyKind::Chapter, "chapter:a"));
+
+        // The author clicks another chapter while chapter:a is still attaching.
+        claim_surface(BodyKind::Chapter, "chapter:b");
+        assert!(
+            !surface_holds(BodyKind::Chapter, "chapter:a"),
+            "chapter:a's continuation must abandon itself — resuming would load its \
+             content into the editor now showing chapter:b, and the autosave would \
+             then persist it over chapter:b"
+        );
+        assert!(surface_holds(BodyKind::Chapter, "chapter:b"));
+    }
+
+    #[test]
+    fn chapter_and_note_surfaces_do_not_supersede_each_other() {
+        claim_surface(BodyKind::Chapter, "chapter:a");
+        claim_surface(BodyKind::Note, "note:n");
+        assert!(
+            surface_holds(BodyKind::Chapter, "chapter:a"),
+            "they are separate editors with separate handles: opening a note must not \
+             abandon an in-flight chapter attach"
+        );
+        assert!(surface_holds(BodyKind::Note, "note:n"));
+    }
+
+    #[test]
+    fn an_unclaimed_surface_holds_nothing() {
+        // A doc-id that was never claimed is never treated as current.
+        assert!(!surface_holds(BodyKind::Note, "note:never-claimed"));
+    }
+}
+
 // ── Durability proof (native): seed → persist → drop → reload → identical ─────
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -499,6 +678,48 @@ mod tests {
     fn node_from_json(schema: &Schema, json: &str) -> rinch_editor_core::Node {
         let doc: DocNode = serde_json::from_str(json).expect("valid DocNode json");
         schema.node_from_doc(&doc).expect("node from doc")
+    }
+
+    /// The one-time recovery sweep: body docs written before the surface-binding fix
+    /// are discarded (they may hold another chapter's text, and a stored body doc is
+    /// adopted in preference to the REST copy), structure docs are kept, and a second
+    /// run is a no-op.
+    #[test]
+    fn recovery_discards_body_docs_once_and_keeps_structure_docs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+
+        block_on(backend.put("chapter:one/manifest", b"g0")).unwrap();
+        block_on(backend.put("chapter:one/g0/snapshot", b"stale bytes")).unwrap();
+        block_on(backend.put("note:n/manifest", b"g0")).unwrap();
+        block_on(backend.put("book:b/manifest", b"g0")).unwrap();
+        block_on(backend.put("user:u/manifest", b"g0")).unwrap();
+
+        assert!(block_on(body_docs_adoptable(&backend)).unwrap());
+
+        assert!(
+            block_on(backend.list("chapter:")).unwrap().is_empty(),
+            "chapter bodies are discarded"
+        );
+        assert!(
+            block_on(backend.list("note:")).unwrap().is_empty(),
+            "note bodies are discarded"
+        );
+        assert_eq!(
+            block_on(backend.list("book:")).unwrap().len(),
+            1,
+            "book structure docs are untouched — they were never written by the race"
+        );
+        assert_eq!(block_on(backend.list("user:")).unwrap().len(), 1);
+
+        // A doc written after the sweep survives a second call (no repeat wipe).
+        block_on(backend.put("chapter:two/manifest", b"g0")).unwrap();
+        assert!(block_on(body_docs_adoptable(&backend)).unwrap());
+        assert_eq!(
+            block_on(backend.list("chapter:")).unwrap().len(),
+            1,
+            "the sweep runs once, not on every attach"
+        );
     }
 
     /// The acceptance test: a chapter Automerge doc, edited, persisted through
