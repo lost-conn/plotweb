@@ -352,6 +352,23 @@ appeared in B's sidebar and chapter list **in place** — no navigation, no REST
 **Slice 4 — client loop for `chapter:`/`note:` bodies.** Needs slice 2. Includes §D8
 provenance adoption. Proven natively: edit on device A offline, reconnect, device B shows it.
 
+**Read the chapter-crosstalk fix before starting slice 4** (`editor_utils::detach_before_load`
++ `local_store`'s surface binding, shipped as the v17 hotfix). Bodies live behind an editor
+whose attached session records *any* document change into that document's CRDT — a load
+included. Two invariants that fix established, which body sync must keep:
+
+- **Never load into an editor that still holds another document's session.** Detach first.
+  Applying a remote body change is the sync engine's own version of this hazard: integrate
+  through the *attached* session (`collab_receive_sync_message`), never by loading content
+  into the editor behind the session's back.
+- **Re-check the binding after every await.** Anything asynchronous that ends by touching
+  the editor must confirm the surface still holds the document it started with, or abandon
+  itself. A sync round trip is exactly this shape.
+
+Note also that both defects were invisible natively (the storage futures resolve on first
+poll, so those windows never open) — so slice 4 needs browser verification, not only the
+usual native MCP drive.
+
 **Slice 5 — `heads` listing + background sweep** (§D6) if polling cost warrants.
 
 **Slice 6 — optional WS live transport** (`rinch-ws`). Transport swap only.
