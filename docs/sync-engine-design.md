@@ -379,6 +379,35 @@ today's behaviour exactly.
 
 ---
 
+## 8b. Pinning — while the `EditorHandle` seam is unmerged
+
+Slice 4 needs `collab_generate_sync_message` / `collab_receive_sync_message` /
+`collab_heads` on `EditorHandle` (rinch PR #182). Upstream intends to refactor Automerge
+and may not merge it, so the branch `chore/pin-rinch-sync-seam` pins every rinch crate —
+and the (legacy) Dockerfile — to that PR's head, `b6225418`. That rev is upstream `main`
+(`f7e1c37`) plus the two commits of #182, so it carries no other upstream drift.
+
+**The hazard, and the rule.** The rev exists only on a PR branch in a repo we do not
+control. If it is force-pushed or deleted, git can garbage-collect it — and since the
+jkbase buildpack recompiles from scratch on every deploy, *every* production build would
+then fail, including a rollback. So:
+
+> Do not merge this pin to `main` while the rev lives only on someone else's PR branch.
+> `main` stays on a rev reachable from upstream `main`.
+
+Work on slice 4 sits on the pinned branch until one of these resolves it:
+
+1. **#182 merges** — repin to the resulting upstream `main` rev. Cleanest.
+2. **Upstream's Automerge refactor lands first** — rebase the seam onto it and re-open;
+   the three methods are thin pass-throughs, so they should survive a refactor cheaply.
+3. **Fork `joeleaver/rinch` to our own account** and pin there. Removes the disappearing-rev
+   risk entirely and is the prerequisite for ever merging the pin to `main` without #182.
+   Costs us the divergence we then have to keep rebasing.
+
+`plotweb-web/src/sync.rs`'s `seam_canary` test compiles against the three method
+signatures, so a pin that slips back to a rev without them fails immediately rather than
+midway through body-sync work.
+
 ## 9. Open questions
 
 1. **Session-store durability** — do we persist sessions (or ship the token slice) before

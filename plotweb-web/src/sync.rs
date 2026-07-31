@@ -398,3 +398,28 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod seam_canary {
+    /// The `rinch` pin must carry the Automerge sync-protocol seam on `EditorHandle`
+    /// (rinch PR #182). Slice 4 (chapter/note body sync) is built on these three
+    /// methods and they exist on no released rev, so a pin that slips back to
+    /// upstream `main` must fail here — loudly and at compile time — rather than
+    /// deep inside the body-sync work.
+    #[test]
+    fn the_editor_handle_exposes_the_sync_protocol() {
+        use crate::rinch_backend::EditorHandle;
+        let _generate: fn(
+            &EditorHandle,
+            &mut rinch_editor_collab::SyncState,
+        ) -> Option<rinch_editor_collab::SyncMessage> =
+            EditorHandle::collab_generate_sync_message;
+        let _receive: fn(
+            &EditorHandle,
+            &mut rinch_editor_collab::SyncState,
+            rinch_editor_collab::SyncMessage,
+        ) -> bool = EditorHandle::collab_receive_sync_message;
+        let _heads: fn(&EditorHandle) -> Option<Vec<rinch_editor_collab::ChangeHash>> =
+            EditorHandle::collab_heads;
+    }
+}
