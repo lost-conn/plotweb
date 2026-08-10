@@ -357,7 +357,10 @@ fn arm_sweep(book_id: &str) {
 }
 
 fn schedule_sweep(book_id: String) {
-    rinch_core::set_timeout(SWEEP_INTERVAL_MS, move || {
+    // `unowned` for the same reason the debounced saves are: a callback parked during
+    // a render dies with that scope (rinch #141), and the sync loop must outlive any
+    // component that happened to be rendering when a nudge armed it.
+    rinch_core::reactive::unowned(|| rinch_core::set_timeout(SWEEP_INTERVAL_MS, move || {
         // Stop sweeping a book the author has left; the next open re-arms it.
         if crate::local_book::open_book_id().as_deref() != Some(book_id.as_str()) {
             SWEEPING.with(|s| {
@@ -367,7 +370,7 @@ fn schedule_sweep(book_id: String) {
         }
         sweep_book(book_id.clone());
         schedule_sweep(book_id);
-    });
+    }));
 }
 
 /// Sync the bodies of `book_id` that no editor currently holds.
@@ -769,14 +772,14 @@ fn arm_timer(label: &str, delay_ms: u32) {
         return;
     }
     let label = label.to_string();
-    rinch_core::set_timeout(delay_ms, move || {
+    rinch_core::reactive::unowned(|| rinch_core::set_timeout(delay_ms, move || {
         ENGINE.with(|e| {
             if let Some(entry) = e.borrow_mut().get_mut(&label) {
                 entry.armed = false;
             }
         });
         start_cycle(&label);
-    });
+    }));
 }
 
 fn doc_of(label: &str) -> Option<Doc> {

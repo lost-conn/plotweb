@@ -6,15 +6,13 @@
 # ------ Stage 1: Build the WASM frontend with Trunk ---------
 FROM rust:1.88-bookworm AS frontend
 
-# NOT an origin/main commit: this is the head of rinch PR #182
-# (feat/editor-handle-sync-protocol), which exposes the Automerge sync protocol on
-# EditorHandle. Sync engine slice 4 (chapter/note body sync) needs those methods and
-# they exist nowhere else yet; upstream may refactor Automerge before merging.
+# rinch PR #182's merge commit on origin/main — it exposes the Automerge sync
+# protocol on EditorHandle, which sync engine slices 4 and 5 are built on.
 #
-# Because the rev lives on a PR branch in a repo we don't control, it can vanish
-# (branch deleted or force-pushed) and take every build with it. Do not merge this
-# pin to main while that is true — see docs/sync-engine-design.md §"Pinning".
-ARG RINCH_COMMIT=b6225418e09192bde4e2f04b572ac69cab1f9a2e
+# Deliberately NOT the newest main: the very next upstream commit (#197) replaces
+# Automerge with yrs inside rinch-editor-collab and retires this seam, which is a
+# port for us rather than a bump. See docs/sync-engine-design.md §8b.
+ARG RINCH_COMMIT=d657634855e83b6c31757df28c9c87aa2693ab3b
 ARG RINCH_REPO=https://github.com/joeleaver/rinch.git
 
 RUN apt-get update && apt-get install -y --no-install-recommends git \

@@ -48,7 +48,7 @@ rhypedb-schema = { git = "https://github.com/joeleaver/rhypedb", rev = "680de58d
 # `serde` (DocNode wire shape) and `markdown` (pulldown-cmark I/O) features is all
 # import/export need; no rinch-dom/winit/web_sys is pulled in. rev must match the
 # Dockerfile RINCH_COMMIT pin.
-rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "b6225418e09192bde4e2f04b572ac69cab1f9a2e", default-features = false, features = ["serde", "markdown"] }
+rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "d657634855e83b6c31757df28c9c87aa2693ab3b", default-features = false, features = ["serde", "markdown"] }
 git2 = "0.20"
 thiserror = "2"
 chrono = "0.4"

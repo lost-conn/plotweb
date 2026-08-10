@@ -28,7 +28,7 @@ plotweb-crdt = { path = "../plotweb-crdt" }
 automerge = "0.5"
 # Cross-platform durable blob store — the CRDT backfill's write target (FsStore).
 # Pinned to the SAME rinch rev as rinch-editor-collab (via plotweb-crdt).
-rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "b6225418e09192bde4e2f04b572ac69cab1f9a2e", default-features = false }
+rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "d657634855e83b6c31757df28c9c87aa2693ab3b", default-features = false }
 rhypedb-engine.workspace = true
 rhypedb-query.workspace = true
 rhypedb-schema.workspace = true

@@ -2288,7 +2288,7 @@ dependencies = [
 [[package]]
 name = "rinch-editor-collab"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=b6225418e09192bde4e2f04b572ac69cab1f9a2e#b6225418e09192bde4e2f04b572ac69cab1f9a2e"
+source = "git+https://github.com/joeleaver/rinch?rev=d657634855e83b6c31757df28c9c87aa2693ab3b#d657634855e83b6c31757df28c9c87aa2693ab3b"
 dependencies = [
  "automerge",
  "rinch-editor-core",
@@ -2299,7 +2299,7 @@ dependencies = [
 [[package]]
 name = "rinch-editor-core"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=b6225418e09192bde4e2f04b572ac69cab1f9a2e#b6225418e09192bde4e2f04b572ac69cab1f9a2e"
+source = "git+https://github.com/joeleaver/rinch?rev=d657634855e83b6c31757df28c9c87aa2693ab3b#d657634855e83b6c31757df28c9c87aa2693ab3b"
 dependencies = [
  "pulldown-cmark 0.12.2",
  "regex",
@@ -2310,7 +2310,7 @@ dependencies = [
 [[package]]
 name = "rinch-storage"
 version = "0.1.0"
-source = "git+https://github.com/joeleaver/rinch?rev=b6225418e09192bde4e2f04b572ac69cab1f9a2e#b6225418e09192bde4e2f04b572ac69cab1f9a2e"
+source = "git+https://github.com/joeleaver/rinch?rev=d657634855e83b6c31757df28c9c87aa2693ab3b#d657634855e83b6c31757df28c9c87aa2693ab3b"
 dependencies = [
  "js-sys",
  "thiserror 1.0.69",

@@ -1009,7 +1009,12 @@ fn save_font_settings(
         rinch_core::clear_timeout(h);
     }
     let bid = bid_signal.get();
-    font_save_timer_id.set(Some(rinch_core::set_timeout(500, move || {
+    // `unowned`: a debounced save must outlive the element that scheduled it. Since
+    // rinch #141, a callback parked during a render is dropped if that scope is
+    // disposed first — and these fire exactly when the UI is going away (the font
+    // dropdown closes on select, a chapter switch tears down the editor pane). The
+    // font picker lost its save this way; the rest are the same shape.
+    font_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(500, move || {
         let req = UpdateBookRequest {
             title: None,
             description: None,
@@ -1017,7 +1022,7 @@ fn save_font_settings(
             cover_image: None,
         };
         api::put::<_, serde_json::Value>(&format!("/api/books/{}", bid), &req, move |_result| {});
-    })));
+    }))));
 }
 
 /// One searchable font dropdown for a single slot — fully reactive rsx, so it
@@ -3077,7 +3082,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             BookPane::Editor(cid) => cid,
             _ => return,
         };
-        auto_save_timer_id.set(Some(rinch_core::set_timeout(3000, move || {
+        auto_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(3000, move || {
             if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
             // Recompute the word count from the model (debounced, not per-keystroke).
             editor_word_count.set(editor_utils::editor_word_count(&chapter_handle.get()));
@@ -3086,7 +3091,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     save_content(captured_cid.clone());
                 }
             }
-        })));
+        }))));
     };
 
     // ── Set up Ctrl+S and auto-save (once, on mount) ────────────
@@ -3226,7 +3231,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         } else {
             return;
         };
-        chapter_title_save_timer_id.set(Some(rinch_core::set_timeout(1000, move || {
+        chapter_title_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(1000, move || {
             // Bail if this page instance is stale (user navigated away and back)
             if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
             if let BookPane::Editor(ref current_cid) = active_pane.get() {
@@ -3253,7 +3258,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     }
                 },
             );
-        })));
+        }))));
     };
 
     let move_chapter = move |chapter_id: String, direction: i32| {
@@ -3715,9 +3720,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
         if let Some(h) = note_save_timer_id.get() {
             rinch_core::clear_timeout(h);
         }
-        note_save_timer_id.set(Some(rinch_core::set_timeout(800, move || {
+        note_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(800, move || {
             save_note_content();
-        })));
+        }))));
     };
 
     // Note-editor autosave on edit. Like the chapter editor, the model-first note
