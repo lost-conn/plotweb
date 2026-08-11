@@ -55,8 +55,6 @@ pub enum Route {
     EditorSpike,
     /// Phase-0 dev spike: OPFS + Automerge persistence (`/opfs-spike`).
     OpfsSpike,
-    /// Phase-0 dev spike: Automerge sync over HTTP (`/sync-spike`).
-    SyncSpike,
 }
 
 impl Route {
@@ -73,7 +71,6 @@ impl Route {
             Route::ThemePreview => "/theme".into(),
             Route::EditorSpike => "/editor-spike".into(),
             Route::OpfsSpike => "/opfs-spike".into(),
-            Route::SyncSpike => "/sync-spike".into(),
         }
     }
 
@@ -87,7 +84,6 @@ impl Route {
             "/theme" => Route::ThemePreview,
             "/editor-spike" => Route::EditorSpike,
             "/opfs-spike" => Route::OpfsSpike,
-            "/sync-spike" => Route::SyncSpike,
             _ if path.starts_with("/reset-password/") => {
                 let token = &path[16..];
                 if token.is_empty() {

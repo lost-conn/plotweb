@@ -15,19 +15,26 @@ use axum::http::{Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use plotweb_server::{build_state, test_router};
+use plotweb_server::{build_state, test_router, AppState};
 
 // Unique per-test SQLite filename so parallel tests never share a DB.
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
 pub struct TestApp {
     router: axum::Router,
+    // A clone of the app's own state, so a test can drive in-process tooling (the
+    // migration passes) against the SAME open stores the router is serving from —
+    // rhypedb is single-writer, so a second handle on the same dir would fail. Held as
+    // an `Option` because `restart` must DROP it (it owns a rhypedb handle, and the
+    // rebuilt app cannot take the data-dir lock until every old handle is gone).
+    state: Option<AppState>,
     cookie: Option<String>,
     // On-disk store paths, kept so the app can be rebuilt over the SAME stores
     // to simulate a server restart (see `restart`).
     db_url: String,
     book_dir: PathBuf,
     rhype_dir: PathBuf,
+    crdt_dir: PathBuf,
     // Held for the lifetime of the test so the tempdir isn't deleted early.
     _dir: tempfile::TempDir,
 }
@@ -56,14 +63,24 @@ impl TestApp {
         let db_url = format!("sqlite:{}", db_path.display());
         let book_dir = dir.path().join("books");
         let rhype_dir = dir.path().join("rhype");
+        let crdt_dir = dir.path().join("crdt");
 
-        let state = build_state(&db_url, book_dir.clone(), &rhype_dir, None).await;
+        let state = build_state(
+            &db_url,
+            book_dir.clone(),
+            &rhype_dir,
+            crdt_dir.clone(),
+            None,
+        )
+        .await;
         TestApp {
-            router: test_router(state).await,
+            router: test_router(state.clone()).await,
+            state: Some(state),
             cookie: None,
             db_url,
             book_dir,
             rhype_dir,
+            crdt_dir,
             _dir: dir,
         }
     }
@@ -74,15 +91,36 @@ impl TestApp {
         &self.book_dir
     }
 
+    /// The app's live `AppState` — for driving in-process tooling (e.g. the
+    /// ownership-aware `user:` backfill) against the same open stores.
+    pub fn state(&self) -> &AppState {
+        self.state.as_ref().expect("app state")
+    }
+
+    /// The canonical Automerge blob store (`PLOTWEB_CRDT_DIR`) this app syncs into —
+    /// so a test can point the migration backfill at it, or inspect what sync wrote.
+    pub fn crdt_dir(&self) -> &PathBuf {
+        &self.crdt_dir
+    }
+
     /// Rebuild the app over the SAME on-disk stores (simulating a server
     /// restart), keeping the client's session cookie. The SQLite-backed session
     /// store must return the still-valid session afterwards.
     pub async fn restart(&mut self) {
         // Drop the old app first: its `RhypeStore` holds an exclusive lock on the
         // rhype data dir, so the new `build_state` can't open it until the old
-        // one is released.
+        // one is released. That means BOTH holders: the router and our state clone.
         self.router = axum::Router::new();
-        let state = build_state(&self.db_url, self.book_dir.clone(), &self.rhype_dir, None).await;
+        self.state = None;
+        let state = build_state(
+            &self.db_url,
+            self.book_dir.clone(),
+            &self.rhype_dir,
+            self.crdt_dir.clone(),
+            None,
+        )
+        .await;
+        self.state = Some(state.clone());
         self.router = test_router(state).await;
     }
 
@@ -148,6 +186,27 @@ impl TestApp {
             .body(Body::from(serde_json::to_vec(body).unwrap()))
             .unwrap();
         self.send(req).await
+    }
+
+    /// POST raw bytes and read raw bytes back — the sync endpoints' wire format
+    /// (`application/octet-stream`), which is not JSON in either direction.
+    pub async fn post_bytes(&mut self, uri: &str, body: &[u8]) -> (StatusCode, Vec<u8>) {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(body.to_vec()))
+            .unwrap();
+        if let Some(c) = &self.cookie {
+            req.headers_mut()
+                .insert("cookie", c.parse().expect("cookie header"));
+        }
+        let resp = self.router.clone().oneshot(req).await.expect("response");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, bytes.to_vec())
     }
 
     /// POST a multipart file upload (single `file` field).

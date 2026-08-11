@@ -1,60 +1,128 @@
-//! Phase-0 spike: a **dumb** Automerge sync relay (in-memory, no auth).
+//! Automerge sync endpoints (Phase 2 · sync engine slice 1).
 //!
-//! Stores one base snapshot + an append-only delta log per doc id, as hex. The
-//! server does NOT run Automerge — it just relays opaque CRDT bytes between
-//! clients, which do the merging. This validates the HTTP transport for the sync
-//! engine (the real server will persist canonical Automerge, but the transport
-//! shape is the same). Not for production; state is process-local and unbounded.
+//! Replaces the Phase-0 spike relay that used to live here — an unauthenticated,
+//! process-global `HashMap` any caller could write any doc-id into. What it proved
+//! (the C→S→C transport carrying opaque CRDT bytes) is recorded in
+//! `docs/offline-first-rinch-plan.md` §"Spike ③ results"; the real endpoint below
+//! keeps that transport shape and adds the two things the spike had no business
+//! having: **authorization** and a **canonical, durable document**.
+//!
+//! One HTTP request carries one Automerge sync message each way, as raw bytes
+//! (`application/octet-stream`). The protocol work is [`crate::sync`]; this module is
+//! the authorization boundary and the per-doc lock.
+//!
+//! Routes are **book-scoped** (`/api/books/{book_id}/sync/{doc_id}`) so authorization
+//! is the same ownership check every other book route already makes, rather than a new
+//! global doc→owner index. The `user:` index doc, which has no book, is reached at
+//! `/api/sync/user` and is *always* the session's own — the user id is never taken
+//! from the request.
 
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use axum::body::Bytes;
+use axum::extract::{Path, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 
-use axum::Json;
-use axum::extract::Path;
-use serde::{Deserialize, Serialize};
+use crate::auth::AuthSession;
+use crate::sync::{self, SyncError};
+use crate::AppState;
 
-#[derive(Default)]
-struct DocRelay {
-    snapshot: Option<String>,
-    deltas: Vec<String>,
+/// Body cap for one sync message. Generous: the first message for a fresh device is a
+/// whole document, and a long chapter with history is comfortably under this.
+pub const MAX_SYNC_BODY: usize = 32 * 1024 * 1024;
+
+/// `POST /api/books/{book_id}/sync/{doc_id}` — one round of the sync protocol for a
+/// document belonging to `book_id`.
+///
+/// Authorization is two checks, both required: the caller owns the book, **and**
+/// `doc_id` is one of that book's documents. An id that isn't (a chapter of someone
+/// else's book, a typo, a probe) is a 404 — never an implicit create.
+pub async fn sync_book_doc(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+    Path((book_id, doc_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if !super::verify_book_ownership(&state, &book_id, &user_id).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(doc_type) = doc_type_in_book(&state, &book_id, &doc_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    run_round(&state, &doc_id, doc_type, body).await
 }
 
-static RELAY: LazyLock<Mutex<HashMap<String, DocRelay>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[derive(Deserialize)]
-pub struct HexBody {
-    pub hex: String,
+/// `POST /api/sync/user` — one round for the caller's own `user:` index doc.
+pub async fn sync_user_doc(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+    body: Bytes,
+) -> Response {
+    let doc_id = format!("user:{user_id}");
+    run_round(&state, &doc_id, "user", body).await
 }
 
-#[derive(Serialize)]
-pub struct SyncState {
-    pub snapshot: Option<String>,
-    pub deltas: Vec<String>,
-}
+/// Serialize on the doc, hand the protocol round to a blocking thread, and map the
+/// result onto a binary response.
+async fn run_round(state: &AppState, doc_id: &str, doc_type: &str, body: Bytes) -> Response {
+    if body.len() > MAX_SYNC_BODY {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
 
-/// Set the base snapshot for a doc (resets the delta log).
-pub async fn put_snapshot(Path(id): Path<String>, Json(body): Json<HexBody>) -> Json<serde_json::Value> {
-    let mut map = RELAY.lock().unwrap();
-    let entry = map.entry(id).or_default();
-    entry.snapshot = Some(body.hex);
-    entry.deltas.clear();
-    Json(serde_json::json!({ "ok": true }))
-}
+    // Held across the whole read-modify-write: Automerge merges commute, but the
+    // blob rewrite does not.
+    let lock = state.doc_locks.for_doc(doc_id);
+    let _guard = lock.lock().await;
 
-/// Append a local delta to a doc's log.
-pub async fn post_delta(Path(id): Path<String>, Json(body): Json<HexBody>) -> Json<serde_json::Value> {
-    let mut map = RELAY.lock().unwrap();
-    map.entry(id).or_default().deltas.push(body.hex);
-    Json(serde_json::json!({ "ok": true }))
-}
-
-/// Fetch the current base snapshot + all deltas for a doc.
-pub async fn get_state(Path(id): Path<String>) -> Json<SyncState> {
-    let map = RELAY.lock().unwrap();
-    let d = map.get(&id);
-    Json(SyncState {
-        snapshot: d.and_then(|d| d.snapshot.clone()),
-        deltas: d.map(|d| d.deltas.clone()).unwrap_or_default(),
+    let crdt_dir = state.crdt_dir.clone();
+    let doc_id = doc_id.to_string();
+    let doc_type = doc_type.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        sync::sync_round(&crdt_dir, &doc_id, &doc_type, &body)
     })
+    .await;
+
+    match result {
+        Ok(Ok(reply)) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            reply,
+        )
+            .into_response(),
+        // A message we can't decode is the client's fault and is not retryable.
+        Ok(Err(SyncError::BadMessage(msg))) => {
+            (StatusCode::BAD_REQUEST, msg).into_response()
+        }
+        Ok(Err(e)) => {
+            eprintln!("[sync] {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// The doc type of `doc_id` **if** it is one of `book_id`'s documents, else `None`.
+///
+/// Membership comes from git, which is still authoritative pre-cutover: the book doc
+/// itself, a chapter in its manuscript, or a note in its notes tree. After cutover
+/// this check moves to the canonical `book:` document.
+async fn doc_type_in_book(
+    state: &AppState,
+    book_id: &str,
+    doc_id: &str,
+) -> Option<&'static str> {
+    if doc_id == format!("book:{book_id}") {
+        return Some("book");
+    }
+    if let Some(chapter_id) = doc_id.strip_prefix("chapter:") {
+        let chapters = state.books.list_chapters(book_id).await.ok()?;
+        return chapters.iter().any(|c| c.id == chapter_id).then_some("chapter");
+    }
+    if let Some(note_id) = doc_id.strip_prefix("note:") {
+        let (notes, _tree) = state.books.list_notes(book_id).await.ok()?;
+        return notes.iter().any(|n| n.id == note_id).then_some("note");
+    }
+    None
 }

@@ -12,6 +12,7 @@ pub mod email;
 pub mod rhype;
 pub mod rhype_migrate;
 pub mod routes;
+pub mod sync;
 pub mod ws;
 
 use std::path::{Path, PathBuf};
@@ -43,6 +44,12 @@ pub struct AppState {
     pub books: Arc<BookStore>,
     pub broadcaster: Arc<FeedbackBroadcaster>,
     pub email: Option<Arc<EmailService>>,
+    /// Canonical Automerge blob store (`PLOTWEB_CRDT_DIR`) — the phase-C backfill's
+    /// output, and what the sync endpoints read and write. Nothing else touches it,
+    /// so deleting it reverts the system to git-only.
+    pub crdt_dir: PathBuf,
+    /// Per-document serialization for canonical sync writes (see [`sync::DocLocks`]).
+    pub doc_locks: sync::DocLocks,
 }
 
 /// Build `AppState` from explicit paths. Used by `main` (via env) and by tests
@@ -52,6 +59,7 @@ pub async fn build_state(
     db_url: &str,
     book_dir: PathBuf,
     rhype_dir: impl AsRef<Path>,
+    crdt_dir: PathBuf,
     email: Option<Arc<EmailService>>,
 ) -> AppState {
     let pool = db::init_db_with(db_url).await;
@@ -76,6 +84,8 @@ pub async fn build_state(
         books,
         broadcaster: Arc::new(FeedbackBroadcaster::new()),
         email,
+        crdt_dir,
+        doc_locks: sync::DocLocks::new(),
     }
 }
 
@@ -113,9 +123,18 @@ pub fn api_router(state: AppState) -> Router {
             post(routes::auth::reset_password),
         )
         // Phase-0 spike: dumb Automerge sync relay (no auth).
-        .route("/api/sync/{id}/snapshot", post(routes::sync::put_snapshot))
-        .route("/api/sync/{id}/delta", post(routes::sync::post_delta))
-        .route("/api/sync/{id}", get(routes::sync::get_state))
+        // Automerge sync (Phase 2). Book-scoped so authorization is the existing
+        // ownership check; `user:` is implicitly the session's own doc.
+        .route(
+            "/api/books/{book_id}/sync/{doc_id}",
+            post(routes::sync::sync_book_doc)
+                .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY)),
+        )
+        .route(
+            "/api/sync/user",
+            post(routes::sync::sync_user_doc)
+                .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY)),
+        )
         .route("/api/fonts", get(routes::fonts::list))
         .route("/api/books", get(routes::books::list))
         .route("/api/books", post(routes::books::create))

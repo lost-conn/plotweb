@@ -124,6 +124,37 @@ thread_local! {
     static BOOK: RefCell<Option<BookState>> = const { RefCell::new(None) };
 }
 
+// ── Sync seams ───────────────────────────────────────────────────────────────
+// Mirror of `local_user`'s: generating a sync message must not persist; integrating a
+// peer's message must. See [`crate::sync`].
+
+/// The book whose `book:` doc is open, if any.
+pub(crate) fn open_book_id() -> Option<String> {
+    BOOK.with(|b| b.borrow().as_ref().map(|s| s.book_id.clone()))
+}
+
+/// Run `f` against the open book's CRDT **without** persisting.
+pub(crate) fn with_book_doc<R>(book_id: &str, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
+    BOOK.with(|b| {
+        let mut slot = b.borrow_mut();
+        let state = slot.as_mut()?;
+        (state.book_id == book_id).then(|| f(&mut state.doc))
+    })
+}
+
+/// Persist the open book's doc as it now stands (after a sync merge).
+pub(crate) fn persist_book(book_id: &str) {
+    BOOK.with(|b| {
+        let mut slot = b.borrow_mut();
+        let Some(state) = slot.as_mut() else { return };
+        if state.book_id != book_id {
+            return;
+        }
+        let bytes = state.doc.save();
+        state.persister.persist(bytes);
+    });
+}
+
 /// Run `f` against the open book's doc iff it matches `book_id`, then persist the
 /// resulting full snapshot. No-op if no matching book is open (REST still persists).
 fn with_book(book_id: &str, f: impl FnOnce(&mut AutoCommit)) {
@@ -137,6 +168,8 @@ fn with_book(book_id: &str, f: impl FnOnce(&mut AutoCommit)) {
         let bytes = state.doc.save();
         state.persister.persist(bytes);
     });
+    // Local change → push it soon (debounced; no-op unless sync is enabled).
+    crate::sync::nudge(book_id, true);
 }
 
 // ── Public entry point: seed-from-REST-or-load-local, then project ───────────
@@ -197,7 +230,10 @@ pub fn enter(
         });
 
         // Project the (now-authoritative) local doc into the render signals.
-        project(store);
+        project(store.clone());
+
+        // The doc exists now, so it can be synced. No-op unless sync is enabled.
+        crate::sync::register_book(&book_id, store);
     });
 }
 
@@ -360,12 +396,30 @@ pub fn project_chapters(store: AppStore) {
             rest.iter().map(|c| (c.id.clone(), c.clone())).collect();
 
         let mut out = Vec::with_capacity(rest.len());
-        for id in &order {
-            if let Some(mut c) = by_id.remove(id) {
-                if let Some(t) = titles.get(id) {
-                    c.title = t.clone();
+        for (i, id) in order.iter().enumerate() {
+            match by_id.remove(id) {
+                Some(mut c) => {
+                    if let Some(t) = titles.get(id) {
+                        c.title = t.clone();
+                    }
+                    out.push(c);
                 }
-                out.push(c);
+                // In the doc but with no REST record: a chapter created on ANOTHER
+                // device and learned about through sync. The `book:` doc is the
+                // authority on which chapters exist, so materialize it from what the
+                // doc knows (id · title · order). Its body arrives separately — from
+                // REST when this chapter is opened, or via body sync (slice 4).
+                // Without this the sidebar would silently omit it.
+                None => out.push(Chapter {
+                    id: id.clone(),
+                    book_id: state.book_id.clone(),
+                    title: titles.get(id).cloned().unwrap_or_default(),
+                    content: String::new(),
+                    sort_order: i as i64,
+                    word_count: 0,
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                }),
             }
         }
         // Server chapters not (yet) in the doc order: keep them, in REST order.
@@ -437,6 +491,32 @@ pub fn project_notes(store: AppStore) {
                 n.title = t.clone();
             }
             n.color = colors.get(&n.id).cloned();
+        }
+        // Notes that exist in the doc's tree but have no REST record came from another
+        // device via sync — materialize them, same reasoning as chapters above.
+        let known: std::collections::HashSet<String> =
+            notes.iter().map(|n| n.id.clone()).collect();
+        let mut in_tree: Vec<String> = store
+            .note_tree
+            .get()
+            .map(|t| {
+                let mut ids = t.root_order.clone();
+                ids.extend(t.children.values().flatten().cloned());
+                ids
+            })
+            .unwrap_or_default();
+        in_tree.retain(|id| !known.contains(id));
+        in_tree.dedup();
+        for id in in_tree {
+            notes.push(Note {
+                id: id.clone(),
+                book_id: state.book_id.clone(),
+                title: titles.get(&id).cloned().unwrap_or_default(),
+                content: String::new(),
+                color: colors.get(&id).cloned(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            });
         }
         store.notes.set(notes);
     });

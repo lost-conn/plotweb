@@ -117,6 +117,41 @@ thread_local! {
     static USER: RefCell<Option<UserState>> = const { RefCell::new(None) };
 }
 
+// ── Sync seams ───────────────────────────────────────────────────────────────
+// The sync engine ([`crate::sync`]) needs the live CRDT, but must control *when* a
+// snapshot is persisted: generating a sync message mutates the doc's internal state
+// without changing content (nothing to persist), whereas integrating a peer's message
+// does change content (persist + re-project). So the seams are split.
+
+/// The signed-in account whose `user:` doc is open, if any.
+pub(crate) fn open_user_id() -> Option<String> {
+    USER.with(|u| u.borrow().as_ref().map(|s| s.user_id.clone()))
+}
+
+/// Run `f` against the open user's CRDT **without** persisting. `None` if a different
+/// account (or none) is open — the caller's work is then moot, not an error.
+pub(crate) fn with_user_doc<R>(user_id: &str, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
+    USER.with(|u| {
+        let mut slot = u.borrow_mut();
+        let state = slot.as_mut()?;
+        (state.user_id == user_id).then(|| f(&mut state.doc))
+    })
+}
+
+/// Persist the open user's doc as it now stands — after the sync engine has merged a
+/// peer's changes into it.
+pub(crate) fn persist_user(user_id: &str) {
+    USER.with(|u| {
+        let mut slot = u.borrow_mut();
+        let Some(state) = slot.as_mut() else { return };
+        if state.user_id != user_id {
+            return;
+        }
+        let bytes = state.doc.save();
+        state.persister.persist(bytes);
+    });
+}
+
 /// Run `f` against the open user's doc iff it matches `user_id`, then persist the
 /// resulting full snapshot. No-op if no matching account is open (REST still persists).
 fn with_user(user_id: &str, f: impl FnOnce(&mut AutoCommit)) {
@@ -130,6 +165,8 @@ fn with_user(user_id: &str, f: impl FnOnce(&mut AutoCommit)) {
         let bytes = state.doc.save();
         state.persister.persist(bytes);
     });
+    // Local change → push it soon (debounced; no-op unless sync is enabled).
+    crate::sync::nudge(user_id, false);
 }
 
 // ── Public entry point: seed-from-REST-or-load-local, then project ───────────
@@ -179,7 +216,10 @@ pub fn enter_user(user_id: String, books: Vec<Book>, store: AppStore) {
         });
 
         // Project the (now-authoritative) local doc into the render signal.
-        project_books(store);
+        project_books(store.clone());
+
+        // The doc exists now, so it can be synced. No-op unless sync is enabled.
+        crate::sync::register_user(&user_id, store);
     });
 }
 

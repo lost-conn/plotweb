@@ -149,10 +149,6 @@ pub fn app_shell() -> NodeHandle {
                     style: "height: 100dvh; overflow-y: auto; background: var(--rinch-color-body);",
                     {crate::pages::opfs_spike::opfs_spike_page(__scope)}
                 },
-                Route::SyncSpike => div {
-                    style: "height: 100dvh; overflow-y: auto; background: var(--rinch-color-body);",
-                    {crate::pages::sync_spike::sync_spike_page(__scope)}
-                },
                 Route::Dashboard => div {
                     style: "height: 100dvh; display: flex; flex-direction: column; overflow: hidden;",
                     {crate::pages::dashboard::dashboard_page(__scope)}

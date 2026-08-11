@@ -22,6 +22,10 @@ plotweb-git.workspace = true
 plotweb-import.workspace = true
 plotweb-export.workspace = true
 plotweb-crdt = { path = "../plotweb-crdt" }
+# The canonical sync store speaks Automerge directly (no editor schema needed to run
+# the sync protocol). Same 0.5 line as plotweb-crdt / rinch-editor-collab, so client
+# and server bytes are one format.
+automerge = "0.5"
 # Cross-platform durable blob store — the CRDT backfill's write target (FsStore).
 # Pinned to the SAME rinch rev as rinch-editor-collab (via plotweb-crdt).
 rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b33bdaeccef3cec69722e30702ac", default-features = false }
@@ -37,3 +41,5 @@ hex = "0.4"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
+# Integration tests act as sync *clients*, running the protocol against the app.
+automerge = "0.5"

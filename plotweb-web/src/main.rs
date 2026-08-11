@@ -3,6 +3,7 @@ pub mod local_book;
 pub mod local_store;
 pub mod local_user;
 pub mod store;
+pub mod sync;
 pub mod router;
 pub mod pages;
 pub mod components;
@@ -50,7 +51,7 @@ fn app() -> NodeHandle {
         store.current_route.set(initial_route.clone());
         router::replace_state(&initial_route);
         store.loading.set(false);
-    } else if matches!(initial_route, Route::ThemePreview | Route::EditorSpike | Route::OpfsSpike | Route::SyncSpike) {
+    } else if matches!(initial_route, Route::ThemePreview | Route::EditorSpike | Route::OpfsSpike) {
         // Dev preview routes — public, no session check.
         store.current_route.set(initial_route.clone());
         router::replace_state(&initial_route);
