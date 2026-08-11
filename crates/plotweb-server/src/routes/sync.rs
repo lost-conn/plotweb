@@ -51,6 +51,152 @@ pub async fn sync_book_doc(
     run_round(&state, &doc_id, doc_type, body).await
 }
 
+/// `POST /api/books/{book_id}/sync/{doc_id}/adopt` — take ownership of a document
+/// whose canonical copy is still the migration backfill's.
+///
+/// The body is a full Automerge document (`save()` bytes), not a sync message. See
+/// [`crate::sync::adopt_doc`] for why bodies need this: the backfilled blob is frozen
+/// at backfill time while git moved on, so it can be neither merged with (disjoint
+/// histories concatenate) nor adopted from (stale text would overwrite current text).
+///
+/// Responds `{"adopted": bool}` — `false` means a client already owns the document and
+/// the caller must use the sync protocol instead.
+pub async fn adopt_book_doc(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+    Path((book_id, doc_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if !super::verify_book_ownership(&state, &book_id, &user_id).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(doc_type) = doc_type_in_book(&state, &book_id, &doc_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if body.len() > MAX_SYNC_BODY {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+
+    let lock = state.doc_locks.for_doc(&doc_id);
+    let _guard = lock.lock().await;
+
+    let crdt_dir = state.crdt_dir.clone();
+    let doc_id_owned = doc_id.clone();
+    let doc_type = doc_type.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        sync::adopt_doc(&crdt_dir, &doc_id_owned, &doc_type, &body)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(outcome)) => axum::Json(serde_json::json!({
+            "adopted": outcome == sync::Adoption::Adopted,
+        }))
+        .into_response(),
+        Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] adopt {doc_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] adopt worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// `GET /api/books/{book_id}/sync/{doc_id}` — the canonical document as a full
+/// Automerge snapshot, or `204` when the server holds none.
+///
+/// The counterpart to adoption. A device whose local document was seeded
+/// independently (from REST, pre-sync) shares no history with the canonical one, so
+/// it must *replace* its copy rather than merge into it — merging disjoint histories
+/// concatenates (`docs/sync-engine-design.md` §D8). Fetching the canonical bytes
+/// outright is one request; reconstructing them through the sync protocol would take
+/// several and buy nothing.
+pub async fn get_canonical_doc(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+    Path((book_id, doc_id)): Path<(String, String)>,
+) -> Response {
+    if !super::verify_book_ownership(&state, &book_id, &user_id).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if doc_type_in_book(&state, &book_id, &doc_id).await.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    let crdt_dir = state.crdt_dir.clone();
+    let doc_id_owned = doc_id.clone();
+    let result =
+        tokio::task::spawn_blocking(move || sync::canonical_snapshot(&crdt_dir, &doc_id_owned))
+            .await;
+
+    match result {
+        Ok(Ok(Some(bytes))) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] read {doc_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] read worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// `GET /api/books/{book_id}/sync/heads` — the canonical heads of every document in
+/// this book, as `{ "chapter:…": ["<hash>", …], … }`.
+///
+/// One request tells a client which documents have moved since it last looked, so a
+/// background sweep can sync only those instead of polling each document in turn.
+/// Documents the server has no canonical copy of are absent from the map.
+///
+/// Note this route is matched before `/sync/{doc_id}`: `heads` is a static segment,
+/// and no document id can collide with it (ids always carry a `chapter:` / `note:` /
+/// `book:` prefix).
+pub async fn get_book_heads(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+    Path(book_id): Path<String>,
+) -> Response {
+    if !super::verify_book_ownership(&state, &book_id, &user_id).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    // Every document this book owns, from git — the same membership rule the sync
+    // and adopt routes authorize against.
+    let mut doc_ids = vec![format!("book:{book_id}")];
+    if let Ok(chapters) = state.books.list_chapters(&book_id).await {
+        doc_ids.extend(chapters.iter().map(|c| format!("chapter:{}", c.id)));
+    }
+    if let Ok((notes, _tree)) = state.books.list_notes(&book_id).await {
+        doc_ids.extend(notes.iter().map(|n| format!("note:{}", n.id)));
+    }
+
+    let crdt_dir = state.crdt_dir.clone();
+    let result =
+        tokio::task::spawn_blocking(move || sync::canonical_heads(&crdt_dir, &doc_ids)).await;
+
+    match result {
+        Ok(Ok(heads)) => axum::Json(heads).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] heads {book_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] heads worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 /// `POST /api/sync/user` — one round for the caller's own `user:` index doc.
 pub async fn sync_user_doc(
     State(state): State<AppState>,
@@ -63,9 +209,101 @@ pub async fn sync_user_doc(
 
 /// Serialize on the doc, hand the protocol round to a blocking thread, and map the
 /// result onto a binary response.
+/// One yrs exchange for a body document: the client sends its state vector, and gets
+/// back the update it lacks plus the server's own state vector, framed as
+/// `[u32 LE length][diff][server state vector]`.
+///
+/// Two fixed steps replace Automerge's multi-round loop — the client applies the diff,
+/// then posts what the server lacks to `.../update`. Framing beats a second request
+/// for the state vector, and beats JSON+base64 for what is already binary.
+async fn run_body_exchange(state: &AppState, doc_id: &str, body: Bytes) -> Response {
+    let lock = state.doc_locks.for_doc(doc_id);
+    let _guard = lock.lock().await;
+
+    let crdt_dir = state.crdt_dir.clone();
+    let doc_id = doc_id.to_string();
+    let result =
+        tokio::task::spawn_blocking(move || sync::body_exchange(&crdt_dir, &doc_id, &body)).await;
+
+    match result {
+        Ok(Ok((diff, server_sv))) => {
+            let mut framed = Vec::with_capacity(4 + diff.len() + server_sv.len());
+            framed.extend_from_slice(&(diff.len() as u32).to_le_bytes());
+            framed.extend_from_slice(&diff);
+            framed.extend_from_slice(&server_sv);
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                framed,
+            )
+                .into_response()
+        }
+        Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// `POST /api/books/{book_id}/sync/{doc_id}/update` — apply a client's yrs update to
+/// a body document. The other half of [`run_body_exchange`].
+pub async fn apply_body_update(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+    Path((book_id, doc_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if !super::verify_book_ownership(&state, &book_id, &user_id).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(doc_type) = doc_type_in_book(&state, &book_id, &doc_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !sync::is_body_doc(&doc_id) {
+        return (StatusCode::BAD_REQUEST, "not a body document").into_response();
+    }
+    if body.len() > MAX_SYNC_BODY {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+
+    let lock = state.doc_locks.for_doc(&doc_id);
+    let _guard = lock.lock().await;
+
+    let crdt_dir = state.crdt_dir.clone();
+    let doc_id_owned = doc_id.clone();
+    let doc_type = doc_type.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        sync::body_apply(&crdt_dir, &doc_id_owned, &doc_type, &body)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_changed)) => StatusCode::OK.into_response(),
+        Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] update {doc_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] update worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn run_round(state: &AppState, doc_id: &str, doc_type: &str, body: Bytes) -> Response {
     if body.len() > MAX_SYNC_BODY {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    // Bodies are the editor's CRDT, which is yrs since rinch #190; structure docs are
+    // ours and stay Automerge.
+    if sync::is_body_doc(doc_id) {
+        return run_body_exchange(state, doc_id, body).await;
     }
 
     // Held across the whole read-modify-write: Automerge merges commute, but the

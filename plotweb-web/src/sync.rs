@@ -1,11 +1,20 @@
-//! Client sync engine for the **structure** documents (`user:` and `book:`) —
-//! sync engine slice 3 (`docs/sync-engine-design.md`).
+//! Client sync engine — sync engine slices 3 and 4 (`docs/sync-engine-design.md`).
 //!
-//! These two doc types are plain [`automerge::AutoCommit`]s owned by
-//! [`crate::local_user`] / [`crate::local_book`], so the full Automerge sync protocol
-//! is available here today. Chapter and note **bodies** live inside the editor's
-//! collaboration session, whose handle does not yet expose the protocol — that is
-//! slice 4, gated on an upstream rinch change.
+//! Three document shapes, one loop:
+//!
+//! - **Structure** (`user:` / `book:`) — plain [`automerge::AutoCommit`]s owned by
+//!   [`crate::local_user`] / [`crate::local_book`]. Synced whenever they are open.
+//! - **Bodies** (`chapter:` / `note:`) — the CRDT lives inside the editor's
+//!   collaboration session, so the protocol is driven through the `EditorHandle` seam
+//!   (rinch PR #182) and only while that body is open. Remote changes are integrated
+//!   *through the attached session*, which rebuilds the model and re-projects the
+//!   view; content is never loaded into the editor behind the session's back, which is
+//!   what the chapter-crosstalk bug did.
+//!
+//! Bodies additionally need a **provenance handshake** before their first exchange:
+//! a body seeded from REST shares no history with the server's canonical copy of the
+//! same chapter, and Automerge merges disjoint histories by concatenation, so one side
+//! must take the other wholesale first. See [`establish_body_provenance`] and §D8.
 //!
 //! # Shape: callbacks, not futures
 //!
@@ -56,6 +65,10 @@ enum Doc {
     User(String),
     /// A book's structure (`book:{id}`).
     Book(String),
+    /// A chapter or note **body** (`chapter:{id}` / `note:{id}`). Its CRDT lives
+    /// inside the editor session rather than in a doc we hold directly, so it is
+    /// driven through the `EditorHandle` seam and only while that body is open.
+    Body { doc_id: String, book_id: String },
 }
 
 impl Doc {
@@ -63,6 +76,7 @@ impl Doc {
         match self {
             Doc::User(_) => "/api/sync/user".to_string(),
             Doc::Book(id) => format!("/api/books/{id}/sync/book:{id}"),
+            Doc::Body { doc_id, book_id } => format!("/api/books/{book_id}/sync/{doc_id}"),
         }
     }
 
@@ -70,14 +84,48 @@ impl Doc {
         match self {
             Doc::User(id) => format!("user:{id}"),
             Doc::Book(id) => format!("book:{id}"),
+            Doc::Body { doc_id, .. } => doc_id.clone(),
         }
     }
 
-    /// Run `f` against this doc's live CRDT, if it is still the open one.
-    fn with_doc<R>(&self, f: impl FnOnce(&mut automerge::AutoCommit) -> R) -> Option<R> {
+    /// The next protocol message to send, or `None` when we have nothing left (which
+    /// is what ends an exchange) or the document is no longer open.
+    fn generate(&self, state: &mut SyncState) -> Option<Vec<u8>> {
         match self {
-            Doc::User(id) => crate::local_user::with_user_doc(id, f),
-            Doc::Book(id) => crate::local_book::with_book_doc(id, f),
+            Doc::User(id) => crate::local_user::with_user_doc(id, |d| {
+                d.sync().generate_sync_message(state).map(|m| m.encode())
+            })
+            .flatten(),
+            Doc::Book(id) => crate::local_book::with_book_doc(id, |d| {
+                d.sync().generate_sync_message(state).map(|m| m.encode())
+            })
+            .flatten(),
+            // Bodies do not use this path at all — see `exchange_body`. Their CRDT is
+            // yrs (rinch #190), which reconciles with a state vector and a diff rather
+            // than a multi-round message protocol.
+            Doc::Body { .. } => None,
+        }
+    }
+
+    /// Merge a peer's message. `None` means the document went away mid-exchange;
+    /// `Some(changed)` reports whether it actually moved.
+    fn integrate(&self, state: &mut SyncState, message: SyncMessage) -> Option<bool> {
+        match self {
+            Doc::User(id) => crate::local_user::with_user_doc(id, |d| {
+                let before = d.get_heads();
+                d.sync().receive_sync_message(state, message).is_ok() && d.get_heads() != before
+            }),
+            Doc::Book(id) => crate::local_book::with_book_doc(id, |d| {
+                let before = d.get_heads();
+                d.sync().receive_sync_message(state, message).is_ok() && d.get_heads() != before
+            }),
+            // Integrating through the *attached session* is what keeps the editor and
+            // the CRDT in step: it rebuilds the model from the converged document and
+            // re-projects the view. Never load content into the editor behind the
+            // session's back — that is the chapter-crosstalk failure mode.
+            // Unreachable: `generate` never produces a message for a body, so no reply
+            // is ever integrated through here.
+            Doc::Body { .. } => Some(false),
         }
     }
 
@@ -93,6 +141,22 @@ impl Doc {
                 crate::local_book::persist_book(id);
                 crate::local_book::project(store.clone());
             }
+            // A body needs no projection — the session updated the editor itself — but
+            // the merged state must become the stored base, or a reopen would replay a
+            // delta log that never saw these changes.
+            Doc::Body { doc_id, .. } => {
+                // A swept body is published when its exchange ends (`finish_headless`),
+                // not per round — there is no editor to keep in step meanwhile.
+                if !crate::local_store::body_is_open(doc_id) {
+                    return;
+                }
+                let doc_id = doc_id.clone();
+                crate::local_store::spawn(async move {
+                    if let Err(e) = crate::local_store::republish_body(&doc_id).await {
+                        log::warn!("sync {doc_id}: republish failed: {e}");
+                    }
+                });
+            }
         }
     }
 
@@ -102,6 +166,7 @@ impl Doc {
         match self {
             Doc::User(id) => crate::local_user::open_user_id().as_deref() == Some(id),
             Doc::Book(id) => crate::local_book::open_book_id().as_deref() == Some(id),
+            Doc::Body { doc_id, .. } => crate::local_store::body_is_open(doc_id),
         }
     }
 }
@@ -165,6 +230,42 @@ pub fn register_user(user_id: &str, store: AppStore) {
 /// Register the open book's `book:` doc and sync it now.
 pub fn register_book(book_id: &str, store: AppStore) {
     register(Doc::Book(book_id.to_string()), store);
+    if enabled() {
+        arm_sweep(book_id);
+    }
+}
+
+/// Register the body document an editor just attached (`chapter:` / `note:`), and
+/// sync it now.
+///
+/// Called by `local_store` once a session is attached, because only then does the
+/// CRDT exist to sync. A body syncs while it is open; the previous body's
+/// registration is dropped, since a cycle against a closed editor has nothing to
+/// drive. (Background sync of unopened bodies is slice 5.)
+pub fn register_body(doc_id: &str, book_id: &str) {
+    if !enabled() {
+        return;
+    }
+    let store = STORE.with(|s| s.borrow().clone());
+    let Some(store) = store else {
+        // No dashboard/book has registered yet, so we have no AppStore to project
+        // with. Bodies need no projection, but the engine keeps one store handle;
+        // registering later (on the next open) is harmless.
+        return;
+    };
+    // Only one body syncs at a time per surface; drop any previous body entry so a
+    // closed editor's document isn't polled forever.
+    ENGINE.with(|e| {
+        e.borrow_mut()
+            .retain(|_, entry| !matches!(entry.doc, Doc::Body { .. }) || entry.doc.still_open())
+    });
+    register(
+        Doc::Body {
+            doc_id: doc_id.to_string(),
+            book_id: book_id.to_string(),
+        },
+        store,
+    );
 }
 
 fn register(doc: Doc, store: AppStore) {
@@ -185,7 +286,7 @@ fn register(doc: Doc, store: AppStore) {
             },
         );
     });
-    start_cycle(&label);
+    begin(&label);
 }
 
 /// A local change landed — push it soon (debounced, so a burst of edits is one push).
@@ -199,6 +300,293 @@ pub fn nudge(label_owner: &str, is_book: bool) {
         format!("user:{label_owner}")
     };
     arm_timer(&label, NUDGE_DEBOUNCE_MS);
+}
+
+// ── Bodies: the yrs exchange (slices 4 and 5) ────────────────────────────────
+//
+// Since rinch #190 a body's CRDT is yrs, which reconciles in two fixed steps rather
+// than Automerge's multi-round loop: send a state vector, receive the update you lack
+// plus the peer's state vector, then send back what the peer lacks. Both directions
+// are opaque bytes through the `EditorHandle` seam, so this file needs no CRDT
+// dependency of its own.
+
+/// How often a book's unopened bodies are swept. Deliberately slower than the
+/// per-document poll: it is a catch-up pass, not a latency path.
+const SWEEP_INTERVAL_MS: u32 = 60_000;
+
+thread_local! {
+    /// Books with a sweep timer already armed, so re-registering a book doesn't stack
+    /// sweeps on top of each other.
+    static SWEEPING: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// Run one exchange for the open body `doc_id`.
+///
+/// Ends by republishing the local snapshot: the merged state must become the stored
+/// base, or a reopen would replay a delta log that never saw the peer's changes.
+fn exchange_body(label: String, doc: Doc) {
+    let Doc::Body { doc_id, .. } = &doc else {
+        return;
+    };
+    let doc_id = doc_id.clone();
+
+    let Some(Some(state_vector)) =
+        crate::local_store::with_body_session(&doc_id, |s| s.handle.collab_state_vector())
+    else {
+        finish(&label, true);
+        return;
+    };
+
+    let update_url = format!("{}/update", doc.url());
+    crate::api::post_bytes(&doc.url(), state_vector, move |result| match result {
+        Ok(framed) => {
+            let Some((diff, server_state_vector)) = unframe(&framed) else {
+                log::warn!("sync {label}: malformed exchange reply");
+                finish(&label, false);
+                return;
+            };
+
+            // Apply what we lack, through the attached session so the editor and the
+            // CRDT stay in step.
+            if !diff.is_empty() {
+                let applied = crate::local_store::with_body_session(&doc_id, |s| {
+                    s.handle.collab_receive(&diff)
+                });
+                if applied == Some(true) {
+                    let doc_id = doc_id.clone();
+                    crate::local_store::spawn(async move {
+                        if let Err(e) = crate::local_store::republish_body(&doc_id).await {
+                            log::warn!("sync {doc_id}: republish failed: {e}");
+                        }
+                    });
+                }
+            }
+
+            // Send back what the server lacks. `collab_sync_diff` is a pure read: it
+            // broadcasts nothing and leaves the local delta stream untouched.
+            let ours = crate::local_store::with_body_session(&doc_id, |s| {
+                s.handle.collab_sync_diff(&server_state_vector)
+            });
+            match ours {
+                Some(Some(update)) if !update.is_empty() => {
+                    crate::api::post_bytes(&update_url, update, move |result| match result {
+                        Ok(_) => finish(&label, true),
+                        Err(e) if e.status == 401 => park_unauthed(&label),
+                        Err(e) if e.status == 403 || e.status == 404 => {
+                            unregister(&label, e.status)
+                        }
+                        Err(_) => finish(&label, false),
+                    });
+                }
+                // Nothing to send, or the body closed under us.
+                _ => finish(&label, true),
+            }
+        }
+        Err(e) if e.status == 401 => park_unauthed(&label),
+        Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),
+        Err(_) => finish(&label, false),
+    });
+}
+
+/// Split the exchange reply: `[u32 LE length][diff][server state vector]`.
+fn unframe(framed: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    if framed.len() < 4 {
+        return None;
+    }
+    let len = u32::from_le_bytes(framed[0..4].try_into().ok()?) as usize;
+    let rest = framed.get(4..)?;
+    let diff = rest.get(..len)?.to_vec();
+    let state_vector = rest.get(len..)?.to_vec();
+    Some((diff, state_vector))
+}
+
+/// Arm the recurring sweep for `book_id` (idempotent).
+fn arm_sweep(book_id: &str) {
+    let fresh = SWEEPING.with(|s| s.borrow_mut().insert(book_id.to_string()));
+    if !fresh {
+        return;
+    }
+    schedule_sweep(book_id.to_string());
+}
+
+fn schedule_sweep(book_id: String) {
+    // `unowned` for the same reason the debounced saves are: a callback parked during
+    // a render dies with that scope (rinch #141), and the sync loop must outlive any
+    // component that happened to be rendering when a nudge armed it.
+    rinch_core::reactive::unowned(|| rinch_core::set_timeout(SWEEP_INTERVAL_MS, move || {
+        // Stop sweeping a book the author has left; the next open re-arms it.
+        if crate::local_book::open_book_id().as_deref() != Some(book_id.as_str()) {
+            SWEEPING.with(|s| {
+                s.borrow_mut().remove(&book_id);
+            });
+            return;
+        }
+        sweep_book(book_id.clone());
+        schedule_sweep(book_id);
+    }));
+}
+
+/// Bring the open book's *unopened* bodies up to date.
+///
+/// **Pull-only, by construction.** Editing a body requires its editor, so a body no
+/// editor holds cannot be ahead of the server — only behind. That turns the sweep into
+/// a fetch rather than a merge: no protocol, no CRDT library on this side, and no way
+/// for a background pass to disturb what an editor is showing.
+fn sweep_book(book_id: String) {
+    let url = format!("/api/books/{book_id}/sync/heads");
+    crate::api::get::<HashMap<String, Vec<String>>>(&url, move |result| {
+        let Ok(server) = result else { return };
+        for (doc_id, fingerprint) in server {
+            if !doc_id.starts_with("chapter:") && !doc_id.starts_with("note:") {
+                continue;
+            }
+            // The open body runs its own exchange.
+            if crate::local_store::body_is_open(&doc_id) {
+                continue;
+            }
+            let Some(fingerprint) = fingerprint.first().cloned() else {
+                continue;
+            };
+            pull_body(doc_id, book_id.clone(), fingerprint);
+        }
+    });
+}
+
+/// Fetch a body whose server fingerprint differs from the one we stored.
+fn pull_body(doc_id: String, book_id: String, fingerprint: String) {
+    crate::local_store::spawn(async move {
+        match crate::local_store::body_fingerprint(&doc_id).await {
+            Ok(Some(known)) if known == fingerprint => return,
+            Ok(_) => {}
+            Err(e) => {
+                log::warn!("sync sweep {doc_id}: {e}");
+                return;
+            }
+        }
+        let url = format!("/api/books/{book_id}/sync/{doc_id}");
+        crate::api::get_bytes(&url, move |result| {
+            let Ok(Some(bytes)) = result else { return };
+            crate::local_store::spawn(async move {
+                if let Err(e) =
+                    crate::local_store::install_headless_body(&doc_id, &bytes, &fingerprint).await
+                {
+                    log::warn!("sync sweep {doc_id}: install failed: {e}");
+                }
+            });
+        });
+    });
+}
+
+// ── Provenance handshake for bodies (design §D8) ─────────────────────────────
+
+/// Establish shared history with the server before a body's first exchange, then
+/// start syncing it.
+///
+/// A body doc seeded from REST shares no history with the server's canonical copy of
+/// the same chapter, so merging the two would concatenate rather than deduplicate.
+/// Exactly one of two things must happen first:
+///
+/// - **We claim it.** The canonical copy is still the migration backfill's — frozen at
+///   backfill time while git moved on — so it is provisional and we replace it with
+///   our git-current document.
+/// - **We take theirs.** Another device already owns it; our copy is the disjoint one,
+///   so we install the server's wholesale.
+///
+/// Only after that does the protocol run. Structure docs skip all of this: they are
+/// created by the client and the server has no independently-built copy.
+fn establish_body_provenance(label: String, doc: Doc) {
+    let Doc::Body { doc_id, .. } = &doc else {
+        start_cycle(&label);
+        return;
+    };
+    let doc_id = doc_id.clone();
+
+    let known = crate::local_store::with_body_session(&doc_id, |s| s.handle.collab_snapshot());
+    let Some(Some(snapshot)) = known else {
+        // The body closed before we got to it.
+        return;
+    };
+
+    let claim_url = format!("{}/adopt", doc.url());
+    crate::api::post_bytes(&claim_url, snapshot, move |result| match result {
+        Ok(body) => {
+            let adopted = serde_json::from_slice::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["adopted"].as_bool())
+                .unwrap_or(false);
+            if adopted {
+                // Ours is canonical now; the histories match by construction.
+                let (label, doc_id) = (label.clone(), doc_id.clone());
+                crate::local_store::spawn(async move {
+                    if let Err(e) = crate::local_store::mark_body_shares_server_history(&doc_id).await
+                    {
+                        log::warn!("sync {doc_id}: {e}");
+                    }
+                    start_cycle(&label);
+                });
+            } else {
+                take_server_body(label, doc, doc_id);
+            }
+        }
+        Err(e) if e.status == 401 => park_unauthed(&label),
+        Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),
+        Err(_) => finish(&label, false),
+    });
+}
+
+/// Install the server's canonical body document over ours, then start syncing.
+fn take_server_body(label: String, doc: Doc, doc_id: String) {
+    crate::api::get_bytes(&doc.url(), move |result| match result {
+        // No canonical copy at all: nothing to reconcile, our document stands and the
+        // first exchange will establish it server-side.
+        Ok(None) => {
+            let (label, doc_id) = (label.clone(), doc_id.clone());
+            crate::local_store::spawn(async move {
+                if let Err(e) =
+                    crate::local_store::mark_body_shares_server_history(&doc_id).await
+                {
+                    log::warn!("sync {doc_id}: {e}");
+                }
+                start_cycle(&label);
+            });
+        }
+        Ok(Some(bytes)) => {
+            let (label, doc_id) = (label.clone(), doc_id.clone());
+            crate::local_store::spawn(async move {
+                match crate::local_store::install_server_body(&doc_id, &bytes).await {
+                    // Installed: our document now descends from the server's.
+                    Ok(true) => start_cycle(&label),
+                    // The body closed, or the server's document is outside the collab
+                    // scope. Leave it unsynced rather than risk a duplicate merge.
+                    Ok(false) => {}
+                    Err(e) => log::warn!("sync {doc_id}: install failed: {e}"),
+                }
+            });
+        }
+        Err(e) if e.status == 401 => park_unauthed(&label),
+        Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),
+        Err(_) => finish(&label, false),
+    });
+}
+
+/// Park a document as signed-out: stop, quietly, until the next sign-in.
+fn park_unauthed(label: &str) {
+    log::info!("sync {label}: not signed in; pausing sync");
+    ENGINE.with(|eng| {
+        if let Some(entry) = eng.borrow_mut().get_mut(label) {
+            entry.phase = Phase::Unauthed;
+            entry.again = false;
+        }
+    });
+}
+
+/// Drop a document that isn't ours or no longer exists — retrying cannot help.
+fn unregister(label: &str, status: u16) {
+    log::warn!("sync {label}: rejected ({status}); unregistering");
+    ENGINE.with(|eng| {
+        eng.borrow_mut().remove(label);
+    });
 }
 
 // ── The cycle ────────────────────────────────────────────────────────────────
@@ -224,7 +612,30 @@ fn start_cycle(label: &str) {
         }
     });
     if ready {
-        round(label.to_string(), Rc::new(RefCell::new(SyncState::new())), 0);
+        match doc_of(label) {
+            Some(doc @ Doc::Body { .. }) => exchange_body(label.to_string(), doc),
+            _ => round(label.to_string(), Rc::new(RefCell::new(SyncState::new())), 0),
+        }
+    }
+}
+
+/// Entry point for a freshly-registered document: a body must settle provenance
+/// before its first exchange (§D8); everything else can start syncing at once.
+fn begin(label: &str) {
+    match doc_of(label) {
+        Some(doc @ Doc::Body { .. }) => {
+            let doc_id = doc.label();
+            let label = label.to_string();
+            crate::local_store::spawn(async move {
+                match crate::local_store::body_shares_server_history(&doc_id).await {
+                    Ok(true) => start_cycle(&label),
+                    Ok(false) => establish_body_provenance(label, doc),
+                    Err(e) => log::warn!("sync {doc_id}: provenance read failed: {e}"),
+                }
+            });
+        }
+        Some(_) => start_cycle(label),
+        None => {}
     }
 }
 
@@ -242,14 +653,13 @@ fn round(label: String, state: Rc<RefCell<SyncState>>, n: u32) {
     }
 
     // Termination is ours: the server is stateless and always replies.
-    let outgoing = doc.with_doc(|d| d.sync().generate_sync_message(&mut state.borrow_mut()));
-    let Some(Some(msg)) = outgoing else {
+    let Some(msg) = doc.generate(&mut state.borrow_mut()) else {
         finish(&label, true);
         return;
     };
 
     let url = doc.url();
-    crate::api::post_bytes(&url, msg.encode(), move |result| match result {
+    crate::api::post_bytes(&url, msg, move |result| match result {
         Ok(reply) => {
             if reply.is_empty() {
                 finish(&label, true);
@@ -258,12 +668,11 @@ fn round(label: String, state: Rc<RefCell<SyncState>>, n: u32) {
             let Some(doc) = doc_of(&label) else { return };
             match SyncMessage::decode(&reply) {
                 Ok(message) => {
-                    let integrated = doc.with_doc(|d| {
-                        d.sync()
-                            .receive_sync_message(&mut state.borrow_mut(), message)
-                            .is_ok()
-                    });
-                    match integrated {
+                    // Scoped so the borrow ends before `state` moves into the next
+                    // round.
+                    let outcome = doc.integrate(&mut state.borrow_mut(), message);
+                    match outcome {
+                        // Changed: persist (and re-project, for the structure docs).
                         Some(true) => {
                             STORE.with(|s| {
                                 if let Some(store) = s.borrow().as_ref() {
@@ -272,8 +681,11 @@ fn round(label: String, state: Rc<RefCell<SyncState>>, n: u32) {
                             });
                             round(label, state, n + 1);
                         }
-                        // The doc closed under us, or the message was rejected.
-                        _ => finish(&label, false),
+                        // Accepted but nothing moved — keep the exchange going; our
+                        // own `generate` returning `None` is what ends it.
+                        Some(false) => round(label, state, n + 1),
+                        // The document closed under us.
+                        None => finish(&label, false),
                     }
                 }
                 Err(e) => {
@@ -283,22 +695,9 @@ fn round(label: String, state: Rc<RefCell<SyncState>>, n: u32) {
             }
         }
         // Signed out: stop, quietly, until the next sign-in re-registers us.
-        Err(e) if e.status == 401 => {
-            log::info!("sync {label}: not signed in; pausing sync");
-            ENGINE.with(|eng| {
-                if let Some(entry) = eng.borrow_mut().get_mut(&label) {
-                    entry.phase = Phase::Unauthed;
-                    entry.again = false;
-                }
-            });
-        }
+        Err(e) if e.status == 401 => park_unauthed(&label),
         // 403/404 — not ours, or gone. Retrying can't help; drop the registration.
-        Err(e) if e.status == 403 || e.status == 404 => {
-            log::warn!("sync {label}: rejected ({}); unregistering", e.status);
-            ENGINE.with(|eng| {
-                eng.borrow_mut().remove(&label);
-            });
-        }
+        Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),
         // Offline (status 0) or a server error: back off and try later.
         Err(e) => {
             log::debug!("sync {label}: {} {}", e.status, e.message);
@@ -362,14 +761,14 @@ fn arm_timer(label: &str, delay_ms: u32) {
         return;
     }
     let label = label.to_string();
-    rinch_core::set_timeout(delay_ms, move || {
+    rinch_core::reactive::unowned(|| rinch_core::set_timeout(delay_ms, move || {
         ENGINE.with(|e| {
             if let Some(entry) = e.borrow_mut().get_mut(&label) {
                 entry.armed = false;
             }
         });
         start_cycle(&label);
-    });
+    }));
 }
 
 fn doc_of(label: &str) -> Option<Doc> {
@@ -396,5 +795,20 @@ mod tests {
             "/api/books/b1/sync/book:b1",
             "the book doc syncs on its own book's route"
         );
+    }
+}
+
+#[cfg(test)]
+mod seam_canary {
+    /// The `rinch` pin must carry the collaboration reconciliation seam on
+    /// `EditorHandle`. Body sync is built on these three, and they are what rinch #190
+    /// left in place of #182's Automerge trio, so a pin that slips to either side of
+    /// that change fails here — loudly, at compile time — rather than at runtime.
+    #[test]
+    fn the_editor_handle_exposes_the_reconciliation_seam() {
+        use crate::rinch_backend::EditorHandle;
+        let _state_vector: fn(&EditorHandle) -> Option<Vec<u8>> = EditorHandle::collab_state_vector;
+        let _diff: fn(&EditorHandle, &[u8]) -> Option<Vec<u8>> = EditorHandle::collab_sync_diff;
+        let _receive: fn(&EditorHandle, &[u8]) -> bool = EditorHandle::collab_receive;
     }
 }

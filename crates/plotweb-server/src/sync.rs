@@ -243,6 +243,111 @@ fn now_stamp() -> String {
 /// "client pushes local as canonical" case (a doc created offline, or one the
 /// migration flagged and left git-only). Route-level authorization decides *whether*
 /// this doc-id is allowed to exist at all — this function never sees an unvetted id.
+/// The heads (change frontier) the server holds for each of `doc_ids` that it has a
+/// canonical copy of. Ids with no canonical document are simply absent.
+///
+/// Lets a client skip documents it is already level with instead of paying a round
+/// trip per document per poll — the difference between a constant trickle and a burst
+/// of requests for a book with many chapters. Read from the manifests; no document is
+/// loaded.
+pub fn canonical_heads(
+    crdt_dir: &Path,
+    doc_ids: &[String],
+) -> Result<HashMap<String, Vec<String>>, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let mut out = HashMap::new();
+    for doc_id in doc_ids {
+        if let Some(manifest) = read_manifest(&store, doc_id)? {
+            // Only **client-owned** documents are listed. A pristine backfill blob is
+            // frozen at backfill time while git kept moving, so a client that cached
+            // it would show backfill-era text — and, because a local body doc wins
+            // over the REST copy when a chapter is opened, would then autosave that
+            // stale text over the current content. Such a document becomes safe to
+            // share only once a device claims it (`adopt`), which republishes it from
+            // git-current content.
+            if manifest.synced_at.is_none() {
+                continue;
+            }
+            out.insert(doc_id.clone(), manifest.heads);
+        }
+    }
+    Ok(out)
+}
+
+/// The canonical document's full snapshot bytes, or `None` when the server has never
+/// held this document. Read-only.
+pub fn canonical_snapshot(crdt_dir: &Path, doc_id: &str) -> Result<Option<Vec<u8>>, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let manifest = read_manifest(&store, doc_id)?;
+    load_snapshot(&store, doc_id, manifest.as_ref())
+}
+
+/// Outcome of a client's bid to take ownership of a document (see [`adopt_doc`]).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Adoption {
+    /// The canonical doc was replaced by the client's; it now owns this document.
+    Adopted,
+    /// A client already owns this document — use the sync protocol, not adoption.
+    AlreadyOwned,
+}
+
+/// Let a client replace a **pristine** canonical document with its own.
+///
+/// Needed only for the migration era, and only for bodies. The phase-C backfill
+/// projected each git document into an Automerge doc, but git keeps moving: every
+/// REST save since is in git and *not* in that blob, so the canonical copy of a body
+/// is frozen at backfill time. Neither of the obvious moves is safe:
+///
+/// - **Merging** the client's doc with the backfilled one concatenates rather than
+///   deduplicates — they share no history (`docs/sync-engine-design.md` §D8), so the
+///   author would see their chapter twice.
+/// - **Adopting the server's** could hand back backfill-era text, older than git, and
+///   the client's autosave would then write that over the current content.
+///
+/// So the backfill blob is treated as **provisional**: the first client to sync a
+/// document replaces it with its own git-current doc and takes ownership. Afterwards
+/// (`synced_at` present) this returns [`Adoption::AlreadyOwned`] and callers must use
+/// the sync protocol — adoption would discard a peer's changes.
+pub fn adopt_doc(
+    crdt_dir: &Path,
+    doc_id: &str,
+    doc_type: &str,
+    full_doc: &[u8],
+) -> Result<Adoption, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+
+    let manifest = read_manifest(&store, doc_id)?;
+    if manifest.as_ref().is_some_and(|m| m.synced_at.is_some()) {
+        return Ok(Adoption::AlreadyOwned);
+    }
+
+    // Validate before writing: a doc we can't load is not a doc we should canonicalize.
+    // Bodies are yrs (rinch #190), structure docs are Automerge — validate as whichever
+    // this is, and record the matching fingerprint.
+    let heads: Vec<String> = if is_body_doc(doc_id) {
+        use yrs::updates::decoder::Decode;
+        use yrs::Transact;
+        let doc = yrs::Doc::new();
+        let update = yrs::Update::decode_v1(full_doc)
+            .map_err(|e| SyncError::BadMessage(format!("not a yrs update: {e}")))?;
+        doc.transact_mut()
+            .apply_update(update)
+            .map_err(|e| SyncError::BadMessage(format!("unusable yrs document: {e}")))?;
+        vec![body_fingerprint(full_doc)]
+    } else {
+        let mut doc = AutoCommit::load(full_doc).map_err(|e| {
+            SyncError::BadMessage(format!("not a loadable Automerge document: {e}"))
+        })?;
+        doc.get_heads().iter().map(|h| h.to_string()).collect()
+    };
+
+    save_snapshot(&store, doc_id, doc_type, manifest.as_ref(), full_doc, heads)?;
+    Ok(Adoption::Adopted)
+}
+
 pub fn sync_round(
     crdt_dir: &Path,
     doc_id: &str,
@@ -323,6 +428,135 @@ fn block_on<F: Future>(fut: F) -> F::Output {
     }
 }
 
+// ── Body documents: yrs (rinch #190) ─────────────────────────────────────────
+//
+// The editor's CRDT moved from Automerge to yrs, so `chapter:` / `note:` documents
+// are yrs updates while `book:` / `user:` — which PlotWeb builds itself — stay
+// Automerge. The canonical store holds both; the doc-id prefix says which.
+//
+// yrs reconciles with a state vector and a diff rather than a multi-round protocol,
+// which suits a stateless HTTP server better than Automerge's did: no per-peer state
+// to fake, and an exchange is a fixed two steps (ask with a state vector, answer with
+// the update the asker lacks; then send back what the answerer lacks).
+
+/// Whether `doc_id` names a body document (editor-owned, therefore yrs).
+pub fn is_body_doc(doc_id: &str) -> bool {
+    doc_id.starts_with("chapter:") || doc_id.starts_with("note:")
+}
+
+/// Load the canonical yrs document for `doc_id`.
+///
+/// A body blob written before the yrs move is an Automerge document and cannot be
+/// decoded here. Rather than fail, it is treated as absent: the client then adopts
+/// (its own document is git-current, per §D8) and the stale blob is overwritten. That
+/// is also what makes the phase-C body backfill's output disposable.
+fn load_body_doc(store: &FsStore, doc_id: &str) -> Result<(yrs::Doc, bool), SyncError> {
+    use yrs::updates::decoder::Decode;
+    use yrs::{ReadTxn, Transact};
+
+    let manifest = read_manifest(store, doc_id)?;
+    let doc = yrs::Doc::new();
+    let Some(bytes) = load_snapshot(store, doc_id, manifest.as_ref())? else {
+        return Ok((doc, false));
+    };
+    let Ok(update) = yrs::Update::decode_v1(&bytes) else {
+        println!("[sync] {doc_id}: canonical blob predates the yrs move; treating as absent");
+        return Ok((doc, false));
+    };
+    {
+        let mut txn = doc.transact_mut();
+        if txn.apply_update(update).is_err() {
+            return Ok((yrs::Doc::new(), false));
+        }
+        let _ = txn.state_vector();
+    }
+    Ok((doc, true))
+}
+
+/// The whole document as one update — how a body is stored and handed out.
+fn body_bytes(doc: &yrs::Doc) -> Vec<u8> {
+    use yrs::{ReadTxn, StateVector, Transact};
+    doc.transact().encode_state_as_update_v1(&StateVector::default())
+}
+
+/// Answer a client's state vector: the update it is missing, plus ours so it can
+/// work out what *we* are missing. Purely a read — the canonical document is
+/// untouched, so any number of devices can ask concurrently.
+pub fn body_exchange(
+    crdt_dir: &Path,
+    doc_id: &str,
+    client_state_vector: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), SyncError> {
+    use yrs::updates::decoder::Decode;
+    use yrs::updates::encoder::Encode;
+    use yrs::{ReadTxn, StateVector, Transact};
+
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let (doc, _) = load_body_doc(&store, doc_id)?;
+
+    let client_sv = StateVector::decode_v1(client_state_vector)
+        .map_err(|e| SyncError::BadMessage(format!("not a state vector: {e}")))?;
+    let txn = doc.transact();
+    Ok((
+        txn.encode_diff_v1(&client_sv),
+        txn.state_vector().encode_v1(),
+    ))
+}
+
+/// Apply a client's update to the canonical body document and republish it.
+///
+/// Returns whether the document actually moved. yrs is idempotent about updates it
+/// already has, so a repeat delivery is a no-op rather than a duplication.
+pub fn body_apply(
+    crdt_dir: &Path,
+    doc_id: &str,
+    doc_type: &str,
+    update: &[u8],
+) -> Result<bool, SyncError> {
+    use yrs::updates::decoder::Decode;
+    use yrs::Transact;
+
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let (doc, existed) = load_body_doc(&store, doc_id)?;
+
+    let update = yrs::Update::decode_v1(update)
+        .map_err(|e| SyncError::BadMessage(format!("not a yrs update: {e}")))?;
+    let before = body_bytes(&doc);
+    {
+        let mut txn = doc.transact_mut();
+        txn.apply_update(update)
+            .map_err(|e| SyncError::Automerge(format!("apply update: {e}")))?;
+    }
+    let after = body_bytes(&doc);
+    if existed && after == before {
+        return Ok(false);
+    }
+
+    let manifest = read_manifest(&store, doc_id)?;
+    save_snapshot(
+        &store,
+        doc_id,
+        doc_type,
+        manifest.as_ref(),
+        &after,
+        // yrs has no head hashes; the fingerprint below is what a sweep compares.
+        vec![body_fingerprint(&after)],
+    )?;
+    Ok(true)
+}
+
+/// A content fingerprint for a body document, used where Automerge would use heads.
+///
+/// A yrs **state vector deliberately is not** one: it counts insertions, so a
+/// delete-only change (or a mark removal, which the engine implements by deleting
+/// format markers) leaves it untouched. Hashing the encoded document catches those.
+pub fn body_fingerprint(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +565,9 @@ mod tests {
 
     /// One poll cycle, exactly as the real client runs it: a **fresh** `SyncState`,
     /// then round-trip until *our* `generate_sync_message` returns `None`.
+    ///
+    /// Structure documents (`book:` / `user:`) — bodies moved to yrs with rinch #190
+    /// and are covered by `tests/sync.rs`'s `BodyDevice`, which speaks that protocol.
     fn converge(dir: &Path, doc_id: &str, doc: &mut AutoCommit) -> usize {
         let state = &mut SyncState::new();
         let mut rounds = 0;
@@ -339,7 +576,7 @@ mod tests {
         loop {
             let outgoing = doc.sync().generate_sync_message(state);
             let Some(msg) = outgoing else { break };
-            let reply = sync_round(dir, doc_id, "chapter", &msg.encode()).expect("sync round");
+            let reply = sync_round(dir, doc_id, "book", &msg.encode()).expect("sync round");
             rounds += 1;
             assert!(rounds < 20, "sync did not converge");
             if reply.is_empty() {
@@ -359,11 +596,11 @@ mod tests {
 
         let mut a = AutoCommit::new();
         a.put(ROOT, "title", "The Lantern").unwrap();
-        converge(dir.path(), "chapter:x", &mut a);
+        converge(dir.path(), "book:x", &mut a);
 
         // A second, empty client pulls it down.
         let mut b = AutoCommit::new();
-        converge(dir.path(), "chapter:x", &mut b);
+        converge(dir.path(), "book:x", &mut b);
 
         assert_eq!(
             b.get(ROOT, "title").unwrap().unwrap().0.to_str(),
@@ -378,15 +615,15 @@ mod tests {
 
         let mut a = AutoCommit::new();
         a.put(ROOT, "a", "from A").unwrap();
-        converge(dir.path(), "chapter:y", &mut a);
+        converge(dir.path(), "book:y", &mut a);
 
         let mut b = AutoCommit::new();
-        converge(dir.path(), "chapter:y", &mut b);
+        converge(dir.path(), "book:y", &mut b);
         b.put(ROOT, "b", "from B").unwrap();
-        converge(dir.path(), "chapter:y", &mut b);
+        converge(dir.path(), "book:y", &mut b);
 
         // A pulls B's edit back down.
-        converge(dir.path(), "chapter:y", &mut a);
+        converge(dir.path(), "book:y", &mut a);
 
         for doc in [&a, &b] {
             assert_eq!(doc.get(ROOT, "a").unwrap().unwrap().0.to_str(), Some("from A"));
@@ -400,17 +637,17 @@ mod tests {
 
         let mut a = AutoCommit::new();
         a.put(ROOT, "k", "v").unwrap();
-        converge(dir.path(), "chapter:z", &mut a);
+        converge(dir.path(), "book:z", &mut a);
 
         let store = FsStore::open(dir.path().to_path_buf()).unwrap();
-        let after_first = read_manifest(&store, "chapter:z").unwrap().unwrap();
+        let after_first = read_manifest(&store, "book:z").unwrap().unwrap();
 
         // A fresh peer that already holds the same doc: it must not move the canonical
         // generation (a pure catch-up is a read).
         let mut b = AutoCommit::load(&a.save()).unwrap();
-        converge(dir.path(), "chapter:z", &mut b);
+        converge(dir.path(), "book:z", &mut b);
 
-        let after_second = read_manifest(&store, "chapter:z").unwrap().unwrap();
+        let after_second = read_manifest(&store, "book:z").unwrap().unwrap();
         assert_eq!(
             after_first.generation, after_second.generation,
             "an up-to-date client must not cause a canonical rewrite"
@@ -424,17 +661,17 @@ mod tests {
 
         for i in 0..3 {
             a.put(ROOT, format!("k{i}"), i).unwrap();
-            converge(dir.path(), "chapter:g", &mut a);
+            converge(dir.path(), "book:g", &mut a);
         }
 
         let store = FsStore::open(dir.path().to_path_buf()).unwrap();
-        let manifest = read_manifest(&store, "chapter:g").unwrap().unwrap();
+        let manifest = read_manifest(&store, "book:g").unwrap().unwrap();
         assert!(manifest.synced_at.is_some(), "sync stamps synced_at");
         assert_eq!(manifest.heads.len(), 1);
 
         // Exactly one generation survives (plus the manifest).
-        let keys = block_on(store.list("chapter:g/")).unwrap();
-        let live = format!("chapter:g/{}/", manifest.generation.as_deref().unwrap());
+        let keys = block_on(store.list("book:g/")).unwrap();
+        let live = format!("book:g/{}/", manifest.generation.as_deref().unwrap());
         assert!(
             keys.iter()
                 .all(|k| k.ends_with("/manifest") || k.starts_with(&live)),
@@ -442,7 +679,7 @@ mod tests {
         );
 
         // And it still loads.
-        let bytes = load_snapshot(&store, "chapter:g", Some(&manifest))
+        let bytes = load_snapshot(&store, "book:g", Some(&manifest))
             .unwrap()
             .unwrap();
         let reloaded = AutoCommit::load(&bytes).unwrap();
@@ -457,18 +694,18 @@ mod tests {
         // A backfilled doc, never yet synced.
         let mut canonical = AutoCommit::new();
         canonical.put(ROOT, "from", "git").unwrap();
-        block_on(store.put("chapter:p/snapshot", &canonical.save())).unwrap();
+        block_on(store.put("book:p/snapshot", &canonical.save())).unwrap();
         block_on(store.put(
-            "chapter:p/manifest",
-            br#"{"doc_id":"chapter:p","type":"chapter","src_sha":"abc","projection":"automerge-snapshot-v1"}"#,
+            "book:p/manifest",
+            br#"{"doc_id":"book:p","type":"book","src_sha":"abc","projection":"automerge-snapshot-v1"}"#,
         ))
         .unwrap();
 
         // A device only *reads* it — no local edits at all.
         let mut client = AutoCommit::new();
-        converge(dir.path(), "chapter:p", &mut client);
+        converge(dir.path(), "book:p", &mut client);
 
-        let manifest = read_manifest(&store, "chapter:p").unwrap().unwrap();
+        let manifest = read_manifest(&store, "book:p").unwrap().unwrap();
         assert!(
             manifest.synced_at.is_some(),
             "a pull hands this doc's history to a client, so the backfill must be locked \
@@ -490,17 +727,17 @@ mod tests {
         // a manifest with no generation, and a src-sha.
         let mut canonical = AutoCommit::new();
         canonical.put(ROOT, "from", "git").unwrap();
-        block_on(store.put("chapter:m/snapshot", &canonical.save())).unwrap();
+        block_on(store.put("book:m/snapshot", &canonical.save())).unwrap();
         block_on(store.put(
-            "chapter:m/manifest",
-            br#"{"doc_id":"chapter:m","type":"chapter","src_sha":"abc","projection":"automerge-snapshot-v1"}"#,
+            "book:m/manifest",
+            br#"{"doc_id":"book:m","type":"book","src_sha":"abc","projection":"automerge-snapshot-v1"}"#,
         ))
         .unwrap();
-        block_on(store.put("chapter:m/src-sha", b"abc")).unwrap();
+        block_on(store.put("book:m/src-sha", b"abc")).unwrap();
 
         // A fresh client syncs: it must receive the backfilled content.
         let mut client = AutoCommit::new();
-        converge(dir.path(), "chapter:m", &mut client);
+        converge(dir.path(), "book:m", &mut client);
         assert_eq!(
             client.get(ROOT, "from").unwrap().unwrap().0.to_str(),
             Some("git"),
@@ -509,9 +746,9 @@ mod tests {
 
         // Then it edits, which moves the canonical doc onto a generation.
         client.put(ROOT, "edited", true).unwrap();
-        converge(dir.path(), "chapter:m", &mut client);
+        converge(dir.path(), "book:m", &mut client);
 
-        let manifest = read_manifest(&store, "chapter:m").unwrap().unwrap();
+        let manifest = read_manifest(&store, "book:m").unwrap().unwrap();
         assert!(manifest.generation.is_some(), "first save assigns a generation");
         assert_eq!(
             manifest.src_sha.as_deref(),
@@ -520,7 +757,7 @@ mod tests {
         );
         assert!(manifest.synced_at.is_some());
         assert!(
-            block_on(store.get("chapter:m/src-sha")).unwrap().is_some(),
+            block_on(store.get("book:m/src-sha")).unwrap().is_some(),
             "the backfill's src-sha key must survive the sweep"
         );
     }
@@ -528,13 +765,14 @@ mod tests {
     #[test]
     fn a_malformed_message_is_rejected_without_touching_the_store() {
         let dir = tempfile::tempdir().unwrap();
-        let err = sync_round(dir.path(), "chapter:bad", "chapter", b"not a sync message");
+        let err = sync_round(dir.path(), "book:bad", "chapter", b"not a sync message");
         assert!(matches!(err, Err(SyncError::BadMessage(_))), "{err:?}");
 
         let store = FsStore::open(dir.path().to_path_buf()).unwrap();
         assert!(
-            block_on(store.list("chapter:bad/")).unwrap().is_empty(),
+            block_on(store.list("book:bad/")).unwrap().is_empty(),
             "a rejected message must not create a canonical doc"
         );
     }
 }
+

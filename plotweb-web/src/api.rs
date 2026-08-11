@@ -121,6 +121,28 @@ pub struct BinError {
     pub message: String,
 }
 
+/// `GET url`, yielding the raw response bytes. `Ok(None)` for `204 No Content`.
+///
+/// Used to fetch a canonical Automerge document whole — see the sync engine's
+/// provenance handshake.
+pub fn get_bytes(url: &str, on_done: impl FnOnce(Result<Option<Vec<u8>>, BinError>) + 'static) {
+    let req = Request::get(&full_url(url));
+    fetch(req, move |res| {
+        on_done(match res {
+            Err(e) => Err(BinError {
+                status: 0,
+                message: e.to_string(),
+            }),
+            Ok(resp) if resp.status == 204 => Ok(None),
+            Ok(resp) if resp.status >= 400 => Err(BinError {
+                status: resp.status,
+                message: resp.text(),
+            }),
+            Ok(resp) => Ok(Some(resp.body)),
+        })
+    });
+}
+
 /// `POST url` with a raw byte body, yielding the raw response bytes.
 ///
 /// The sync endpoints speak `application/octet-stream` in both directions

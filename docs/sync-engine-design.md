@@ -288,8 +288,9 @@ serializes; both converge).
 
 ## 8. Slices (each shippable, verifiable, reversible)
 
-Status: **slices 0, 1 and 3 are done**, as is handoff step ② (`user:` backfill). Slice 2
-(the upstream rinch seam) and slice 4 (bodies) are the next work; 5–6 remain optional.
+Status: **slices 0–5 are done**, as is handoff step ② (`user:` backfill). Slice 2 merged
+upstream as rinch PR #182 and was then superseded by #190's move to yrs; bodies now use
+that engine's seam instead (§8b). Slice 6 (WebSocket transport) remains optional.
 
 **Slice 0 — remove the spike relay.** ✅ `routes/sync.rs`'s three routes are live in
 production, unauthenticated, and back an unbounded process-global `HashMap` any anonymous
@@ -369,7 +370,23 @@ Note also that both defects were invisible natively (the storage futures resolve
 poll, so those windows never open) — so slice 4 needs browser verification, not only the
 usual native MCP drive.
 
-**Slice 5 — `heads` listing + background sweep** (§D6) if polling cost warrants.
+**Slice 5 — `heads` listing + background sweep.** ✅ `GET /api/books/{id}/sync/heads`
+returns one map of doc-id → heads, so a sweep costs a single request for a quiet book
+instead of one per chapter. Every 60s the client reconciles the open book's bodies that
+no editor holds, driving them "headless" (the stored document loaded as a plain
+`AutoCommit`, no editor involved) and fetching outright any it has never stored.
+
+Two rules keep it safe:
+
+- **The listing reports only client-owned documents.** A pristine backfill blob is
+  frozen at backfill time while git kept moving, so a device that cached one would show
+  backfill-era text — and, since a local body doc wins over the REST copy on open, would
+  then autosave that stale text over current content. Such a document becomes shareable
+  only once a device claims it via `adopt`, which republishes it from git-current
+  content.
+- **The sweep never runs the §D8 handshake.** Settling provenance can replace editor
+  content, which is not something a background pass should do; a locally-seeded document
+  waits until its author opens it.
 
 **Slice 6 — optional WS live transport** (`rinch-ws`). Transport swap only.
 
@@ -378,6 +395,46 @@ behind a client flag (`PLOTWEB_SYNC=1` natively / a build flag on web) until pro
 today's behaviour exactly.
 
 ---
+
+## 8b. Two CRDTs, and why
+
+rinch #190 replaced Automerge with **yrs** inside `rinch-editor-collab`, so the engine
+behind a chapter or note body changed under us. PlotWeb now runs both, split by what
+owns the document:
+
+| Documents | CRDT | Owned by | Reconciles via |
+|---|---|---|---|
+| `user:` / `book:` (structure) | Automerge | PlotWeb (`local_user` / `local_book`, `plotweb-crdt`) | Automerge sync protocol |
+| `chapter:` / `note:` (bodies) | yrs | the editor (`rinch-editor-collab`) | state vector + diff |
+
+The server routes on the doc-id prefix; nothing else needs to know. Porting the
+structure docs to yrs as well would buy consistency and little else — they are ours,
+they work, and their protocol is already proven.
+
+**The body exchange is two fixed steps**, not Automerge's loop: `POST .../sync/{doc}`
+carries the client's state vector and returns `[u32 LE length][diff][server state
+vector]`; the client applies the diff and posts what the server lacks to
+`POST .../sync/{doc}/update`. This suits a stateless server *better* than Automerge
+did — there is no per-peer state to fake, so §D5's "fresh `SyncState` per poll" rule
+simply does not arise for bodies.
+
+**A yrs state vector is not a fingerprint.** It counts insertions, so a delete-only
+change (or a mark removal, which the engine implements by deleting format markers)
+leaves it untouched. Where Automerge would compare heads — the sweep's "did this
+move?" check — bodies compare a hash of the encoded document instead
+(`sync::body_fingerprint`).
+
+**The sweep is pull-only for bodies**, and can be: editing a body requires its editor,
+so a body no editor holds cannot be ahead of the server, only behind. That removes any
+need for a CRDT library on the client at all — every byte crossing the `EditorHandle`
+seam is opaque.
+
+**Migration fallout, deliberate:** body blobs written by the phase-C backfill under
+Automerge are undecodable as yrs. `sync::load_body_doc` treats such a blob as absent,
+so the first client to sync simply claims the document (§D8) and overwrites it, and a
+re-run of the backfill emits yrs. Local body docs from the Automerge era are discarded
+by the `BODY_STORE_VERSION` bump. Nothing is lost: git remains authoritative and every
+body re-seeds from it.
 
 ## 9. Open questions
 

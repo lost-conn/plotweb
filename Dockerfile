@@ -6,10 +6,9 @@
 # ------ Stage 1: Build the WASM frontend with Trunk ---------
 FROM rust:1.88-bookworm AS frontend
 
-# Pinned to rinch origin/main (includes the new ProseMirror-style rich-text
-# editor, PR #65, plus the earlier rsx capture-scanner if-let fix). Repin to a
-# newer origin/main commit as rinch evolves.
-ARG RINCH_COMMIT=f7e1c37a0c50b33bdaeccef3cec69722e30702ac
+# rinch origin/main. Body documents are yrs from #190 onward, structure documents stay
+# Automerge — see docs/sync-engine-design.md §8b for the split and what it costs.
+ARG RINCH_COMMIT=a1b2702
 ARG RINCH_REPO=https://github.com/joeleaver/rinch.git
 
 RUN apt-get update && apt-get install -y --no-install-recommends git \

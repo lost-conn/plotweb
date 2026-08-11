@@ -24,3 +24,6 @@ android/app/build/
 android/captures/
 android/local.properties
 android/**/*.iml
+
+# Playwright artifacts from an e2e run launched inside the crate dir
+plotweb-web/test-results/

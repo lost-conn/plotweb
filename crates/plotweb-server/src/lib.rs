@@ -122,12 +122,32 @@ pub fn api_router(state: AppState) -> Router {
             "/api/auth/reset-password",
             post(routes::auth::reset_password),
         )
-        // Phase-0 spike: dumb Automerge sync relay (no auth).
         // Automerge sync (Phase 2). Book-scoped so authorization is the existing
         // ownership check; `user:` is implicitly the session's own doc.
         .route(
             "/api/books/{book_id}/sync/{doc_id}",
             post(routes::sync::sync_book_doc)
+                .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY)),
+        )
+        .route(
+            "/api/books/{book_id}/sync/{doc_id}",
+            get(routes::sync::get_canonical_doc),
+        )
+        // Static segment, matched ahead of `{doc_id}` above.
+        .route(
+            "/api/books/{book_id}/sync/heads",
+            get(routes::sync::get_book_heads),
+        )
+        // Migration-era ownership handover for a doc still holding the backfill's
+        // canonical copy (see routes::sync::adopt_book_doc).
+        .route(
+            "/api/books/{book_id}/sync/{doc_id}/update",
+            post(routes::sync::apply_body_update)
+                .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY)),
+        )
+        .route(
+            "/api/books/{book_id}/sync/{doc_id}/adopt",
+            post(routes::sync::adopt_book_doc)
                 .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY)),
         )
         .route(

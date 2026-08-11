@@ -26,9 +26,13 @@ plotweb-crdt = { path = "../plotweb-crdt" }
 # the sync protocol). Same 0.5 line as plotweb-crdt / rinch-editor-collab, so client
 # and server bytes are one format.
 automerge = "0.5"
+# Body documents are the editor's CRDT, which rinch-editor-collab moved to yrs
+# (rinch #190). Structure docs (`book:` / `user:`) are ours and stay Automerge, so the
+# canonical store speaks both — routed by doc-id prefix in `sync.rs`.
+yrs = "0.27"
 # Cross-platform durable blob store — the CRDT backfill's write target (FsStore).
 # Pinned to the SAME rinch rev as rinch-editor-collab (via plotweb-crdt).
-rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "f7e1c37a0c50b33bdaeccef3cec69722e30702ac", default-features = false }
+rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "a1b2702", default-features = false }
 rhypedb-engine.workspace = true
 rhypedb-query.workspace = true
 rhypedb-schema.workspace = true
@@ -41,5 +45,7 @@ hex = "0.4"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
-# Integration tests act as sync *clients*, running the protocol against the app.
+# Integration tests act as sync *clients*: Automerge for structure documents, yrs for
+# bodies (rinch #190 moved the editor's CRDT).
 automerge = "0.5"
+yrs = "0.27"
