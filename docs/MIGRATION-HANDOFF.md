@@ -164,8 +164,13 @@ The canonical Automerge store is **staged but unread**. Everything below is wher
    handle, so the single-writer lock is never contended. The `backfill-migration`
    subcommand runs it too, but only with the server stopped (it says so if the lock is
    held). Idempotent via `src-sha`, and it skips client-synced docs like the content pass.
-3. **Phase D — shadow read.** Serve from git (authoritative) but also read the Automerge copy
-   and log any divergence during a soak. Confidence before flipping.
+3. ~~**Phase D — shadow read.**~~ **BUILT** — `plotweb-server shadow-report`, or env
+   `PLOTWEB_SHADOW_ON_BOOT` to soak beside live traffic (read-only, lock-free, like the
+   audit). It compares the **stored** canonical document against git, which is the
+   question the audit never asked: the audit projects fresh and proves the projection is
+   lossless, while this proves that what clients have actually written still agrees with
+   git. Reports match / diverged / no-canonical-copy / unreadable, and only a clean run
+   should let phase E proceed.
 4. **Phase E — cutover.** A reversible per-book (or global) `canonical = automerge` flag.
    Reads/writes hit Automerge; sync goes live. Git stays on disk; **flag flips back**.
 5. **Phase F — retire git.** Last, manual, with a backup/tag. The one hard-to-reverse step.

@@ -30,6 +30,12 @@ async fn main() {
         plotweb_server::backfill::run().await;
         return;
     }
+    // `shadow-report` (migration phase D) compares the canonical store against git and
+    // exits. Read-only and lock-free, like the audit — safe against production.
+    if args.get(1).map(String::as_str) == Some("shadow-report") {
+        plotweb_server::shadow::run().await;
+        return;
+    }
 
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:plotweb.db".into());
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
@@ -83,9 +89,23 @@ async fn main() {
         });
     }
 
-    // Opt-in boot-time canonical Automerge backfill (env `PLOTWEB_BACKFILL_ON_BOOT`).
-    // Runs the lock-free, additive content backfill in the background — alongside
-    // serving, no rhypedb lock — writing a snapshot blob per clean document into
+    // Opt-in boot-time shadow validation (env `PLOTWEB_SHADOW_ON_BOOT`, phase D):
+    // compares every canonical document against git and logs the report. Read-only, so
+    // it soaks alongside live traffic.
+    if std::env::var("PLOTWEB_SHADOW_ON_BOOT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        let dd = data_dir.clone();
+        let cd = crdt_dir.clone();
+        tokio::spawn(async move {
+            plotweb_server::shadow::run_on_boot(dd, cd).await;
+        });
+    }
+
+    // Opt-in boot-time canonical backfill (env `PLOTWEB_BACKFILL_ON_BOOT`). Runs the
+    // lock-free, additive content backfill in the background — alongside serving, no
+    // rhypedb lock — writing a snapshot blob per clean document into
     // `PLOTWEB_CRDT_DIR`. Reversible: deleting that directory reverts to git-only.
     if std::env::var("PLOTWEB_BACKFILL_ON_BOOT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
