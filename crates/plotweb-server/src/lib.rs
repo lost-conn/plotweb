@@ -12,6 +12,7 @@ pub mod email;
 pub mod rhype;
 pub mod rhype_migrate;
 pub mod routes;
+pub mod shadow;
 pub mod sync;
 pub mod ws;
 

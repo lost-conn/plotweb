@@ -777,3 +777,75 @@ mod tests {
         );
     }
 }
+
+// ── Shadow comparison (migration phase D) ────────────────────────────────────
+
+/// How a **stored** canonical document compares to the git content it should mirror.
+///
+/// Distinct from [`roundtrip_body`], which asks "does this content *project*
+/// losslessly?" — a property of the projection alone. This asks "does what the server
+/// is actually holding still say the same thing as git?", which only becomes an
+/// interesting question once clients write to that store. A body that projects
+/// perfectly can still diverge here: a device that edits offline updates the CRDT and,
+/// if its REST dual-write never lands, git keeps the older text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shadow {
+    /// The stored document and git agree (semantically — see [`roundtrip_body`] on
+    /// why equality is coalesced rather than byte-wise).
+    Match,
+    /// They disagree; `detail` locates the first difference.
+    Diverged { detail: String },
+    /// The stored document could not be read as a body at all — a blob from before a
+    /// CRDT change, or corruption. Not a content difference, and worth separating in a
+    /// report: it means "no signal", not "bad signal".
+    Unreadable { reason: String },
+}
+
+/// Compare the canonical bytes the server holds for a body against `content` from git.
+pub fn compare_body(content: &str, canonical: &[u8], kind: BodyKind) -> Shadow {
+    let (schema, node, origin) = match prepare_body_node(content, kind) {
+        Ok(t) => t,
+        Err(reason) => {
+            return Shadow::Unreadable {
+                reason: format!("git content unusable: {reason}"),
+            }
+        }
+    };
+    let git_side = match node.to_doc() {
+        Ok(d) => coalesce(&d),
+        Err(e) => {
+            return Shadow::Unreadable {
+                reason: format!("could not canonicalize git content: {e}"),
+            }
+        }
+    };
+
+    let stored = match CollabSession::from_bytes(canonical) {
+        Ok(s) => s,
+        Err(e) => {
+            return Shadow::Unreadable {
+                reason: format!("stored document did not load: {e}"),
+            }
+        }
+    };
+    let stored_side = match stored
+        .projected_doc(&schema)
+        .and_then(|n| n.to_doc().map_err(Into::into))
+    {
+        Ok(d) => coalesce(&d),
+        Err(e) => {
+            return Shadow::Unreadable {
+                reason: format!("could not materialize the stored document: {e}"),
+            }
+        }
+    };
+
+    if stored_side == git_side {
+        Shadow::Match
+    } else {
+        Shadow::Diverged {
+            detail: first_diff(&git_side, &stored_side, "doc")
+                .unwrap_or_else(|| format!("content differs ({origin}), no single node located")),
+        }
+    }
+}

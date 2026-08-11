@@ -280,9 +280,11 @@ serializes; both converge).
   with a live sync endpoint.
 - The **audit** stays valid and read-only; it validates git→Automerge projection, which is
   unrelated to sync traffic.
-- **Phase D (shadow read)** gets easier after this, not harder: the canonical doc is now
-  also being updated by clients, so divergence logging compares git against a doc that
-  actually moves.
+- **Phase D (shadow read)** is built — `crates/plotweb-server/src/shadow.rs`, via
+  `plotweb_crdt::compare_body` / `compare_book_structure`. Sync is what makes it
+  meaningful: the canonical document now moves under client writes, so comparing it to
+  git measures whether the dual-write is actually holding, rather than re-checking the
+  projection the audit already certified.
 
 ---
 

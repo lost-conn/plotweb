@@ -424,3 +424,30 @@ mod tests {
         assert_eq!(roundtrip_book_structure(&input), RoundTrip::Clean);
     }
 }
+
+/// Compare the canonical bytes the server holds for a `book:` structure against what
+/// git currently says.
+///
+/// The structure counterpart to [`compare_body`](crate::body::compare_body), and the
+/// one likelier to move: chapter order, titles and the notes tree change through
+/// ordinary use, and the client writes them to its `book:` document *and* to REST. A
+/// divergence here means one of those two writes went missing.
+pub fn compare_book_structure(input: &BookStructureInput, canonical: &[u8]) -> crate::Shadow {
+    let reloaded = match AutoCommit::load(canonical) {
+        Ok(d) => d,
+        Err(e) => {
+            return crate::Shadow::Unreadable {
+                reason: format!("stored book document did not load: {e}"),
+            }
+        }
+    };
+    let expected = input.expected();
+    let actual = read_book_norm(&reloaded);
+    if expected == actual {
+        crate::Shadow::Match
+    } else {
+        crate::Shadow::Diverged {
+            detail: describe_book_diff(&expected, &actual),
+        }
+    }
+}
