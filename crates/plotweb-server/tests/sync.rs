@@ -69,6 +69,79 @@ impl Device {
     }
 }
 
+
+/// A device holding a **body** document. Bodies are yrs since rinch #190, so they
+/// reconcile in two fixed steps rather than Automerge's message loop: send a state
+/// vector, get back the update you lack plus the peer's state vector, then send what
+/// the peer lacks.
+struct BodyDevice {
+    doc: yrs::Doc,
+}
+
+impl BodyDevice {
+    fn new() -> Self {
+        BodyDevice { doc: yrs::Doc::new() }
+    }
+
+    /// Write a root-level value, standing in for prose the editor would project.
+    fn put(&self, key: &str, value: &str) {
+        use yrs::{Map, Transact};
+        let map = self.doc.get_or_insert_map("content");
+        let mut txn = self.doc.transact_mut();
+        map.insert(&mut txn, key, value);
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        use yrs::{Map, Transact};
+        let map = self.doc.get_or_insert_map("content");
+        let txn = self.doc.transact();
+        map.get(&txn, key).map(|v| v.to_string(&txn))
+    }
+
+    /// The whole document as one update — what `adopt` takes.
+    fn full(&self) -> Vec<u8> {
+        use yrs::{ReadTxn, StateVector, Transact};
+        self.doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default())
+    }
+
+    fn state_vector(&self) -> Vec<u8> {
+        use yrs::updates::encoder::Encode;
+        use yrs::{ReadTxn, Transact};
+        self.doc.transact().state_vector().encode_v1()
+    }
+
+    /// One full exchange against the server.
+    async fn sync(&self, app: &mut TestApp, uri: &str) {
+        use yrs::updates::decoder::Decode;
+        use yrs::{ReadTxn, StateVector, Transact};
+
+        let (status, framed) = app.post_bytes(uri, &self.state_vector()).await;
+        assert_eq!(status, StatusCode::OK, "exchange failed");
+
+        // `[u32 LE length][diff][server state vector]`
+        assert!(framed.len() >= 4, "reply is framed");
+        let len = u32::from_le_bytes(framed[0..4].try_into().unwrap()) as usize;
+        let diff = &framed[4..4 + len];
+        let server_sv = &framed[4 + len..];
+
+        if !diff.is_empty() {
+            let update = yrs::Update::decode_v1(diff).expect("decodable diff");
+            self.doc.transact_mut().apply_update(update).expect("apply");
+        }
+
+        let ours = {
+            let sv = StateVector::decode_v1(server_sv).expect("decodable state vector");
+            self.doc.transact().encode_diff_v1(&sv)
+        };
+        if !ours.is_empty() {
+            let (status, _) = app.post_bytes(&format!("{uri}/update"), &ours).await;
+            assert_eq!(status, StatusCode::OK, "update rejected");
+        }
+    }
+}
+
 /// A book + chapter over the real REST routes, returning `(book_id, chapter_id)`.
 async fn book_with_chapter(app: &mut TestApp) -> (String, String) {
     let book_id = app.create_book("Sync Book").await;
@@ -88,21 +161,21 @@ async fn two_devices_converge_through_the_server() {
     let uri = chapter_uri(&book_id, &chapter_id);
 
     // Device A writes offline, then syncs.
-    let mut a = Device::new();
-    a.doc.put(ROOT, "note", "written on the desktop").unwrap();
+    let a = BodyDevice::new();
+    a.put("note", "written on the desktop");
     a.sync(&mut app, &uri).await;
 
     // Device B starts empty and pulls.
-    let mut b = Device::new();
+    let b = BodyDevice::new();
     b.sync(&mut app, &uri).await;
-    assert_eq!(b.str_at("note").as_deref(), Some("written on the desktop"));
+    assert_eq!(b.get("note").as_deref(), Some("written on the desktop"));
 
     // B edits; A pulls B's edit back down.
-    b.doc.put(ROOT, "reply", "and on the web").unwrap();
+    b.put("reply", "and on the web");
     b.sync(&mut app, &uri).await;
     a.sync(&mut app, &uri).await;
-    assert_eq!(a.str_at("reply").as_deref(), Some("and on the web"));
-    assert_eq!(a.doc.get_heads(), b.doc.get_heads(), "devices converged");
+    assert_eq!(a.get("reply").as_deref(), Some("and on the web"));
+    assert_eq!(a.get("note").as_deref(), Some("written on the desktop"));
 }
 
 #[tokio::test]
@@ -112,16 +185,16 @@ async fn a_synced_doc_survives_a_server_restart() {
     let (book_id, chapter_id) = book_with_chapter(&mut app).await;
     let uri = chapter_uri(&book_id, &chapter_id);
 
-    let mut a = Device::new();
-    a.doc.put(ROOT, "note", "survives a deploy").unwrap();
+    let a = BodyDevice::new();
+    a.put("note", "survives a deploy");
     a.sync(&mut app, &uri).await;
 
     // Rebuild the app over the same on-disk stores — a restart/deploy.
     app.restart().await;
 
-    let mut fresh = Device::new();
+    let fresh = BodyDevice::new();
     fresh.sync(&mut app, &uri).await;
-    assert_eq!(fresh.str_at("note").as_deref(), Some("survives a deploy"));
+    assert_eq!(fresh.get("note").as_deref(), Some("survives a deploy"));
 }
 
 #[tokio::test]
@@ -167,19 +240,18 @@ async fn a_backfilled_document_reaches_a_fresh_device() {
     assert!(summary.written > 0, "backfill wrote nothing: {summary:?}");
 
     // A device that has never seen this book pulls the migrated document.
-    let mut device = Device::new();
+    let device = BodyDevice::new();
     device.sync(&mut app, &chapter_uri(&book_id, &chapter_id)).await;
 
-    // The body projection's root is a `content` list of blocks (rinch-editor-collab).
-    let (_value, content) = device
-        .doc
-        .get(ROOT, "content")
-        .expect("readable")
-        .expect("the migrated body must have arrived");
-    assert!(
-        device.doc.length(&content) > 0,
-        "the migrated body must contain at least one block"
-    );
+    // The body projection's root is a `content` array of blocks (rinch-editor-collab,
+    // now yrs), so a migrated chapter arrives as a non-empty array.
+    let blocks = {
+        use yrs::{Array, Transact};
+        let content = device.doc.get_or_insert_array("content");
+        let txn = device.doc.transact();
+        content.len(&txn)
+    };
+    assert!(blocks > 0, "the migrated body must contain at least one block");
 }
 
 #[tokio::test]
@@ -264,8 +336,8 @@ async fn the_backfill_never_reprojects_a_doc_a_client_has_synced() {
     let (book_id, chapter_id) = book_with_chapter(&mut app).await;
 
     // A client syncs the chapter: the canonical doc is now client-owned.
-    let mut device = Device::new();
-    device.doc.put(ROOT, "written", "by the client").unwrap();
+    let device = BodyDevice::new();
+    device.put("written", "by the client");
     device.sync(&mut app, &chapter_uri(&book_id, &chapter_id)).await;
 
     // The chapter also changes in git (the dual-write world we still live in), so the
@@ -297,9 +369,9 @@ async fn the_backfill_never_reprojects_a_doc_a_client_has_synced() {
     );
 
     // And the client's document is untouched by the backfill.
-    let mut check = Device::new();
+    let check = BodyDevice::new();
     check.sync(&mut app, &chapter_uri(&book_id, &chapter_id)).await;
-    assert_eq!(check.str_at("written").as_deref(), Some("by the client"));
+    assert_eq!(check.get("written").as_deref(), Some("by the client"));
 }
 
 #[tokio::test]
@@ -325,10 +397,10 @@ async fn the_first_client_takes_ownership_of_a_backfilled_body() {
     .expect("backfill");
 
     // A device holding the *current* (git-newer) body claims the document.
-    let mut device = Device::new();
-    device.doc.put(ROOT, "body", "current text, newer than backfill").unwrap();
+    let device = BodyDevice::new();
+    device.put("body", "current text, newer than backfill");
     let uri = format!("/api/books/{book_id}/sync/chapter:{chapter_id}/adopt");
-    let (status, body) = app.post_bytes(&uri, &device.doc.save()).await;
+    let (status, body) = app.post_bytes(&uri, &device.full()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&body).unwrap()["adopted"],
@@ -338,18 +410,18 @@ async fn the_first_client_takes_ownership_of_a_backfilled_body() {
 
     // A second device syncing normally now gets the adopting device's document,
     // not the backfilled one — and no duplicate of it.
-    let mut other = Device::new();
+    let other = BodyDevice::new();
     other.sync(&mut app, &chapter_uri(&book_id, &chapter_id)).await;
     assert_eq!(
-        other.str_at("body").as_deref(),
+        other.get("body").as_deref(),
         Some("current text, newer than backfill")
     );
 
     // And ownership is once-only: a later claim is refused so it cannot discard the
     // peer's changes.
-    let mut latecomer = Device::new();
-    latecomer.doc.put(ROOT, "body", "would clobber").unwrap();
-    let (status, body) = app.post_bytes(&uri, &latecomer.doc.save()).await;
+    let latecomer = BodyDevice::new();
+    latecomer.put("body", "would clobber");
+    let (status, body) = app.post_bytes(&uri, &latecomer.full()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&body).unwrap()["adopted"],
@@ -357,10 +429,10 @@ async fn the_first_client_takes_ownership_of_a_backfilled_body() {
         "an owned document must be synced, never adopted over"
     );
 
-    let mut check = Device::new();
+    let check = BodyDevice::new();
     check.sync(&mut app, &chapter_uri(&book_id, &chapter_id)).await;
     assert_eq!(
-        check.str_at("body").as_deref(),
+        check.get("body").as_deref(),
         Some("current text, newer than backfill"),
         "the refused claim left the canonical document untouched"
     );
@@ -375,8 +447,8 @@ async fn the_heads_listing_reports_only_documents_the_server_holds() {
     let untouched_id = app.create_chapter(&book_id, "Untouched").await;
 
     // Only one chapter is ever synced.
-    let mut device = Device::new();
-    device.doc.put(ROOT, "body", "text").unwrap();
+    let device = BodyDevice::new();
+    device.put("body", "text");
     device.sync(&mut app, &chapter_uri(&book_id, &synced_id)).await;
 
     let r = app.get(&format!("/api/books/{book_id}/sync/heads")).await;
@@ -391,7 +463,7 @@ async fn the_heads_listing_reports_only_documents_the_server_holds() {
     assert_eq!(
         heads[&synced_key].as_array().map(|a| a.len()),
         Some(1),
-        "with its current frontier"
+        "with its current fingerprint (yrs has no head hashes — see body_fingerprint)"
     );
     assert!(
         !heads.contains_key(&format!("chapter:{untouched_id}")),
@@ -401,7 +473,7 @@ async fn the_heads_listing_reports_only_documents_the_server_holds() {
 
     // Heads move when the document moves — this is what lets a sweep skip the quiet
     // ones and pick up only what changed.
-    device.doc.put(ROOT, "body", "text, revised").unwrap();
+    device.put("body", "text, revised");
     device.sync(&mut app, &chapter_uri(&book_id, &synced_id)).await;
     let after = app.get(&format!("/api/books/{book_id}/sync/heads")).await;
     assert_ne!(
@@ -510,14 +582,14 @@ async fn a_malformed_sync_message_is_a_400_and_creates_nothing() {
     let (book_id, chapter_id) = book_with_chapter(&mut app).await;
     let uri = chapter_uri(&book_id, &chapter_id);
 
-    let (status, _) = app.post_bytes(&uri, b"definitely not a sync message").await;
+    let (status, _) = app.post_bytes(&uri, b"definitely not a state vector").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Nothing was stored, so a real device still starts from an empty canonical doc.
-    let mut device = Device::new();
+    let device = BodyDevice::new();
     device.sync(&mut app, &uri).await;
     assert!(
-        device.doc.get_heads().is_empty(),
+        device.get("anything").is_none(),
         "a rejected message must not have created a canonical document"
     );
 }

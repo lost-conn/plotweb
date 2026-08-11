@@ -141,6 +141,11 @@ pub fn api_router(state: AppState) -> Router {
         // Migration-era ownership handover for a doc still holding the backfill's
         // canonical copy (see routes::sync::adopt_book_doc).
         .route(
+            "/api/books/{book_id}/sync/{doc_id}/update",
+            post(routes::sync::apply_body_update)
+                .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY)),
+        )
+        .route(
             "/api/books/{book_id}/sync/{doc_id}/adopt",
             post(routes::sync::adopt_book_doc)
                 .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY)),

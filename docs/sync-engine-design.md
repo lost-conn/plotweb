@@ -288,9 +288,9 @@ serializes; both converge).
 
 ## 8. Slices (each shippable, verifiable, reversible)
 
-Status: **slices 0–5 are done**, as is handoff step ② (`user:` backfill). Slice 2 ships as
-rinch PR #182 (unmerged — see §8b for the pinning situation); slices 4 and 5 ride on the
-branch that pins it. Slice 6 (WebSocket transport) remains optional.
+Status: **slices 0–5 are done**, as is handoff step ② (`user:` backfill). Slice 2 merged
+upstream as rinch PR #182 and was then superseded by #190's move to yrs; bodies now use
+that engine's seam instead (§8b). Slice 6 (WebSocket transport) remains optional.
 
 **Slice 0 — remove the spike relay.** ✅ `routes/sync.rs`'s three routes are live in
 production, unauthenticated, and back an unbounded process-global `HashMap` any anonymous
@@ -396,34 +396,45 @@ today's behaviour exactly.
 
 ---
 
-## 8b. Pinning — while the `EditorHandle` seam is unmerged
+## 8b. Two CRDTs, and why
 
-Slice 4 needs `collab_generate_sync_message` / `collab_receive_sync_message` /
-`collab_heads` on `EditorHandle` (rinch PR #182). Upstream intends to refactor Automerge
-and may not merge it, so the branch `chore/pin-rinch-sync-seam` pins every rinch crate —
-and the (legacy) Dockerfile — to that PR's head, `b6225418`. That rev is upstream `main`
-(`f7e1c37`) plus the two commits of #182, so it carries no other upstream drift.
+rinch #190 replaced Automerge with **yrs** inside `rinch-editor-collab`, so the engine
+behind a chapter or note body changed under us. PlotWeb now runs both, split by what
+owns the document:
 
-**The hazard, and the rule.** The rev exists only on a PR branch in a repo we do not
-control. If it is force-pushed or deleted, git can garbage-collect it — and since the
-jkbase buildpack recompiles from scratch on every deploy, *every* production build would
-then fail, including a rollback. So:
+| Documents | CRDT | Owned by | Reconciles via |
+|---|---|---|---|
+| `user:` / `book:` (structure) | Automerge | PlotWeb (`local_user` / `local_book`, `plotweb-crdt`) | Automerge sync protocol |
+| `chapter:` / `note:` (bodies) | yrs | the editor (`rinch-editor-collab`) | state vector + diff |
 
-> Do not merge this pin to `main` while the rev lives only on someone else's PR branch.
-> `main` stays on a rev reachable from upstream `main`.
+The server routes on the doc-id prefix; nothing else needs to know. Porting the
+structure docs to yrs as well would buy consistency and little else — they are ours,
+they work, and their protocol is already proven.
 
-Work on slice 4 sits on the pinned branch until one of these resolves it:
+**The body exchange is two fixed steps**, not Automerge's loop: `POST .../sync/{doc}`
+carries the client's state vector and returns `[u32 LE length][diff][server state
+vector]`; the client applies the diff and posts what the server lacks to
+`POST .../sync/{doc}/update`. This suits a stateless server *better* than Automerge
+did — there is no per-peer state to fake, so §D5's "fresh `SyncState` per poll" rule
+simply does not arise for bodies.
 
-1. **#182 merges** — repin to the resulting upstream `main` rev. Cleanest.
-2. **Upstream's Automerge refactor lands first** — rebase the seam onto it and re-open;
-   the three methods are thin pass-throughs, so they should survive a refactor cheaply.
-3. **Fork `joeleaver/rinch` to our own account** and pin there. Removes the disappearing-rev
-   risk entirely and is the prerequisite for ever merging the pin to `main` without #182.
-   Costs us the divergence we then have to keep rebasing.
+**A yrs state vector is not a fingerprint.** It counts insertions, so a delete-only
+change (or a mark removal, which the engine implements by deleting format markers)
+leaves it untouched. Where Automerge would compare heads — the sweep's "did this
+move?" check — bodies compare a hash of the encoded document instead
+(`sync::body_fingerprint`).
 
-`plotweb-web/src/sync.rs`'s `seam_canary` test compiles against the three method
-signatures, so a pin that slips back to a rev without them fails immediately rather than
-midway through body-sync work.
+**The sweep is pull-only for bodies**, and can be: editing a body requires its editor,
+so a body no editor holds cannot be ahead of the server, only behind. That removes any
+need for a CRDT library on the client at all — every byte crossing the `EditorHandle`
+seam is opaque.
+
+**Migration fallout, deliberate:** body blobs written by the phase-C backfill under
+Automerge are undecodable as yrs. `sync::load_body_doc` treats such a blob as absent,
+so the first client to sync simply claims the document (§D8) and overwrites it, and a
+re-run of the backfill emits yrs. Local body docs from the Automerge era are discarded
+by the `BODY_STORE_VERSION` bump. Nothing is lost: git remains authoritative and every
+body re-seeds from it.
 
 ## 9. Open questions
 

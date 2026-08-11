@@ -209,9 +209,101 @@ pub async fn sync_user_doc(
 
 /// Serialize on the doc, hand the protocol round to a blocking thread, and map the
 /// result onto a binary response.
+/// One yrs exchange for a body document: the client sends its state vector, and gets
+/// back the update it lacks plus the server's own state vector, framed as
+/// `[u32 LE length][diff][server state vector]`.
+///
+/// Two fixed steps replace Automerge's multi-round loop — the client applies the diff,
+/// then posts what the server lacks to `.../update`. Framing beats a second request
+/// for the state vector, and beats JSON+base64 for what is already binary.
+async fn run_body_exchange(state: &AppState, doc_id: &str, body: Bytes) -> Response {
+    let lock = state.doc_locks.for_doc(doc_id);
+    let _guard = lock.lock().await;
+
+    let crdt_dir = state.crdt_dir.clone();
+    let doc_id = doc_id.to_string();
+    let result =
+        tokio::task::spawn_blocking(move || sync::body_exchange(&crdt_dir, &doc_id, &body)).await;
+
+    match result {
+        Ok(Ok((diff, server_sv))) => {
+            let mut framed = Vec::with_capacity(4 + diff.len() + server_sv.len());
+            framed.extend_from_slice(&(diff.len() as u32).to_le_bytes());
+            framed.extend_from_slice(&diff);
+            framed.extend_from_slice(&server_sv);
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                framed,
+            )
+                .into_response()
+        }
+        Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// `POST /api/books/{book_id}/sync/{doc_id}/update` — apply a client's yrs update to
+/// a body document. The other half of [`run_body_exchange`].
+pub async fn apply_body_update(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+    Path((book_id, doc_id)): Path<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if !super::verify_book_ownership(&state, &book_id, &user_id).await {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(doc_type) = doc_type_in_book(&state, &book_id, &doc_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !sync::is_body_doc(&doc_id) {
+        return (StatusCode::BAD_REQUEST, "not a body document").into_response();
+    }
+    if body.len() > MAX_SYNC_BODY {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+
+    let lock = state.doc_locks.for_doc(&doc_id);
+    let _guard = lock.lock().await;
+
+    let crdt_dir = state.crdt_dir.clone();
+    let doc_id_owned = doc_id.clone();
+    let doc_type = doc_type.to_string();
+    let result = tokio::task::spawn_blocking(move || {
+        sync::body_apply(&crdt_dir, &doc_id_owned, &doc_type, &body)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_changed)) => StatusCode::OK.into_response(),
+        Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] update {doc_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] update worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn run_round(state: &AppState, doc_id: &str, doc_type: &str, body: Bytes) -> Response {
     if body.len() > MAX_SYNC_BODY {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    // Bodies are the editor's CRDT, which is yrs since rinch #190; structure docs are
+    // ours and stay Automerge.
+    if sync::is_body_doc(doc_id) {
+        return run_body_exchange(state, doc_id, body).await;
     }
 
     // Held across the whole read-modify-write: Automerge merges commute, but the

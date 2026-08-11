@@ -405,7 +405,10 @@ fn surface_holds(kind: BodyKind, doc_id: &str) -> bool {
 /// Dropping the body docs once is safe and is the recovery path: they are a
 /// dual-write cache, git remains authoritative, and the next open re-seeds each body
 /// from the server.
-const BODY_STORE_VERSION: &[u8] = b"2";
+/// `3` additionally discards every body doc written while the editor's CRDT was
+/// Automerge: rinch #190 moved it to yrs, so those bytes are no longer loadable as a
+/// collaboration session at all. Re-seeding from the server is the whole recovery.
+const BODY_STORE_VERSION: &[u8] = b"3";
 const BODY_STORE_VERSION_KEY: &str = "local-store/body-version";
 
 /// Progress of the one-time sweep, so a second attach can't adopt a document the
@@ -620,42 +623,40 @@ pub(crate) async fn install_server_body(doc_id: &str, bytes: &[u8]) -> StorageRe
 // and the result is published back. No editor is involved, so nothing can be
 // projected into the wrong surface.
 
-/// Load a stored body document as a plain Automerge doc, or `None` if this device has
-/// never stored it. Never call this for the doc an editor currently holds — the
-/// session owns that one, and a second copy would diverge from it.
-pub(crate) async fn load_headless_body(doc_id: &str) -> StorageResult<Option<AutoCommit>> {
-    let store = DocStore::open(doc_id).await?;
-    let Some(persisted) = store.load().await? else {
-        return Ok(None);
-    };
-    let Ok(mut doc) = AutoCommit::load(&persisted.snapshot) else {
-        log::warn!("local-first: {doc_id}: unreadable snapshot; ignoring");
-        return Ok(None);
-    };
-    for delta in &persisted.deltas {
-        let _ = doc.load_incremental(delta);
-    }
-    Ok(Some(doc))
-}
-
-/// Publish a headless body document as its new base, compacting the delta log.
-pub(crate) async fn publish_headless_body(doc_id: &str, doc: &mut AutoCommit) -> StorageResult<()> {
-    let store = DocStore::open(doc_id).await?;
-    store.publish_snapshot(&doc.save()).await?;
-    Ok(())
-}
-
-/// Store a canonical body document this device has never held, and record that it
-/// shares history with the server's. No editor is involved and nothing is merged —
-/// the server's copy simply becomes ours.
-pub(crate) async fn install_headless_body(doc_id: &str, bytes: &[u8]) -> StorageResult<()> {
+/// Store the server's copy of a body no editor holds, with the fingerprint it came
+/// with so the next sweep can tell whether anything moved.
+///
+/// Safe as a plain overwrite: editing a body requires its editor, so a body without
+/// one cannot hold changes the server lacks.
+pub(crate) async fn install_headless_body(
+    doc_id: &str,
+    bytes: &[u8],
+    fingerprint: &str,
+) -> StorageResult<()> {
     // Refuse to overwrite a document an editor is driving.
     if body_is_open(doc_id) {
         return Ok(());
     }
     let store = DocStore::open(doc_id).await?;
     store.publish_snapshot(bytes).await?;
+    let backend = backend().await?;
+    backend
+        .put(&fingerprint_key(doc_id), fingerprint.as_bytes())
+        .await?;
     mark_body_shares_server_history(doc_id).await
+}
+
+fn fingerprint_key(doc_id: &str) -> String {
+    format!("{doc_id}/server-fingerprint")
+}
+
+/// The server fingerprint this device last stored for `doc_id`, if any.
+pub(crate) async fn body_fingerprint(doc_id: &str) -> StorageResult<Option<String>> {
+    let backend = backend().await?;
+    Ok(backend
+        .get(&fingerprint_key(doc_id))
+        .await?
+        .and_then(|b| String::from_utf8(b).ok()))
 }
 
 /// Whether either editor surface currently holds `doc_id`.
@@ -998,7 +999,9 @@ mod tests {
             session
                 .record_local(&seed_node, &edited_node)
                 .expect("project edit");
-            let delta = session.save_incremental();
+            // Fallible since rinch #190 (yrs encodes the delta rather than handing
+            // back a buffer it always has).
+            let delta = session.save_incremental().expect("encode the edit's delta");
             assert!(!delta.is_empty(), "an edit must produce a non-empty delta");
             block_on(ds.append_delta(&generation, 0, &delta)).unwrap();
         } // drop store + DocStore entirely — simulate app exit
