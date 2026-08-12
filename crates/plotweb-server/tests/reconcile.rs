@@ -21,6 +21,28 @@ impl BodyDevice {
     fn new() -> Self {
         BodyDevice { doc: yrs::Doc::new() }
     }
+
+    fn from_update(update: &[u8]) -> Self {
+        use yrs::updates::decoder::Decode;
+        use yrs::Transact;
+        let doc = yrs::Doc::new();
+        let update = yrs::Update::decode_v1(update).expect("decodable document");
+        doc.transact_mut().apply_update(update).expect("apply");
+        BodyDevice { doc }
+    }
+
+    fn state_vector(&self) -> Vec<u8> {
+        use yrs::updates::encoder::Encode;
+        use yrs::{ReadTxn, Transact};
+        self.doc.transact().state_vector().encode_v1()
+    }
+
+    fn text(&self, key: &str) -> Option<String> {
+        use yrs::{Map, Transact};
+        let map = self.doc.get_or_insert_map("content");
+        let txn = self.doc.transact();
+        map.get(&txn, key).map(|v| v.to_string(&txn))
+    }
     fn full(&self) -> Vec<u8> {
         use yrs::{ReadTxn, StateVector, Transact};
         self.doc
@@ -166,4 +188,46 @@ async fn preferring_the_crdt_writes_the_stored_document_into_git() {
     .await
     .expect("shadow");
     assert!(after.is_clean(), "and the two copies agree: {after:?}");
+}
+
+#[tokio::test]
+async fn a_client_still_holding_the_pre_reconcile_document_is_refused_not_merged() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = diverged_chapter(&mut app).await;
+    let uri = format!("/api/books/{book_id}/sync/chapter:{chapter_id}");
+
+    // The device that owns the document, as it stands before anyone reconciles.
+    let (_status, before) = app.get_bytes(&uri).await;
+    let client = BodyDevice::from_update(&before);
+
+    // A human decides git is right.
+    run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        Prefer::Git,
+        false,
+    )
+    .await
+    .expect("reconcile");
+
+    // The client's copy now descends from nothing the server holds. Clearing ownership
+    // stops the *server* merging them; this is what stops the client pushing its stale
+    // copy back — without it, the reconcile would be quietly undone.
+    let (status, _) = app.post_bytes(&uri, &client.state_vector()).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a client holding the pre-reconcile document must be told to replace it"
+    );
+
+    // And the reconcile stands: the corpus is clean, so the stale copy did not get
+    // pushed back over git's text.
+    let after = plotweb_server::shadow::run_shadow_pass(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("shadow");
+    assert!(after.is_clean(), "and the corpus stays clean: {after:?}");
 }

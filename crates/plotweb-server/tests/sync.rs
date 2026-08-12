@@ -112,6 +112,16 @@ impl BodyDevice {
         self.doc.transact().state_vector().encode_v1()
     }
 
+    /// A device that has taken the canonical document as its own.
+    fn from_update(update: &[u8]) -> Self {
+        use yrs::updates::decoder::Decode;
+        use yrs::Transact;
+        let doc = yrs::Doc::new();
+        let update = yrs::Update::decode_v1(update).expect("decodable canonical document");
+        doc.transact_mut().apply_update(update).expect("apply");
+        BodyDevice { doc }
+    }
+
     /// One full exchange against the server.
     async fn sync(&self, app: &mut TestApp, uri: &str) {
         use yrs::updates::decoder::Decode;
@@ -436,6 +446,48 @@ async fn the_first_client_takes_ownership_of_a_backfilled_body() {
         Some("current text, newer than backfill"),
         "the refused claim left the canonical document untouched"
     );
+}
+
+#[tokio::test]
+async fn a_document_unrelated_to_the_canonical_one_is_refused_rather_than_merged() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = book_with_chapter(&mut app).await;
+    let uri = chapter_uri(&book_id, &chapter_id);
+
+    // One device establishes the canonical document.
+    let owner = BodyDevice::new();
+    owner.put("body", "the canonical text");
+    owner.sync(&mut app, &uri).await;
+
+    // A second device built its document independently — the shape of a copy seeded
+    // from REST before sync, or one left behind by a reconcile that resolved in git's
+    // favour. Merging the two would concatenate, not converge.
+    let stranger = BodyDevice::new();
+    stranger.put("body", "an unrelated history");
+    let (status, _) = app.post_bytes(&uri, &stranger.state_vector()).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "unrelated histories must be refused, not merged"
+    );
+
+    // The refusal is specific: the same device converges once it takes the canonical
+    // copy, which is what the client does on a 409.
+    let (status, canonical) = app.get_bytes(&uri).await;
+    assert_eq!(status, StatusCode::OK);
+    let adopted = BodyDevice::from_update(&canonical);
+    adopted.sync(&mut app, &uri).await;
+    assert_eq!(
+        adopted.get("body").as_deref(),
+        Some("the canonical text"),
+        "and after replacing its copy it converges normally"
+    );
+
+    // The canonical document is untouched by the refusal.
+    let check = BodyDevice::new();
+    check.sync(&mut app, &uri).await;
+    assert_eq!(check.get("body").as_deref(), Some("the canonical text"));
 }
 
 #[tokio::test]

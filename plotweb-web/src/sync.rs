@@ -339,7 +339,8 @@ fn exchange_body(label: String, doc: Doc) {
     };
 
     let update_url = format!("{}/update", doc.url());
-    crate::api::post_bytes(&doc.url(), state_vector, move |result| match result {
+    let exchange_url = doc.url();
+    crate::api::post_bytes(&exchange_url, state_vector, move |result| match result {
         Ok(framed) => {
             let Some((diff, server_state_vector)) = unframe(&framed) else {
                 log::warn!("sync {label}: malformed exchange reply");
@@ -382,6 +383,15 @@ fn exchange_body(label: String, doc: Doc) {
                 // Nothing to send, or the body closed under us.
                 _ => finish(&label, true),
             }
+        }
+        // The server can see, from the documents themselves, that ours descends from
+        // nothing it holds — merging would concatenate rather than converge. Replace
+        // ours with the canonical copy. This is authoritative where the local
+        // provenance flag is only a memory: after a reconcile resolves a document in
+        // git's favour, our flag still says "synced" and would be wrong.
+        Err(e) if e.status == 409 => {
+            log::info!("sync {label}: unrelated to the canonical document; replacing ours");
+            take_server_body(label, doc, doc_id);
         }
         Err(e) if e.status == 401 => park_unauthed(&label),
         Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),

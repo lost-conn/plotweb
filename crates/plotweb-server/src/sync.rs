@@ -528,14 +528,42 @@ fn body_bytes(doc: &yrs::Doc) -> Vec<u8> {
     doc.transact().encode_state_as_update_v1(&StateVector::default())
 }
 
-/// Answer a client's state vector: the update it is missing, plus ours so it can
-/// work out what *we* are missing. Purely a read — the canonical document is
+/// The answer to a client's state vector.
+pub enum BodyExchange {
+    /// The update the client is missing, plus our state vector so it can work out what
+    /// *we* are missing.
+    Diff { diff: Vec<u8>, state_vector: Vec<u8> },
+    /// The client's document and ours share no history at all. Merging them would
+    /// concatenate rather than deduplicate, so the client must replace its copy.
+    Unrelated,
+}
+
+/// Do these two documents share any history?
+///
+/// A yrs document's state vector is keyed by the client id that made each change, so
+/// two documents built independently — the classic case being one seeded from REST on
+/// a device and one projected from git on the server — carry entirely disjoint id
+/// sets. Any shared id means one descends from the other (or both from a common
+/// ancestor), which is exactly the condition under which merging is meaningful.
+///
+/// Empty on either side is *not* disjoint: a client with no document yet, or a server
+/// that has never held one, has nothing to conflict with and takes the ordinary path.
+fn histories_are_unrelated(client_sv: &yrs::StateVector, server_sv: &yrs::StateVector) -> bool {
+    if client_sv.is_empty() || server_sv.is_empty() {
+        return false;
+    }
+    !client_sv
+        .iter()
+        .any(|(client_id, _)| server_sv.contains_client(client_id))
+}
+
+/// Answer a client's state vector. Purely a read — the canonical document is
 /// untouched, so any number of devices can ask concurrently.
 pub fn body_exchange(
     crdt_dir: &Path,
     doc_id: &str,
     client_state_vector: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), SyncError> {
+) -> Result<BodyExchange, SyncError> {
     use yrs::updates::decoder::Decode;
     use yrs::updates::encoder::Encode;
     use yrs::{ReadTxn, StateVector, Transact};
@@ -547,10 +575,21 @@ pub fn body_exchange(
     let client_sv = StateVector::decode_v1(client_state_vector)
         .map_err(|e| SyncError::BadMessage(format!("not a state vector: {e}")))?;
     let txn = doc.transact();
-    Ok((
-        txn.encode_diff_v1(&client_sv),
-        txn.state_vector().encode_v1(),
-    ))
+    let server_sv = txn.state_vector();
+
+    // Detecting this here, from the documents themselves, is what makes §D8 a fact
+    // rather than a guess: the client's own record of whether it has "synced before"
+    // can be wrong after the canonical document is replaced (a reconcile resolving in
+    // git's favour does exactly that), and merging on a wrong guess duplicates the
+    // author's prose.
+    if histories_are_unrelated(&client_sv, &server_sv) {
+        return Ok(BodyExchange::Unrelated);
+    }
+
+    Ok(BodyExchange::Diff {
+        diff: txn.encode_diff_v1(&client_sv),
+        state_vector: server_sv.encode_v1(),
+    })
 }
 
 /// Apply a client's update to the canonical body document and republish it.
