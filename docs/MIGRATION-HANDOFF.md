@@ -103,12 +103,27 @@ older than `~/projects/personal/jkbase`** (it lacks `restart`, `db`, `backup`). 
 secret does NOT auto-apply — it needs a **restart** to re-inject env. The CLI can't
 `restart`; the user restarts from the jkbase console (or `jkbase deploy` = full rebuild).
 
+**`jkbase restart` exists now** (`jkbase restart --project plotweb --force`): it re-injects
+secrets/env **without a rebuild**, which is the cheap way to apply a `jkbase secret set`.
+The note below about the CLI lacking it is out of date — a full `deploy` for a flag change
+burns metered build minutes for nothing.
+
 **The migration flags** (env, via `jkbase secret set NAME=1` + restart; unset with `=0`):
 - `PLOTWEB_AUDIT_ON_BOOT` — runs the read-only content audit on boot, logs `[boot-audit]`.
 - `PLOTWEB_BACKFILL_ON_BOOT` — runs the backfill on boot, logs `[backfill]`. Writes only
   `PLOTWEB_CRDT_DIR`; git+rhypedb read-only. Idempotent (re-runs skip unchanged).
-- Both are lock-free (no rhypedb lock) so they run alongside the live server. Turn them off
-  when not in use (they re-run every restart otherwise — harmless, just log noise).
+- `PLOTWEB_SHADOW_ON_BOOT` — phase D: compares every canonical document against git and
+  logs `[boot-shadow]`. Read-only. With the backfill flag also set, the two run in one
+  task, backfill first, so a single boot does "refresh, then measure".
+- All three are lock-free (no rhypedb lock) so they run alongside the live server. Turn
+  them off when not in use (they re-run every restart otherwise).
+
+**Resolving a divergence** (`plotweb-server reconcile --prefer git|crdt [--dry-run]`):
+only touches documents the shadow pass reports as **diverged** — client-owned *and*
+disagreeing with git. Staleness is not its job; a backfill run fixes that. `--prefer git`
+re-projects git and clears ownership (so the backfill maintains that document again);
+`--prefer crdt` materializes the stored document into git through the ordinary write path.
+Always dry-run first: it rewrites someone's prose.
 
 **Run the migration tooling locally** (subcommands; server can be stopped or not — lock-free):
 ```

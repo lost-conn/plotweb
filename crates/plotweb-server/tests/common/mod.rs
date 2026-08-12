@@ -209,6 +209,25 @@ impl TestApp {
         (status, bytes.to_vec())
     }
 
+    /// GET raw bytes — the canonical-document endpoint's wire format.
+    pub async fn get_bytes(&mut self, uri: &str) -> (StatusCode, Vec<u8>) {
+        let mut req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        if let Some(c) = &self.cookie {
+            req.headers_mut()
+                .insert("cookie", c.parse().expect("cookie header"));
+        }
+        let resp = self.router.clone().oneshot(req).await.expect("response");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, bytes.to_vec())
+    }
+
     /// POST a multipart file upload (single `file` field).
     pub async fn post_multipart(&mut self, uri: &str, filename: &str, data: &[u8]) -> Resp {
         let boundary = "----plotwebtestboundary";

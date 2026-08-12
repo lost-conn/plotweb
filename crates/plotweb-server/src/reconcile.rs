@@ -1,0 +1,277 @@
+//! Reconciling a document the shadow pass reported as diverged (migration phase D→E).
+//!
+//! The backfill deliberately refuses to touch a document a client owns — re-projecting
+//! it from git would fork a second, history-disjoint copy of the same content. That
+//! guard is right, and it means the one class of finding the shadow pass exists to
+//! produce is also the one class nothing can fix automatically. Someone has to decide
+//! which copy is correct, and this is where that decision gets carried out.
+//!
+//! Two directions, because both happen:
+//!
+//! - **`Prefer::Git`** — git holds the truth (an edit reached REST but never the CRDT,
+//!   which is every edit made in a session without sync). The canonical document is
+//!   re-projected from git and its ownership cleared, so it is provisional again.
+//! - **`Prefer::Crdt`** — the CRDT holds the truth (an edit reached the CRDT but never
+//!   REST). The stored document is materialized back to `DocNode` JSON and written to
+//!   git through the same call the REST save uses, so git ends up with content
+//!   indistinguishable from the editor having saved it.
+//!
+//! Both are per-document and both support a dry run, because "which copy wins" is a
+//! judgement about someone's writing, not a mechanical merge.
+//!
+//! # The part that is not automatic
+//!
+//! Resolving in git's favour leaves any client still holding the old document with a
+//! history disjoint from the new canonical one. Clearing `synced_at` is what stops the
+//! two being merged: the document becomes provisional, so the next client to sync
+//! claims it afresh rather than merging into it (see the §D8 handshake). A client that
+//! already holds a stale copy must therefore be reset — which the sync engine does when
+//! the server tells it the histories are unrelated.
+
+use std::path::{Path, PathBuf};
+
+use plotweb_crdt::{materialize_body, project_body, BodyKind};
+use plotweb_git::BookStore;
+use plotweb_common::UpdateChapterRequest;
+
+/// Which copy is treated as correct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Prefer {
+    /// Git wins: re-project it into the canonical store.
+    Git,
+    /// The stored CRDT wins: write it back into git.
+    Crdt,
+}
+
+impl Prefer {
+    pub fn parse(s: &str) -> Option<Prefer> {
+        match s {
+            "git" => Some(Prefer::Git),
+            "crdt" => Some(Prefer::Crdt),
+            _ => None,
+        }
+    }
+}
+
+/// What a reconcile did (or would do, under a dry run).
+#[derive(Debug, Default)]
+pub struct ReconcileSummary {
+    pub considered: usize,
+    /// `(doc_id, what changed)`.
+    pub resolved: Vec<(String, String)>,
+    pub skipped: Vec<(String, String)>,
+    pub errors: Vec<(String, String)>,
+}
+
+/// Reconcile one body document.
+///
+/// `doc_id` is `chapter:{id}` or `note:{id}`; the book is needed because git addresses
+/// content by book. Returns a description of the action for the report.
+pub async fn reconcile_body(
+    books: &BookStore,
+    crdt_dir: &Path,
+    book_id: &str,
+    doc_id: &str,
+    prefer: Prefer,
+    dry_run: bool,
+) -> Result<String, String> {
+    let (kind, id) = if let Some(id) = doc_id.strip_prefix("chapter:") {
+        (BodyKind::Chapter, id)
+    } else if let Some(id) = doc_id.strip_prefix("note:") {
+        (BodyKind::Note, id)
+    } else {
+        return Err(format!("{doc_id} is not a body document"));
+    };
+
+    match prefer {
+        Prefer::Git => {
+            // Read git's content and project it afresh.
+            let content = match kind {
+                BodyKind::Chapter => books
+                    .get_chapter(book_id, id)
+                    .await
+                    .map_err(|e| format!("git read failed: {e}"))?
+                    .content,
+                BodyKind::Note => books
+                    .get_note(book_id, id)
+                    .await
+                    .map_err(|e| format!("git read failed: {e}"))?
+                    .content,
+            };
+            let bytes = project_body(&content, kind)?;
+            if dry_run {
+                return Ok(format!(
+                    "would replace the canonical document from git ({} bytes) and clear \
+                     its ownership",
+                    bytes.len()
+                ));
+            }
+            crate::sync::replace_canonical_from_git(crdt_dir, doc_id, kind_name(kind), &bytes)
+                .map_err(|e| format!("canonical write failed: {e}"))?;
+            Ok("canonical document replaced from git; ownership cleared so the next \
+                client claims it afresh"
+                .to_string())
+        }
+        Prefer::Crdt => {
+            let canonical = crate::sync::canonical_snapshot(&PathBuf::from(crdt_dir), doc_id)
+                .map_err(|e| format!("store read failed: {e}"))?
+                .ok_or_else(|| "no canonical document to write back".to_string())?;
+            let content = materialize_body(&canonical)?;
+            if dry_run {
+                return Ok(format!(
+                    "would write the stored document into git ({} chars of DocNode JSON)",
+                    content.len()
+                ));
+            }
+            match kind {
+                BodyKind::Chapter => books
+                    .update_chapter(
+                        book_id,
+                        id,
+                        &UpdateChapterRequest {
+                            title: None,
+                            content: Some(content),
+                        },
+                    )
+                    .await
+                    .map_err(|e| format!("git write failed: {e}"))?,
+                BodyKind::Note => books
+                    .update_note(book_id, id, None, Some(&content), None)
+                    .await
+                    .map_err(|e| format!("git write failed: {e}"))?,
+            }
+            Ok("stored document written into git".to_string())
+        }
+    }
+}
+
+fn kind_name(kind: BodyKind) -> &'static str {
+    match kind {
+        BodyKind::Chapter => "chapter",
+        BodyKind::Note => "note",
+    }
+}
+
+/// Reconcile every document the shadow pass reports as **diverged** (client-owned and
+/// disagreeing with git). Staleness is left alone: a backfill run is its remedy, and
+/// treating it here would rewrite documents nobody is in conflict over.
+pub async fn run_all(
+    data_dir: &str,
+    crdt_dir: &str,
+    prefer: Prefer,
+    dry_run: bool,
+) -> Result<ReconcileSummary, String> {
+    let books = BookStore::new(PathBuf::from(data_dir));
+    let findings = crate::shadow::run_shadow_pass(data_dir, crdt_dir).await?;
+
+    let mut summary = ReconcileSummary::default();
+    for (doc_id, detail) in &findings.diverged {
+        summary.considered += 1;
+        let Some(book_id) = owning_book(&books, data_dir, doc_id).await else {
+            summary.skipped.push((
+                doc_id.clone(),
+                "could not determine the owning book".to_string(),
+            ));
+            continue;
+        };
+        if doc_id.starts_with("book:") {
+            // A `book:` structure is rebuilt by the backfill once ownership is cleared;
+            // resolving it in the CRDT's favour would mean writing chapter order and
+            // titles back through several REST-shaped calls, which is a bigger decision
+            // than this tool should make on its own.
+            summary.skipped.push((
+                doc_id.clone(),
+                "structure document — clear ownership and re-run the backfill".to_string(),
+            ));
+            continue;
+        }
+        match reconcile_body(&books, Path::new(crdt_dir), &book_id, doc_id, prefer, dry_run).await {
+            Ok(action) => summary
+                .resolved
+                .push((doc_id.clone(), format!("{action} [was: {detail}]"))),
+            Err(e) => summary.errors.push((doc_id.clone(), e)),
+        }
+    }
+    Ok(summary)
+}
+
+/// Which book owns `doc_id`, by asking git.
+async fn owning_book(books: &BookStore, data_dir: &str, doc_id: &str) -> Option<String> {
+    let book_ids: Vec<String> = std::fs::read_dir(data_dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.join("manuscript").join("book.json").is_file())
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+
+    for book_id in book_ids {
+        if let Some(id) = doc_id.strip_prefix("chapter:") {
+            if books
+                .list_chapters(&book_id)
+                .await
+                .unwrap_or_default()
+                .iter()
+                .any(|c| c.id == id)
+            {
+                return Some(book_id);
+            }
+        } else if let Some(id) = doc_id.strip_prefix("note:") {
+            if books
+                .list_notes(&book_id)
+                .await
+                .unwrap_or_default()
+                .0
+                .iter()
+                .any(|n| n.id == id)
+            {
+                return Some(book_id);
+            }
+        } else if doc_id == format!("book:{book_id}") {
+            return Some(book_id);
+        }
+    }
+    None
+}
+
+/// Entry point for `plotweb-server reconcile --prefer git|crdt [--dry-run]`.
+pub async fn run(prefer: Prefer, dry_run: bool) {
+    let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
+    let crdt_dir =
+        std::env::var("PLOTWEB_CRDT_DIR").unwrap_or_else(|_| crate::sync::DEFAULT_CRDT_DIR.into());
+
+    println!(
+        "[reconcile] resolving diverged client-owned documents in favour of {}{}",
+        match prefer {
+            Prefer::Git => "GIT",
+            Prefer::Crdt => "the stored CRDT",
+        },
+        if dry_run { " (dry run)" } else { "" }
+    );
+
+    match run_all(&data_dir, &crdt_dir, prefer, dry_run).await {
+        Ok(summary) => {
+            println!();
+            println!("────────────────────────────────────────");
+            println!("PlotWeb reconcile{}", if dry_run { " (dry run)" } else { "" });
+            println!("  documents considered : {}", summary.considered);
+            println!("  resolved             : {}", summary.resolved.len());
+            println!("  skipped              : {}", summary.skipped.len());
+            println!("  errors               : {}", summary.errors.len());
+            println!();
+            for (doc_id, action) in &summary.resolved {
+                println!("  {doc_id} — {action}");
+            }
+            for (doc_id, why) in &summary.skipped {
+                println!("  SKIPPED {doc_id} — {why}");
+            }
+            for (doc_id, e) in &summary.errors {
+                println!("  ERROR   {doc_id} — {e}");
+            }
+            if summary.considered == 0 {
+                println!("Nothing to do: no client-owned document disagrees with git.");
+            }
+        }
+        Err(e) => eprintln!("reconcile: {e}"),
+    }
+}

@@ -284,6 +284,55 @@ pub fn canonical_snapshot(crdt_dir: &Path, doc_id: &str) -> Result<Option<Vec<u8
     load_snapshot(&store, doc_id, manifest.as_ref())
 }
 
+/// Replace a canonical document with a fresh projection of git, and **clear its
+/// ownership** so it is provisional again.
+///
+/// The escape hatch for a document a client owns that git disagrees with, used by
+/// [`crate::reconcile`] once a human has decided git is right. Clearing `synced_at` is
+/// the load-bearing half: it puts the document back in the state where the next client
+/// to sync *claims* it (§D8) rather than merging into it, which is what stops the new
+/// canonical history and a client's old one being concatenated.
+pub fn replace_canonical_from_git(
+    crdt_dir: &Path,
+    doc_id: &str,
+    doc_type: &str,
+    bytes: &[u8],
+) -> Result<(), SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let prev = read_manifest(&store, doc_id)?;
+    let heads = if is_body_doc(doc_id) {
+        vec![body_fingerprint(bytes)]
+    } else {
+        AutoCommit::load(bytes)
+            .map_err(|e| SyncError::Automerge(format!("projection did not load: {e}")))?
+            .get_heads()
+            .iter()
+            .map(|h| h.to_string())
+            .collect()
+    };
+
+    let generation = next_gen(prev.as_ref().and_then(|m| m.generation.as_deref()));
+    block_on(store.put(&format!("{doc_id}/{generation}/snapshot"), bytes))
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+    let manifest = DocManifest {
+        doc_id: doc_id.to_string(),
+        doc_type: doc_type.to_string(),
+        src_sha: prev.as_ref().and_then(|m| m.src_sha.clone()),
+        projection: PROJECTION_V1.to_string(),
+        generation: Some(generation.clone()),
+        heads,
+        // Deliberately None: the document is provisional again.
+        synced_at: None,
+    };
+    let encoded =
+        serde_json::to_vec(&manifest).map_err(|e| SyncError::Store(format!("encode: {e}")))?;
+    block_on(store.put(&format!("{doc_id}/manifest"), &encoded))
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+    sweep_except(&store, doc_id, &generation)?;
+    Ok(())
+}
+
 /// Outcome of a client's bid to take ownership of a document (see [`adopt_doc`]).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Adoption {
@@ -479,14 +528,42 @@ fn body_bytes(doc: &yrs::Doc) -> Vec<u8> {
     doc.transact().encode_state_as_update_v1(&StateVector::default())
 }
 
-/// Answer a client's state vector: the update it is missing, plus ours so it can
-/// work out what *we* are missing. Purely a read — the canonical document is
+/// The answer to a client's state vector.
+pub enum BodyExchange {
+    /// The update the client is missing, plus our state vector so it can work out what
+    /// *we* are missing.
+    Diff { diff: Vec<u8>, state_vector: Vec<u8> },
+    /// The client's document and ours share no history at all. Merging them would
+    /// concatenate rather than deduplicate, so the client must replace its copy.
+    Unrelated,
+}
+
+/// Do these two documents share any history?
+///
+/// A yrs document's state vector is keyed by the client id that made each change, so
+/// two documents built independently — the classic case being one seeded from REST on
+/// a device and one projected from git on the server — carry entirely disjoint id
+/// sets. Any shared id means one descends from the other (or both from a common
+/// ancestor), which is exactly the condition under which merging is meaningful.
+///
+/// Empty on either side is *not* disjoint: a client with no document yet, or a server
+/// that has never held one, has nothing to conflict with and takes the ordinary path.
+fn histories_are_unrelated(client_sv: &yrs::StateVector, server_sv: &yrs::StateVector) -> bool {
+    if client_sv.is_empty() || server_sv.is_empty() {
+        return false;
+    }
+    !client_sv
+        .iter()
+        .any(|(client_id, _)| server_sv.contains_client(client_id))
+}
+
+/// Answer a client's state vector. Purely a read — the canonical document is
 /// untouched, so any number of devices can ask concurrently.
 pub fn body_exchange(
     crdt_dir: &Path,
     doc_id: &str,
     client_state_vector: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), SyncError> {
+) -> Result<BodyExchange, SyncError> {
     use yrs::updates::decoder::Decode;
     use yrs::updates::encoder::Encode;
     use yrs::{ReadTxn, StateVector, Transact};
@@ -498,10 +575,21 @@ pub fn body_exchange(
     let client_sv = StateVector::decode_v1(client_state_vector)
         .map_err(|e| SyncError::BadMessage(format!("not a state vector: {e}")))?;
     let txn = doc.transact();
-    Ok((
-        txn.encode_diff_v1(&client_sv),
-        txn.state_vector().encode_v1(),
-    ))
+    let server_sv = txn.state_vector();
+
+    // Detecting this here, from the documents themselves, is what makes §D8 a fact
+    // rather than a guess: the client's own record of whether it has "synced before"
+    // can be wrong after the canonical document is replaced (a reconcile resolving in
+    // git's favour does exactly that), and merging on a wrong guess duplicates the
+    // author's prose.
+    if histories_are_unrelated(&client_sv, &server_sv) {
+        return Ok(BodyExchange::Unrelated);
+    }
+
+    Ok(BodyExchange::Diff {
+        diff: txn.encode_diff_v1(&client_sv),
+        state_vector: server_sv.encode_v1(),
+    })
 }
 
 /// Apply a client's update to the canonical body document and republish it.

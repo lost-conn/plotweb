@@ -195,6 +195,19 @@ Implementation: `DocStore`'s manifest gains `origin: "seeded-local" | "synced"`,
 `synced` the moment a doc first exchanges messages with the server. Adoption is a local
 pointer-flip (existing `publish_snapshot`), so it is atomic and crash-safe.
 
+**Superseded in the safest direction: the server now *detects* this rather than trusting
+a flag.** A yrs state vector is keyed by the client id behind each change, so two
+documents built independently carry disjoint id sets, and the server can see that
+directly. A body exchange whose state vectors share no client id is answered `409` — "your
+document is unrelated to mine; fetch it and replace yours" — and the client does exactly
+that. Empty on either side is not disjoint (a client with no document has nothing to
+conflict with), so ordinary first syncs are unaffected.
+
+This matters because the local provenance flag below is a *memory*, and memories go stale:
+after a reconcile resolves a document in git's favour, a client's flag still says "synced"
+while its copy descends from nothing the server holds. The flag remains as the cheap first
+gate; the detection is what makes the guarantee.
+
 **Server mirror of the same rule (built, and sharper than first written):** the canonical
 manifest's `synced_at` is stamped on **any** successful exchange — including a pure *pull*
 that writes no snapshot. First draft stamped it only when the client moved the doc, which

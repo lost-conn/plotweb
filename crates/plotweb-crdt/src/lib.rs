@@ -51,7 +51,9 @@ pub mod body;
 pub mod book;
 pub mod user;
 
-pub use body::{compare_body, project_body, roundtrip_body, BodyKind, Shadow};
+pub use body::{
+    compare_body, materialize_body, project_body, roundtrip_body, BodyKind, Shadow,
+};
 pub use book::{
     compare_book_structure, project_book_structure, roundtrip_book_structure, BookStructureInput,
 };

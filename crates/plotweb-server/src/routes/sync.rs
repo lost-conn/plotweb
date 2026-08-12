@@ -226,11 +226,11 @@ async fn run_body_exchange(state: &AppState, doc_id: &str, body: Bytes) -> Respo
         tokio::task::spawn_blocking(move || sync::body_exchange(&crdt_dir, &doc_id, &body)).await;
 
     match result {
-        Ok(Ok((diff, server_sv))) => {
-            let mut framed = Vec::with_capacity(4 + diff.len() + server_sv.len());
+        Ok(Ok(sync::BodyExchange::Diff { diff, state_vector })) => {
+            let mut framed = Vec::with_capacity(4 + diff.len() + state_vector.len());
             framed.extend_from_slice(&(diff.len() as u32).to_le_bytes());
             framed.extend_from_slice(&diff);
-            framed.extend_from_slice(&server_sv);
+            framed.extend_from_slice(&state_vector);
             (
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, "application/octet-stream")],
@@ -238,6 +238,16 @@ async fn run_body_exchange(state: &AppState, doc_id: &str, body: Bytes) -> Respo
             )
                 .into_response()
         }
+        // 409 rather than a flag in the frame: an older client reads it as an error and
+        // backs off — which is the safe outcome — instead of misparsing a new field and
+        // merging two unrelated documents. The client fetches the canonical copy and
+        // replaces its own.
+        Ok(Ok(sync::BodyExchange::Unrelated)) => (
+            StatusCode::CONFLICT,
+            "this document shares no history with the canonical one; fetch it and replace \
+             your copy",
+        )
+            .into_response(),
         Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Ok(Err(e)) => {
             eprintln!("[sync] {e}");
