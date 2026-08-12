@@ -849,3 +849,22 @@ pub fn compare_body(content: &str, canonical: &[u8], kind: BodyKind) -> Shadow {
         }
     }
 }
+
+/// Materialize a stored body document back to the durable `DocNode` JSON git holds.
+///
+/// The inverse of [`project_body`], and the endpoint a reconcile that resolves in the
+/// CRDT's favour writes through: the bytes go back out in exactly the shape the REST
+/// save path produces, so git ends up with content indistinguishable from the editor
+/// having saved it.
+pub fn materialize_body(canonical: &[u8]) -> Result<String, String> {
+    let schema = Rc::new(Schema::starter_kit());
+    let stored = CollabSession::from_bytes(canonical)
+        .map_err(|e| format!("stored document did not load: {e}"))?;
+    let node = stored
+        .projected_doc(&schema)
+        .map_err(|e| format!("could not materialize the stored document: {e}"))?;
+    let doc = node
+        .to_doc()
+        .map_err(|e| format!("could not serialize the materialized document: {e}"))?;
+    serde_json::to_string(&doc).map_err(|e| format!("could not encode DocNode JSON: {e}"))
+}

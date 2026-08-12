@@ -284,6 +284,55 @@ pub fn canonical_snapshot(crdt_dir: &Path, doc_id: &str) -> Result<Option<Vec<u8
     load_snapshot(&store, doc_id, manifest.as_ref())
 }
 
+/// Replace a canonical document with a fresh projection of git, and **clear its
+/// ownership** so it is provisional again.
+///
+/// The escape hatch for a document a client owns that git disagrees with, used by
+/// [`crate::reconcile`] once a human has decided git is right. Clearing `synced_at` is
+/// the load-bearing half: it puts the document back in the state where the next client
+/// to sync *claims* it (§D8) rather than merging into it, which is what stops the new
+/// canonical history and a client's old one being concatenated.
+pub fn replace_canonical_from_git(
+    crdt_dir: &Path,
+    doc_id: &str,
+    doc_type: &str,
+    bytes: &[u8],
+) -> Result<(), SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let prev = read_manifest(&store, doc_id)?;
+    let heads = if is_body_doc(doc_id) {
+        vec![body_fingerprint(bytes)]
+    } else {
+        AutoCommit::load(bytes)
+            .map_err(|e| SyncError::Automerge(format!("projection did not load: {e}")))?
+            .get_heads()
+            .iter()
+            .map(|h| h.to_string())
+            .collect()
+    };
+
+    let generation = next_gen(prev.as_ref().and_then(|m| m.generation.as_deref()));
+    block_on(store.put(&format!("{doc_id}/{generation}/snapshot"), bytes))
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+    let manifest = DocManifest {
+        doc_id: doc_id.to_string(),
+        doc_type: doc_type.to_string(),
+        src_sha: prev.as_ref().and_then(|m| m.src_sha.clone()),
+        projection: PROJECTION_V1.to_string(),
+        generation: Some(generation.clone()),
+        heads,
+        // Deliberately None: the document is provisional again.
+        synced_at: None,
+    };
+    let encoded =
+        serde_json::to_vec(&manifest).map_err(|e| SyncError::Store(format!("encode: {e}")))?;
+    block_on(store.put(&format!("{doc_id}/manifest"), &encoded))
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+    sweep_except(&store, doc_id, &generation)?;
+    Ok(())
+}
+
 /// Outcome of a client's bid to take ownership of a document (see [`adopt_doc`]).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Adoption {

@@ -36,6 +36,23 @@ async fn main() {
         plotweb_server::shadow::run().await;
         return;
     }
+    // `reconcile --prefer git|crdt [--dry-run]` resolves documents the shadow pass
+    // reports as diverged. Writes — to the canonical store, to git, or (dry run)
+    // neither — so it takes an explicit direction rather than guessing.
+    if args.get(1).map(String::as_str) == Some("reconcile") {
+        let prefer = args
+            .iter()
+            .position(|a| a == "--prefer")
+            .and_then(|i| args.get(i + 1))
+            .and_then(|s| plotweb_server::reconcile::Prefer::parse(s));
+        let Some(prefer) = prefer else {
+            eprintln!("reconcile: --prefer git|crdt is required (which copy is correct?)");
+            return;
+        };
+        let dry_run = args.iter().any(|a| a == "--dry-run");
+        plotweb_server::reconcile::run(prefer, dry_run).await;
+        return;
+    }
 
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:plotweb.db".into());
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
