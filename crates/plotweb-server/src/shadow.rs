@@ -25,13 +25,28 @@ use plotweb_git::BookStore;
 use rinch_storage::FsStore;
 
 /// What the pass found, across every document it looked at.
+///
+/// Divergence is split by **who owns the document**, because the two cases mean
+/// entirely different things and only one of them should ever hold a cutover:
+///
+/// - A **client-owned** document (its manifest carries `synced_at`) that disagrees
+///   with git means a client and the server have genuinely fallen out of step. That is
+///   the finding phase D exists to produce.
+/// - A document no client has synced is just the backfill's snapshot, frozen when it
+///   was taken. Any editing since moves git and leaves the snapshot behind. That is
+///   staleness, not divergence: git is complete, and a backfill re-run resolves it.
+///
+/// Without the split, ordinary authoring drives the report red within a day and the
+/// real signal drowns in it.
 #[derive(Debug, Default)]
 pub struct ShadowSummary {
     pub books: usize,
     pub compared: usize,
     pub matched: usize,
-    /// Documents where the stored copy and git disagree — the finding that matters.
+    /// Client-owned documents that disagree with git — the finding that matters.
     pub diverged: Vec<(String, String)>,
+    /// Never-synced snapshots that git has moved past. Informational.
+    pub stale: Vec<(String, String)>,
     /// Documents the server holds no canonical copy of. Expected for anything no
     /// client has synced and no backfill has emitted; not a divergence.
     pub absent: usize,
@@ -42,16 +57,34 @@ pub struct ShadowSummary {
 
 impl ShadowSummary {
     /// Whether the soak is clean — the precondition for phase E.
+    ///
+    /// Staleness deliberately does not count: it says the backfill has not run lately,
+    /// not that anything is wrong.
     pub fn is_clean(&self) -> bool {
         self.diverged.is_empty() && self.unreadable.is_empty()
     }
 }
 
-fn record(summary: &mut ShadowSummary, doc_id: &str, outcome: Shadow) {
+/// Whether a client has taken ownership of this document (manifest `synced_at`).
+fn client_owned(store: &FsStore, doc_id: &str) -> bool {
+    matches!(
+        crate::sync::read_manifest(store, doc_id),
+        Ok(Some(m)) if m.synced_at.is_some()
+    )
+}
+
+fn record(summary: &mut ShadowSummary, store: &FsStore, doc_id: &str, outcome: Shadow) {
     summary.compared += 1;
     match outcome {
         Shadow::Match => summary.matched += 1,
-        Shadow::Diverged { detail } => summary.diverged.push((doc_id.to_string(), detail)),
+        Shadow::Diverged { detail } => {
+            let bucket = if client_owned(store, doc_id) {
+                &mut summary.diverged
+            } else {
+                &mut summary.stale
+            };
+            bucket.push((doc_id.to_string(), detail));
+        }
         Shadow::Unreadable { reason } => summary.unreadable.push((doc_id.to_string(), reason)),
     }
 }
@@ -106,9 +139,12 @@ pub async fn run_shadow_pass(data_dir: &str, crdt_dir: &str) -> Result<ShadowSum
                     .collect(),
             };
             match crate::sync::canonical_snapshot(&PathBuf::from(crdt_dir), &book_doc_id) {
-                Ok(Some(bytes)) => {
-                    record(&mut summary, &book_doc_id, compare_book_structure(&input, &bytes))
-                }
+                Ok(Some(bytes)) => record(
+                    &mut summary,
+                    &store,
+                    &book_doc_id,
+                    compare_book_structure(&input, &bytes),
+                ),
                 Ok(None) => summary.absent += 1,
                 Err(e) => summary
                     .unreadable
@@ -126,15 +162,18 @@ pub async fn run_shadow_pass(data_dir: &str, crdt_dir: &str) -> Result<ShadowSum
             )
         {
             match crate::sync::canonical_snapshot(&PathBuf::from(crdt_dir), &doc_id) {
-                Ok(Some(bytes)) => record(&mut summary, &doc_id, compare_body(&content, &bytes, kind)),
+                Ok(Some(bytes)) => record(
+                    &mut summary,
+                    &store,
+                    &doc_id,
+                    compare_body(&content, &bytes, kind),
+                ),
                 Ok(None) => summary.absent += 1,
                 Err(e) => summary
                     .unreadable
                     .push((doc_id.clone(), format!("store read failed: {e}"))),
             }
         }
-
-        let _ = &store;
     }
 
     Ok(summary)
@@ -154,15 +193,26 @@ pub fn print_summary(data_dir: &str, crdt_dir: &str, summary: &ShadowSummary) {
     println!("  documents compared : {}", summary.compared);
     println!("  matching git       : {}", summary.matched);
     println!("  no canonical copy  : {} (never synced or backfilled)", summary.absent);
-    println!("  diverged           : {}", summary.diverged.len());
+    println!("  DIVERGED (synced)  : {}", summary.diverged.len());
+    println!(
+        "  stale (never synced): {} (backfill snapshot older than git — re-run the backfill)",
+        summary.stale.len()
+    );
     println!("  unreadable         : {}", summary.unreadable.len());
     println!();
 
     if summary.diverged.is_empty() {
-        println!("Diverged documents: (none)");
+        println!("Diverged client-owned documents: (none)");
     } else {
-        println!("Diverged documents — the stored copy disagrees with git:");
+        println!("DIVERGED — a client and git disagree on a document the client owns:");
         for (doc_id, detail) in &summary.diverged {
+            println!("  {doc_id} — {detail}");
+        }
+    }
+    if !summary.stale.is_empty() {
+        println!();
+        println!("Stale snapshots (git has moved on; not a divergence):");
+        for (doc_id, detail) in &summary.stale {
             println!("  {doc_id} — {detail}");
         }
     }
@@ -175,7 +225,17 @@ pub fn print_summary(data_dir: &str, crdt_dir: &str, summary: &ShadowSummary) {
     }
     println!();
     if summary.is_clean() {
-        println!("Verdict: clean. Every canonical copy the server holds agrees with git.");
+        println!(
+            "Verdict: clean. Every client-owned document agrees with git{}.",
+            if summary.stale.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ({} stale snapshot(s) noted above — refresh with a backfill run)",
+                    summary.stale.len()
+                )
+            }
+        );
     } else {
         println!("Verdict: NOT clean — resolve the above before considering phase E (cutover).");
     }

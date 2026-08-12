@@ -89,32 +89,38 @@ async fn main() {
         });
     }
 
-    // Opt-in boot-time shadow validation (env `PLOTWEB_SHADOW_ON_BOOT`, phase D):
-    // compares every canonical document against git and logs the report. Read-only, so
-    // it soaks alongside live traffic.
-    if std::env::var("PLOTWEB_SHADOW_ON_BOOT")
+    // Opt-in boot-time migration passes. The backfill (env `PLOTWEB_BACKFILL_ON_BOOT`)
+    // refreshes canonical documents from git; the shadow pass
+    // (env `PLOTWEB_SHADOW_ON_BOOT`, phase D) compares them to git and reports.
+    //
+    // They run in ONE task, in that order, deliberately. Spawned separately they race:
+    // the shadow pass reads documents the backfill is still rewriting, and the report
+    // comes back a mix of refreshed and stale — not wrong exactly, but not evidence of
+    // anything either. Sequencing them makes "refresh, then measure" a single boot
+    // rather than two restarts.
+    let want_backfill = std::env::var("PLOTWEB_BACKFILL_ON_BOOT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
-        let dd = data_dir.clone();
-        let cd = crdt_dir.clone();
-        tokio::spawn(async move {
-            plotweb_server::shadow::run_on_boot(dd, cd).await;
-        });
-    }
+        .unwrap_or(false);
+    let want_shadow = std::env::var("PLOTWEB_SHADOW_ON_BOOT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    // Opt-in boot-time canonical backfill (env `PLOTWEB_BACKFILL_ON_BOOT`). Runs the
-    // lock-free, additive content backfill in the background — alongside serving, no
-    // rhypedb lock — writing a snapshot blob per clean document into
-    // `PLOTWEB_CRDT_DIR`. Reversible: deleting that directory reverts to git-only.
-    if std::env::var("PLOTWEB_BACKFILL_ON_BOOT")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-    {
+    if want_backfill || want_shadow {
         let dd = data_dir.clone();
         let cd = crdt_dir.clone();
         tokio::spawn(async move {
-            plotweb_server::backfill::run_boot_backfill(dd, cd, boot_rhype, boot_books).await;
+            if want_backfill {
+                plotweb_server::backfill::run_boot_backfill(
+                    dd.clone(),
+                    cd.clone(),
+                    boot_rhype,
+                    boot_books,
+                )
+                .await;
+            }
+            if want_shadow {
+                plotweb_server::shadow::run_on_boot(dd, cd).await;
+            }
         });
     }
 

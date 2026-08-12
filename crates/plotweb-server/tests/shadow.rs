@@ -109,11 +109,62 @@ async fn a_body_a_client_changed_without_git_is_reported_as_diverged() {
     let flagged: Vec<&String> = summary.diverged.iter().map(|(id, _)| id).collect();
     assert!(
         flagged.iter().any(|id| id.contains(&chapter_id)),
-        "the drifted chapter must be reported: {summary:?}"
+        "a client owns this document (it adopted it), so disagreement with git is a \
+         divergence rather than staleness: {summary:?}"
+    );
+    assert!(
+        summary.stale.is_empty(),
+        "and it must not be filed as merely stale: {summary:?}"
     );
     assert!(
         !summary.is_clean(),
         "an unclean soak must say so — this is what holds the cutover"
+    );
+}
+
+#[tokio::test]
+async fn a_stale_snapshot_is_reported_apart_from_a_real_divergence() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Shadow Book").await;
+    let chapter_id = app.create_chapter(&book_id, "One").await;
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+            &json!({ "title": "One", "content": "First draft." }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    // Snapshot the corpus, then keep writing — the shape of ordinary authoring while
+    // the backfill is off. No client has synced anything.
+    plotweb_server::backfill::run_content_backfill(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("backfill");
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+            &json!({ "title": "One", "content": "First draft, much revised." }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let summary = shadow(&app).await;
+    assert!(
+        summary.stale.iter().any(|(id, _)| id.contains(&chapter_id)),
+        "an un-synced snapshot that git moved past is stale: {summary:?}"
+    );
+    assert!(
+        summary.diverged.is_empty(),
+        "and must not be reported as divergence: {summary:?}"
+    );
+    assert!(
+        summary.is_clean(),
+        "staleness alone must not hold the cutover — it means the backfill has not run \
+         lately, not that anything is wrong: {summary:?}"
     );
 }
 
