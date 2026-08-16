@@ -868,3 +868,124 @@ pub fn materialize_body(canonical: &[u8]) -> Result<String, String> {
         .map_err(|e| format!("could not serialize the materialized document: {e}"))?;
     serde_json::to_string(&doc).map_err(|e| format!("could not encode DocNode JSON: {e}"))
 }
+
+/// Apply `content` to an existing body document **as an edit**, returning the new
+/// snapshot.
+///
+/// The primitive cutover needs. When the canonical document becomes the source of
+/// truth, a write arriving over REST — from any client that isn't syncing — has to
+/// land *inside* that document. Projecting the new content fresh and swapping the
+/// bytes would look identical from the outside and be catastrophic underneath: the
+/// replacement shares no history with what every synced device holds, so their next
+/// exchange is a merge of two unrelated documents (or, since the server can now detect
+/// that, a forced reset that discards their offline work).
+///
+/// Recording it as an edit instead keeps one continuous history: the document that
+/// comes back descends from the one that went in, so clients merge it as an ordinary
+/// change. `record_local` takes the before and after models and derives the change,
+/// which is exactly what the editor does when a person types.
+///
+/// An unchanged `content` yields an unchanged document — no empty edit is recorded.
+pub fn apply_content(canonical: &[u8], content: &str, kind: BodyKind) -> Result<Vec<u8>, String> {
+    let (schema, after, _origin) = prepare_body_node(content, kind)?;
+    let mut session = CollabSession::from_bytes(canonical)
+        .map_err(|e| format!("stored document did not load: {e}"))?;
+    let before = session
+        .projected_doc(&schema)
+        .map_err(|e| format!("could not materialize the stored document: {e}"))?;
+
+    session
+        .record_local(&before, &after)
+        .map_err(|e| format!("could not record the edit: {e}"))?;
+    Ok(session.snapshot())
+}
+
+#[cfg(test)]
+mod apply_tests {
+    use super::*;
+
+    fn doc_json(text: &str) -> String {
+        format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{text}"}}]}}]}}"#
+        )
+    }
+
+    #[test]
+    fn an_applied_edit_changes_the_content() {
+        let first = project_body(&doc_json("first draft"), BodyKind::Chapter).unwrap();
+        let second = apply_content(&first, &doc_json("second draft"), BodyKind::Chapter).unwrap();
+
+        let got = materialize_body(&second).unwrap();
+        assert!(got.contains("second draft"), "{got}");
+        assert!(!got.contains("first draft"), "the old text is gone: {got}");
+    }
+
+    /// The property the whole cutover write path rests on: an applied edit must leave a
+    /// document a peer can still merge. Replacing the bytes instead would orphan every
+    /// device holding the previous one.
+    #[test]
+    fn an_applied_edit_keeps_a_history_a_peer_can_still_merge() {
+        use yrs::updates::decoder::Decode;
+        use yrs::{ReadTxn, StateVector, Transact};
+
+        let original = project_body(&doc_json("shared origin"), BodyKind::Chapter).unwrap();
+
+        // A peer holding the original, as a synced device would.
+        let peer = yrs::Doc::new();
+        peer.transact_mut()
+            .apply_update(yrs::Update::decode_v1(&original).unwrap())
+            .unwrap();
+
+        let edited = apply_content(&original, &doc_json("edited server-side"), BodyKind::Chapter)
+            .unwrap();
+        let server = yrs::Doc::new();
+        server
+            .transact_mut()
+            .apply_update(yrs::Update::decode_v1(&edited).unwrap())
+            .unwrap();
+
+        // Shared client ids: the two documents are related, so a sync is a merge rather
+        // than a conflict (this is precisely what `sync::histories_are_unrelated` tests
+        // on the server).
+        let peer_sv = peer.transact().state_vector();
+        let server_sv = server.transact().state_vector();
+        assert!(
+            peer_sv
+                .iter()
+                .any(|(client_id, _)| server_sv.contains_client(client_id)),
+            "an applied edit must descend from what peers hold, not replace it"
+        );
+
+        // And the peer converges on the edit by ordinary means.
+        let diff = server.transact().encode_diff_v1(&peer_sv);
+        peer.transact_mut()
+            .apply_update(yrs::Update::decode_v1(&diff).unwrap())
+            .unwrap();
+        let converged = peer
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        let got = materialize_body(&converged).unwrap();
+        assert!(got.contains("edited server-side"), "peer converged: {got}");
+    }
+
+    #[test]
+    fn applying_identical_content_records_nothing() {
+        let first = project_body(&doc_json("unchanged"), BodyKind::Chapter).unwrap();
+        let again = apply_content(&first, &doc_json("unchanged"), BodyKind::Chapter).unwrap();
+        assert_eq!(
+            materialize_body(&first).unwrap(),
+            materialize_body(&again).unwrap(),
+            "re-applying the same content must not alter the document"
+        );
+    }
+
+    #[test]
+    fn legacy_content_can_be_applied_too() {
+        // Pre-DocNode content still arrives from older saves; it converts the same way
+        // the editor converts it.
+        let first = project_body(&doc_json("start"), BodyKind::Chapter).unwrap();
+        let applied = apply_content(&first, "plain markdown line", BodyKind::Chapter).unwrap();
+        let got = materialize_body(&applied).unwrap();
+        assert!(got.contains("plain markdown line"), "{got}");
+    }
+}

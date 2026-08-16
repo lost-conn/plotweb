@@ -15,3 +15,8 @@ rinch-editor-core = { workspace = true }
 rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "a1b2702", default-features = false }
 plotweb-common = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# The apply tests inspect state vectors directly, to prove an applied edit leaves a
+# history peers can still merge. Same yrs line rinch-editor-collab pulls.
+yrs = "0.27"

@@ -1874,6 +1874,7 @@ dependencies = [
  "rinch-editor-collab",
  "rinch-editor-core",
  "serde_json",
+ "yrs",
 ]
 
 [[package]]
