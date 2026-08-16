@@ -405,6 +405,58 @@ Two rules keep it safe:
 
 **Slice 6 — optional WS live transport** (`rinch-ws`). Transport swap only.
 
+---
+
+## 8c. Phase E — what cutover actually requires
+
+Written after phase D produced real findings; supersedes the one-line "flip a flag" in
+`offline-first-rinch-plan.md`.
+
+**Cutover inverts the direction; it does not switch git off.** Git-on-disk is only a
+rollback if it is still *current*, and version history, export and beta-reader views all
+read git. So E means: the canonical document becomes the source of truth, and the server
+keeps git as a **live mirror**. Same reversibility, no feature regressions, and the shadow
+pass keeps working — it then continuously verifies the mirror, which is exactly the
+evidence that rollback would succeed.
+
+**Why history stays in git.** yrs *has* `Snapshot`/`encode_state_from_snapshot`, but they
+are gated on `skip_gc`, which defaults to false — with garbage collection on, deleted
+content is collected and past states cannot be reconstructed. `skip_gc` is set at document
+creation, inside `rinch-editor-collab`, so using it would need another upstream change, it
+would only help documents created afterwards, and every device would retain every deleted
+character forever. Yjs is designed to converge and forget. Git already implements browse /
+preview / restore / `pinned_commit`, and doubles as backup and disaster recovery.
+
+What the CRDT *could* add is a different feature rather than a replacement: edit-level
+time travel (scrub a writing session, per-author attribution). The mechanism for that is
+the **update log** we already receive at `/update` — replaying a prefix reconstructs any
+past state, and unlike snapshots it works with GC on. Worth building only if that feature
+is wanted; it composes with git rather than replacing it.
+
+**The blocking work:**
+
+1. **Server-side edit application** — ✅ `sync::apply_body_content` /
+   `plotweb_crdt::apply_content`. A REST write must land *inside* the canonical document,
+   derived from before/after models, so it descends from what synced devices hold.
+   Replacing the bytes would orphan them all on the first write.
+2. **Git mirroring on CRDT writes** — materialize and commit, **debounced per document**
+   (on idle or on close, not per save), or the mirror turns history into one commit per
+   autosave, which is worse than today.
+3. **Read path behind the flag** — bodies via `materialize_body`; structure needs a
+   materializer to `Book`/`Chapter`/`Note` (only the private comparison form exists).
+4. **The flag** — per book, not global, so the blast radius is one book and the first
+   cutover can be a book of ours.
+
+**The rule that makes (1) safe:** a client must never both save over REST *and* sync the
+same document, or the same edit lands twice — once as its own change, once as the
+server's. At cutover a syncing client stops REST-writing the bodies it syncs. That rule
+lives with the flag, which is why (1) ships as a tested primitive and is deliberately not
+wired to a route yet.
+
+**Still open:** deletion semantics (§D7) under a CRDT-canonical world, and the
+structure-doc disjoint gap (`book:`/`user:` are Automerge and have no equivalent of the
+yrs unrelated-history check).
+
 Reversibility: slices 1–2 are additive (a new endpoint, an upstream method). Slices 3–4 sit
 behind a client flag (`PLOTWEB_SYNC=1` natively / a build flag on web) until proven; off =
 today's behaviour exactly.

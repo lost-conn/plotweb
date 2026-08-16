@@ -166,6 +166,10 @@ fn load_snapshot(
 
 /// Publish `doc`'s snapshot as a fresh generation and make it live with one atomic
 /// manifest put, then sweep everything the new generation replaced.
+/// `synced_at` is passed in rather than stamped here, because who owns a document is
+/// not a property of saving it. A client exchange takes ownership; a server-applied
+/// REST edit must leave ownership exactly as it found it, or an ordinary save would
+/// silently take a document away from the backfill that maintains it.
 fn save_snapshot(
     store: &FsStore,
     doc_id: &str,
@@ -173,6 +177,7 @@ fn save_snapshot(
     prev: Option<&DocManifest>,
     snapshot: &[u8],
     heads: Vec<String>,
+    synced_at: Option<String>,
 ) -> Result<(), SyncError> {
     let generation = next_gen(prev.and_then(|m| m.generation.as_deref()));
     let snap_key = format!("{doc_id}/{generation}/snapshot");
@@ -188,7 +193,7 @@ fn save_snapshot(
         projection: PROJECTION_V1.to_string(),
         generation: Some(generation.clone()),
         heads,
-        synced_at: Some(now_stamp()),
+        synced_at,
     };
     let encoded =
         serde_json::to_vec(&manifest).map_err(|e| SyncError::Store(format!("encode: {e}")))?;
@@ -393,7 +398,15 @@ pub fn adopt_doc(
         doc.get_heads().iter().map(|h| h.to_string()).collect()
     };
 
-    save_snapshot(&store, doc_id, doc_type, manifest.as_ref(), full_doc, heads)?;
+    save_snapshot(
+        &store,
+        doc_id,
+        doc_type,
+        manifest.as_ref(),
+        full_doc,
+        heads,
+        Some(now_stamp()),
+    )?;
     Ok(Adoption::Adopted)
 }
 
@@ -440,6 +453,7 @@ pub fn sync_round(
             manifest.as_ref(),
             &snapshot,
             heads,
+            Some(now_stamp()),
         )?;
     } else if let Some(m) = manifest.as_ref().filter(|m| m.synced_at.is_none()) {
         // A pure *pull* — no snapshot rewrite, but the doc still becomes client-owned,
@@ -631,6 +645,69 @@ pub fn body_apply(
         &after,
         // yrs has no head hashes; the fingerprint below is what a sweep compares.
         vec![body_fingerprint(&after)],
+        Some(now_stamp()),
+    )?;
+    Ok(true)
+}
+
+/// Apply REST-shaped `content` to a body document as an **edit**, preserving both its
+/// history and its ownership.
+///
+/// The server-side write path cutover needs: once the canonical document is the source
+/// of truth, a save arriving over REST — from any client not syncing that document —
+/// has to land inside it. [`plotweb_crdt::apply_content`] derives the change from
+/// before/after models, so the result descends from what every synced device already
+/// holds and merges as an ordinary edit. Replacing the bytes instead would orphan them.
+///
+/// Ownership is carried through untouched: applying a REST write is not a client taking
+/// the document, and marking it so would quietly remove it from the backfill's care.
+///
+/// **Not yet wired to a route.** Which writes should land here is the cutover flag's
+/// business, and getting it wrong double-applies: a client that both saves over REST
+/// *and* syncs would contribute the same edit twice, once as its own change and once as
+/// the server's. The rule that avoids it — a syncing client stops REST-writing the
+/// bodies it syncs — belongs with the flag, so this ships as a tested primitive first.
+pub fn apply_body_content(
+    crdt_dir: &Path,
+    doc_id: &str,
+    doc_type: &str,
+    content: &str,
+    kind: plotweb_crdt::BodyKind,
+) -> Result<bool, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let manifest = read_manifest(&store, doc_id)?;
+
+    let Some(existing) = load_snapshot(&store, doc_id, manifest.as_ref())? else {
+        // Nothing stored yet: a fresh projection *is* the whole history, so there is
+        // nothing to orphan.
+        let bytes = plotweb_crdt::project_body(content, kind).map_err(SyncError::Automerge)?;
+        save_snapshot(
+            &store,
+            doc_id,
+            doc_type,
+            manifest.as_ref(),
+            &bytes,
+            vec![body_fingerprint(&bytes)],
+            manifest.as_ref().and_then(|m| m.synced_at.clone()),
+        )?;
+        return Ok(true);
+    };
+
+    let updated = plotweb_crdt::apply_content(&existing, content, kind)
+        .map_err(SyncError::Automerge)?;
+    if updated == existing {
+        return Ok(false);
+    }
+
+    save_snapshot(
+        &store,
+        doc_id,
+        doc_type,
+        manifest.as_ref(),
+        &updated,
+        vec![body_fingerprint(&updated)],
+        manifest.as_ref().and_then(|m| m.synced_at.clone()),
     )?;
     Ok(true)
 }
