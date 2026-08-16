@@ -442,10 +442,23 @@ is wanted; it composes with git rather than replacing it.
 2. **Git mirroring on CRDT writes** — materialize and commit, **debounced per document**
    (on idle or on close, not per save), or the mirror turns history into one commit per
    autosave, which is worse than today.
-3. **Read path behind the flag** — bodies via `materialize_body`; structure needs a
-   materializer to `Book`/`Chapter`/`Note` (only the private comparison form exists).
-4. **The flag** — per book, not global, so the blast radius is one book and the first
-   cutover can be a book of ours.
+3. **Read path behind the flag** — ✅ for bodies (`routes::cutover_body` via
+   `materialize_body`). Chapter/note `GET` serves the canonical body for a cut-over
+   book and **falls back to git** when the canonical copy is missing or unreadable:
+   slightly older content is recoverable, an error or an empty body looks like data
+   loss. The chapter *list* still reads git — it is the sidebar's word counts, and git
+   is current for REST writes; it becomes fully current once (2) mirrors sync writes.
+   Structure reads (`book:`) still need a materializer to `Book`/`Chapter`/`Note`.
+4. **The flag** — ✅ `PLOTWEB_CUTOVER_BOOKS`, a comma-separated list of book ids, read
+   at startup into `AppState`. Env rather than a column on purpose: a schema migration
+   would make the first cutover harder to undo than to do, and the promise of phase E is
+   that the flag flips back. Unset and `jkbase restart` returns a book to
+   git-authoritative in about thirty seconds — and because git mirrors throughout, it
+   returns to *current* content, not cutover-day content.
+5. **Write path** — ✅ a REST write to a cut-over book goes to git *and* is applied into
+   the canonical document, on the same per-document lock sync uses. Apply failures are
+   logged rather than surfaced: git already has the content, so the author's save
+   succeeded, and the shadow pass will report the difference.
 
 **The rule that makes (1) safe:** a client must never both save over REST *and* sync the
 same document, or the same edit lands twice — once as its own change, once as the
