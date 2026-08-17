@@ -118,6 +118,11 @@ burns metered build minutes for nothing.
 - All three are lock-free (no rhypedb lock) so they run alongside the live server. Turn
   them off when not in use (they re-run every restart otherwise).
 
+**Cutting a book over** (phase E, `PLOTWEB_CUTOVER_BOOKS=<book-id>[,<book-id>]` + restart):
+that book's chapter/note bodies are read from the canonical store and REST writes land in
+both it and git. Reversible by unsetting and restarting; git has been mirroring, so a
+rollback returns to current content. Cut over a book of ours first, never a user's.
+
 **Resolving a divergence** (`plotweb-server reconcile --prefer git|crdt [--dry-run]`):
 only touches documents the shadow pass reports as **diverged** — client-owned *and*
 disagreeing with git. Staleness is not its job; a backfill run fixes that. `--prefer git`

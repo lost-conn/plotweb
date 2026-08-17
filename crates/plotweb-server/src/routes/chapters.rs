@@ -57,11 +57,18 @@ pub async fn get(
 
     match state.books.get_chapter(&book_id, &chapter_id).await {
         Ok(ch) => {
+            // Cut-over books read their body from the canonical document; git still
+            // holds everything else about the chapter (title, order, timestamps) and
+            // remains the mirror. If the canonical copy is missing or unreadable, git's
+            // content stands — a cut-over book degrades to the old behaviour rather
+            // than to an error.
+            let content = super::cutover_body(&state, &book_id, &format!("chapter:{}", ch.id))
+                .unwrap_or(ch.content);
             let chapter = Chapter {
                 id: ch.id,
                 book_id,
                 title: ch.title,
-                content: ch.content,
+                content,
                 sort_order: ch.sort_order,
                 word_count: ch.word_count,
                 created_at: ch.created_at,
@@ -142,6 +149,21 @@ pub async fn update(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "failed to save chapter" })),
         );
+    }
+
+    // Cut over: the write also lands *in* the canonical document, as an edit. Git has
+    // just taken the same content, which is what keeps it a live mirror — and what
+    // makes the flag reversible to current content rather than to cutover-day content.
+    if let Some(content) = req.content.as_deref() {
+        super::apply_cutover_body(
+            &state,
+            &book_id,
+            &format!("chapter:{chapter_id}"),
+            "chapter",
+            content,
+            plotweb_crdt::BodyKind::Chapter,
+        )
+        .await;
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))

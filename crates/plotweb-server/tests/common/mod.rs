@@ -97,6 +97,16 @@ impl TestApp {
         self.state.as_ref().expect("app state")
     }
 
+    /// Cut `book_id` over to the canonical store, as `PLOTWEB_CUTOVER_BOOKS` would in
+    /// production — set on the state rather than the process environment, so tests
+    /// running in parallel can't cut each other's books over.
+    pub async fn cut_over(&mut self, book_id: &str) {
+        let mut state = self.state.take().expect("app state");
+        state.cutover = plotweb_server::cutover::Cutover::parse(book_id);
+        self.state = Some(state.clone());
+        self.router = test_router(state).await;
+    }
+
     /// The canonical Automerge blob store (`PLOTWEB_CRDT_DIR`) this app syncs into —
     /// so a test can point the migration backfill at it, or inspect what sync wrote.
     pub fn crdt_dir(&self) -> &PathBuf {

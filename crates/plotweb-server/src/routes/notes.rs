@@ -74,11 +74,15 @@ pub async fn get(
 
     match state.books.get_note(&book_id, &note_id).await {
         Ok(n) => {
+            // Cut over: the body comes from the canonical document, with git as the
+            // fallback (see routes::cutover_body).
+            let content = super::cutover_body(&state, &book_id, &format!("note:{}", n.id))
+                .unwrap_or(n.content);
             let note = Note {
                 id: n.id,
                 book_id,
                 title: n.title,
-                content: n.content,
+                content,
                 color: n.color,
                 created_at: n.created_at,
                 updated_at: n.updated_at,
@@ -186,6 +190,18 @@ pub async fn update(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "failed to save note" })),
         );
+    }
+
+    if let Some(content) = req.content.as_deref() {
+        super::apply_cutover_body(
+            &state,
+            &book_id,
+            &format!("note:{note_id}"),
+            "note",
+            content,
+            plotweb_crdt::BodyKind::Note,
+        )
+        .await;
     }
 
     (StatusCode::OK, Json(json!({ "ok": true })))

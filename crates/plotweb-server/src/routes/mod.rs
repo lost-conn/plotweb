@@ -25,6 +25,76 @@ pub async fn verify_book_ownership(state: &AppState, book_id: &str, user_id: &st
     state.rhype.exists(q).await.unwrap_or(false)
 }
 
+// ── Cutover (phase E) ──────────────────────────────────────────────
+//
+// For a book that has been cut over, the canonical document is the source of truth and
+// git is the mirror. Both helpers are no-ops for every other book, so the paths below
+// read exactly as they did before for anything not cut over.
+
+/// The body a cut-over book should serve, or `None` to fall back to git.
+///
+/// Falling back matters: a canonical copy that is missing or unreadable means the
+/// server serves slightly older content, which is recoverable. Serving an error, or an
+/// empty body, is what would look like data loss to the author.
+pub fn cutover_body(state: &AppState, book_id: &str, doc_id: &str) -> Option<String> {
+    if !state.cutover.is_cut_over(book_id) {
+        return None;
+    }
+    match crate::sync::canonical_snapshot(&state.crdt_dir, doc_id) {
+        Ok(Some(bytes)) => match plotweb_crdt::materialize_body(&bytes) {
+            Ok(content) => Some(content),
+            Err(e) => {
+                eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {e}");
+                None
+            }
+        },
+        Ok(None) => {
+            eprintln!("[cutover] {doc_id}: no canonical copy, serving git");
+            None
+        }
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: store read failed, serving git: {e}");
+            None
+        }
+    }
+}
+
+/// Apply a REST write into the canonical document of a cut-over book.
+///
+/// Serialized on the same per-document lock sync uses, so a save and an exchange cannot
+/// interleave in the middle of a read-modify-write. Failure is logged, not surfaced:
+/// git already has the content, so the author's save succeeded even if the mirror is
+/// briefly ahead — and the shadow pass will report the difference.
+pub async fn apply_cutover_body(
+    state: &AppState,
+    book_id: &str,
+    doc_id: &str,
+    doc_type: &str,
+    content: &str,
+    kind: plotweb_crdt::BodyKind,
+) {
+    if !state.cutover.is_cut_over(book_id) {
+        return;
+    }
+    let lock = state.doc_locks.for_doc(doc_id);
+    let _guard = lock.lock().await;
+
+    let crdt_dir = state.crdt_dir.clone();
+    let doc_id_owned = doc_id.to_string();
+    let doc_type = doc_type.to_string();
+    let content = content.to_string();
+    let applied = tokio::task::spawn_blocking(move || {
+        crate::sync::apply_body_content(&crdt_dir, &doc_id_owned, &doc_type, &content, kind)
+    })
+    .await;
+
+    match applied {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => eprintln!("[cutover] {doc_id}: could not apply the write: {e}"),
+        Err(e) => eprintln!("[cutover] {doc_id}: apply worker panicked: {e}"),
+    }
+}
+
 // ── Cascade deletes ────────────────────────────────────────────────
 // SQLite enforced ON DELETE CASCADE (book → links → feedback → replies).
 // rhypedb has no relations/cascade, so we delete children explicitly.

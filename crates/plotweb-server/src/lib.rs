@@ -7,6 +7,7 @@
 pub mod audit;
 pub mod auth;
 pub mod backfill;
+pub mod cutover;
 pub mod db;
 pub mod email;
 pub mod rhype;
@@ -52,6 +53,8 @@ pub struct AppState {
     pub crdt_dir: PathBuf,
     /// Per-document serialization for canonical sync writes (see [`sync::DocLocks`]).
     pub doc_locks: sync::DocLocks,
+    /// Books reading from the canonical store rather than git (phase E).
+    pub cutover: cutover::Cutover,
 }
 
 /// Build `AppState` from explicit paths. Used by `main` (via env) and by tests
@@ -88,6 +91,7 @@ pub async fn build_state(
         email,
         crdt_dir,
         doc_locks: sync::DocLocks::new(),
+        cutover: cutover::Cutover::from_env(),
     }
 }
 
