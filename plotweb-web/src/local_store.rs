@@ -44,7 +44,6 @@ use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
 use rinch_storage::{StorageResult, Store};
 
 #[cfg(target_arch = "wasm32")]
