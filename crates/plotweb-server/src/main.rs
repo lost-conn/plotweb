@@ -75,6 +75,7 @@ async fn main() {
     // it without stopping the server).
     let boot_rhype = state.rhype.clone();
     let boot_books = state.books.clone();
+    let state_cutover = state.cutover.clone();
 
     // Static files — serve the built frontend, with SPA fallback to index.html
     let dist_path = std::env::var("DIST_DIR").unwrap_or_else(|_| "../plotweb-web/dist".into());
@@ -86,6 +87,16 @@ async fn main() {
         .merge(api_router(state))
         .fallback_service(serve_dir)
         .layer(session);
+
+    // Say which books read from the canonical store. Without this the only way to
+    // confirm a cutover took effect is to read a chapter and infer it.
+    if state_cutover.is_empty() {
+        println!("[cutover] no books cut over (PLOTWEB_CUTOVER_BOOKS unset)");
+    } else {
+        for book_id in state_cutover.book_ids() {
+            println!("[cutover] book {book_id} reads from the canonical store");
+        }
+    }
 
     let addr = "0.0.0.0:3000";
     println!("PlotWeb server running on http://{}", addr);
@@ -122,7 +133,11 @@ async fn main() {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    if want_backfill || want_shadow {
+    let reconcile_setting = std::env::var("PLOTWEB_RECONCILE_ON_BOOT")
+        .ok()
+        .filter(|v| !v.is_empty() && v != "0");
+
+    if want_backfill || want_shadow || reconcile_setting.is_some() {
         let dd = data_dir.clone();
         let cd = crdt_dir.clone();
         tokio::spawn(async move {
@@ -134,6 +149,12 @@ async fn main() {
                     boot_books,
                 )
                 .await;
+            }
+            // Between the two: resolving a divergence is only meaningful once the
+            // backfill has refreshed what it can, and the shadow report is only worth
+            // reading once the resolutions have happened.
+            if let Some(setting) = reconcile_setting.as_deref() {
+                plotweb_server::reconcile::run_on_boot(setting, dd.clone(), cd.clone()).await;
             }
             if want_shadow {
                 plotweb_server::shadow::run_on_boot(dd, cd).await;

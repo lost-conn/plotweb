@@ -155,6 +155,23 @@ pub(crate) fn persist_book(book_id: &str) {
     });
 }
 
+/// Record a typography change in the book document.
+///
+/// Font settings used to reach only REST: the `book:` document took them once, when it
+/// was seeded, and never again. So the two copies parted company the moment an author
+/// touched the typography panel — which is exactly what the phase-D shadow pass
+/// reported on two production books, and would have ridden into cutover as the
+/// structure document became authoritative.
+pub fn set_font_settings(book_id: &str, font_settings: &plotweb_common::FontSettings) {
+    let json = serde_json::to_string(font_settings).unwrap_or_else(|_| "{}".to_string());
+    with_book(book_id, |doc| {
+        let Some(meta) = get_obj(doc, &ROOT, "meta") else {
+            return;
+        };
+        let _ = doc.put(&meta, "font_settings", json);
+    });
+}
+
 /// Run `f` against the open book's doc iff it matches `book_id`, then persist the
 /// resulting full snapshot. No-op if no matching book is open (REST still persists).
 fn with_book(book_id: &str, f: impl FnOnce(&mut AutoCommit)) {

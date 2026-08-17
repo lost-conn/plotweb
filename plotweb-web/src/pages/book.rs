@@ -1000,6 +1000,9 @@ fn save_font_settings(
 ) {
     fonts::load_book_fonts(&fs);
     font_settings.set(fs.clone());
+    // Dual-write: the book document holds font settings too, and used to receive them
+    // only at seed time — so typography changes silently diverged the two copies.
+    crate::local_book::set_font_settings(&bid_signal.get(), &fs);
     store.current_book.update(|book| {
         if let Some(b) = book {
             b.font_settings = Some(fs.clone());

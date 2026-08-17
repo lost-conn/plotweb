@@ -275,3 +275,51 @@ pub async fn run(prefer: Prefer, dry_run: bool) {
         Err(e) => eprintln!("reconcile: {e}"),
     }
 }
+
+/// Boot-time hook (env `PLOTWEB_RECONCILE_ON_BOOT`): `dry-run`, `git`, or `crdt`.
+///
+/// Exists because a subcommand is unreachable where it is needed. The platform gives
+/// logs, secrets, restart and deploy — no shell — so a tool that only runs as
+/// `plotweb-server reconcile` can resolve nothing on the deployment that actually has
+/// divergences. Anything unrecognised is treated as a dry run: a typo in an environment
+/// variable must not rewrite prose.
+pub async fn run_on_boot(setting: &str, data_dir: String, crdt_dir: String) {
+    let (prefer, dry_run) = match setting {
+        "git" => (Prefer::Git, false),
+        "crdt" => (Prefer::Crdt, false),
+        other => {
+            if other != "dry-run" && other != "1" && other != "true" {
+                println!(
+                    "[boot-reconcile] unrecognised setting {other:?} — running as a dry run; \
+                     use `git` or `crdt` to actually resolve"
+                );
+            }
+            (Prefer::Git, true)
+        }
+    };
+
+    println!(
+        "[boot-reconcile] resolving diverged client-owned documents in favour of {}{}",
+        match prefer {
+            Prefer::Git => "GIT",
+            Prefer::Crdt => "the stored CRDT",
+        },
+        if dry_run { " (dry run)" } else { "" }
+    );
+    match run_all(&data_dir, &crdt_dir, prefer, dry_run).await {
+        Ok(summary) => {
+            println!("[boot-reconcile] considered {}", summary.considered);
+            for (doc_id, action) in &summary.resolved {
+                println!("[boot-reconcile]   {doc_id} — {action}");
+            }
+            for (doc_id, why) in &summary.skipped {
+                println!("[boot-reconcile]   SKIPPED {doc_id} — {why}");
+            }
+            for (doc_id, e) in &summary.errors {
+                println!("[boot-reconcile]   ERROR   {doc_id} — {e}");
+            }
+        }
+        Err(e) => eprintln!("[boot-reconcile] {e}"),
+    }
+    println!("[boot-reconcile] complete");
+}
