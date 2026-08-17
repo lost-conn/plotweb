@@ -231,3 +231,55 @@ async fn a_client_still_holding_the_pre_reconcile_document_is_refused_not_merged
     .expect("shadow");
     assert!(after.is_clean(), "and the corpus stays clean: {after:?}");
 }
+
+#[tokio::test]
+async fn the_boot_hook_defaults_to_a_dry_run_for_anything_it_does_not_recognise() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = diverged_chapter(&mut app).await;
+
+    // A typo in an environment variable must not rewrite prose.
+    plotweb_server::reconcile::run_on_boot(
+        "gti",
+        app.book_dir().to_str().unwrap().to_string(),
+        app.crdt_dir().to_str().unwrap().to_string(),
+    )
+    .await;
+
+    let r = app
+        .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
+        .await;
+    assert!(
+        r.json["content"].as_str().unwrap().contains("What git believes"),
+        "an unrecognised setting resolves nothing"
+    );
+    let after = plotweb_server::shadow::run_shadow_pass(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("shadow");
+    assert_eq!(after.diverged.len(), 1, "still diverged: {after:?}");
+}
+
+#[tokio::test]
+async fn the_boot_hook_resolves_when_given_a_direction() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (_book_id, _chapter_id) = diverged_chapter(&mut app).await;
+
+    plotweb_server::reconcile::run_on_boot(
+        "git",
+        app.book_dir().to_str().unwrap().to_string(),
+        app.crdt_dir().to_str().unwrap().to_string(),
+    )
+    .await;
+
+    let after = plotweb_server::shadow::run_shadow_pass(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("shadow");
+    assert!(after.is_clean(), "resolved on boot: {after:?}");
+}

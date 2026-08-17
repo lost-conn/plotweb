@@ -118,6 +118,12 @@ burns metered build minutes for nothing.
 - All three are lock-free (no rhypedb lock) so they run alongside the live server. Turn
   them off when not in use (they re-run every restart otherwise).
 
+**Reconciling on the deployment** (`PLOTWEB_RECONCILE_ON_BOOT=dry-run|git|crdt` + restart):
+the subcommand cannot be run on jkbase — the platform gives logs, secrets, restart and
+deploy, no shell — so the boot hook is the only way to resolve a divergence where the
+divergences actually are. Runs between the backfill and the shadow pass. Anything
+unrecognised is treated as a dry run; a typo must not rewrite prose. Turn it off after.
+
 **Cutting a book over** (phase E, `PLOTWEB_CUTOVER_BOOKS=<book-id>[,<book-id>]` + restart):
 that book's chapter/note bodies are read from the canonical store and REST writes land in
 both it and git. Reversible by unsetting and restarting; git has been mirroring, so a
