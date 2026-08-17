@@ -2116,13 +2116,14 @@ fn do_switch_chapter(
     save_status: Signal<&'static str>,
     editor_word_count: Signal<u64>,
     loaded_chapter_id: Signal<Option<String>>,
+    chapter_dirty: Signal<bool>,
     chapter_handle: Signal<EditorHandle>,
     chapter_title: Signal<String>,
     store: AppStore,
     bid: &str,
     new_chapter_id: &str,
 ) {
-    do_switch_chapter_inner(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_handle, chapter_title, store, bid, new_chapter_id, None);
+    do_switch_chapter_inner(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle, chapter_title, store, bid, new_chapter_id, None);
 }
 
 thread_local! {
@@ -2138,6 +2139,7 @@ fn do_switch_chapter_inner(
     save_status: Signal<&'static str>,
     editor_word_count: Signal<u64>,
     loaded_chapter_id: Signal<Option<String>>,
+    chapter_dirty: Signal<bool>,
     chapter_handle: Signal<EditorHandle>,
     chapter_title: Signal<String>,
     store: AppStore,
@@ -2186,7 +2188,14 @@ fn do_switch_chapter_inner(
     // with another chapter's content (the chapter-overwrite bug when switching
     // quickly between chapters).
     let leaving_id = match active_pane.get() {
-        BookPane::Editor(id) if loaded_chapter_id.get().as_deref() == Some(id.as_str()) => Some(id),
+        // ...and only if it was actually edited. Without that, leaving a chapter you
+        // merely looked at rewrites it with whatever the editor was handed — which is
+        // how a divergent or mis-loaded document overwrites the stored one.
+        BookPane::Editor(id)
+            if loaded_chapter_id.get().as_deref() == Some(id.as_str()) && chapter_dirty.get() =>
+        {
+            Some(id)
+        }
         _ => None,
     };
     if let Some(current_id) = leaving_id {
@@ -2194,6 +2203,7 @@ fn do_switch_chapter_inner(
         // Read the durable save shape straight from the editor model (synchronous,
         // no DOM race): the model always reflects the loaded chapter.
         if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
+            chapter_dirty.set(false);
             save_status.set("saving");
             let req = UpdateChapterRequest { title: None, content: Some(content) };
             api::put::<_, serde_json::Value>(
@@ -2243,6 +2253,8 @@ fn do_switch_chapter_inner(
             // The model now reflects the current chapter — save-on-leave / autosave
             // may safely persist it.
             loaded_chapter_id.set(Some(new_cid.clone()));
+            // Freshly loaded: nothing to save until the author changes something.
+            chapter_dirty.set(false);
 
             // Local-first (Phase 2 · Slice 1 · deliverable 1): back this chapter body
             // with a durable Automerge doc in rinch-storage. Additive — the REST
@@ -2532,6 +2544,7 @@ fn render_note_card(
     note_editor_title: Signal<String>,
     note_editor_color: Signal<Option<String>>,
     note_handle: Signal<EditorHandle>,
+    note_dirty: Signal<bool>,
     dragging_note_id: Signal<Option<String>>,
     drop_target: Signal<Option<(Option<String>, usize)>>,
     ghost_visible: Signal<bool>,
@@ -2637,6 +2650,7 @@ fn render_note_card(
                                 // Load into the note editor model (synchronous).
                                 // Legacy-tolerant: DocNode JSON if it parses, else the
                                 // legacy raw-HTML path (notes were stored as HTML).
+                                note_dirty.set(false);
                                 let handle = note_handle.get();
                                 editor_utils::load_note_content(&handle, &note.content);
                                 handle.set_dark_mode(store.dark_mode.get());
@@ -2788,6 +2802,7 @@ fn render_note_card(
                                     note_editor_title,
                                     note_editor_color,
                                     note_handle,
+                                    note_dirty,
                                     dragging_note_id,
                                     drop_target,
                                     ghost_visible,
@@ -2821,6 +2836,20 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // persist when this matches the target chapter, so a not-yet-loaded editor
     // (still holding the previous chapter) can't overwrite the wrong chapter.
     let loaded_chapter_id: Signal<Option<String>> = Signal::new(None);
+    // Has this surface been edited since the document was loaded?
+    //
+    // Save-on-leave used to fire unconditionally, so merely opening a chapter or note
+    // and navigating away rewrote it with whatever the editor happened to hold. That is
+    // harmless while the editor holds what is stored, and destroys the stored copy the
+    // moment it doesn't — a divergent canonical copy, a failed load, the chapter
+    // crosstalk bug. A note lost a paragraph in production exactly this way: it was
+    // opened, showed the (blank) canonical copy of a diverged document, and the walk
+    // away wrote that blank over git.
+    //
+    // Set where a save is *requested* (every path that means "something changed" goes
+    // through the schedulers), cleared when a document loads and after a save lands.
+    let chapter_dirty: Signal<bool> = Signal::new(false);
+    let note_dirty: Signal<bool> = Signal::new(false);
     let auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>> = Signal::new(None);
 
     // Model-first prose editors (rinch-editor-view), one per prose surface. Stored in
@@ -3044,6 +3073,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
         if loaded_chapter_id.get().as_deref() != Some(chapter_id_to_save.as_str()) {
             return;
         }
+        // The edits are about to be written: anything typed from here re-marks the
+        // surface through `schedule_chapter_autosave`. Without clearing, the flag stays
+        // set for the life of the page and the next switch re-saves content nobody
+        // touched — which is the very write this guard exists to prevent.
+        chapter_dirty.set(false);
         // Serialize the durable save shape (DocNode JSON) straight from the model.
         let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) else {
             return;
@@ -3074,6 +3108,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // editor emits no DOM `input` event (no `contenteditable`), so edits are detected
     // via `EditorHandle::on_change` below.
     let schedule_chapter_autosave = move || {
+        chapter_dirty.set(true);
         if !matches!(active_pane.get(), BookPane::Editor(_)) {
             return;
         }
@@ -3325,7 +3360,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Factory closures capture only Copy types (Signals) so they are Copy themselves.
     // This lets the rsx macro use them in multiple for-loops without move issues.
     let open_chapter = move |chapter_id: String| {
-        move || do_switch_chapter(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_handle, chapter_title, store, &bid_signal.get(), &chapter_id)
+        move || do_switch_chapter(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle, chapter_title, store, &bid_signal.get(), &chapter_id)
     };
 
     // Navigate to a feedback item: switch to the chapter editor, open the feedback
@@ -3344,7 +3379,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             pending_feedback_scroll.set(Some((selected_text.clone(), context_block.clone())));
             show_feedback_sidebar.set(true);
             do_switch_chapter_inner(
-                active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_handle,
+                active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle,
                 chapter_title, store, &bid_signal.get(), &chapter_id,
                 Some(pending_feedback_scroll),
             );
@@ -3686,6 +3721,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let save_note_content = move || {
+        // Nothing was edited: writing here could only ever overwrite the stored note
+        // with whatever the editor was handed.
+        if !note_dirty.get() {
+            return;
+        }
+        note_dirty.set(false);
         if let BookPane::NoteEditor(ref nid) = active_pane.get() {
             let nid = nid.clone();
             let bid = bid_signal.get();
@@ -3719,6 +3760,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let schedule_note_save = move || {
+        note_dirty.set(true);
         note_save_status.set("unsaved");
         if let Some(h) = note_save_timer_id.get() {
             rinch_core::clear_timeout(h);
@@ -4503,6 +4545,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                             note_editor_title,
                                             note_editor_color,
                                             note_handle,
+                                            note_dirty,
                                             dragging_note_id,
                                             drop_target,
                                             ghost_visible,
