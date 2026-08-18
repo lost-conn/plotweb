@@ -24,26 +24,55 @@ pub async fn list(
 
     match state.books.list_notes(&book_id).await {
         Ok((notes, tree)) => {
-            let notes: Vec<Note> = notes
-                .into_iter()
-                .map(|n| Note {
-                    id: n.id,
-                    book_id: book_id.clone(),
-                    title: n.title,
-                    content: n.content,
-                    color: n.color,
-                    created_at: n.created_at,
-                    updated_at: n.updated_at,
-                })
-                .collect();
-            let resp = NotesResponse {
-                notes,
-                tree: NoteTree {
-                    root_order: tree.root_order,
-                    children: tree.children,
-                    collapsed: tree.collapsed,
-                },
+            // Cut over: titles, colours and the tree come from the canonical document;
+            // bodies and timestamps stay git's. Same overlay as the chapter list, and
+            // for the same reason.
+            let (notes, tree) = match super::cutover_structure(&state, &book_id).await {
+                Some(structure) => {
+                    let listed = structure
+                        .note_titles
+                        .iter()
+                        .map(|(id, title)| {
+                            let git = notes.iter().find(|n| &n.id == id);
+                            Note {
+                                id: id.clone(),
+                                book_id: book_id.clone(),
+                                title: title.clone(),
+                                content: git.map(|n| n.content.clone()).unwrap_or_default(),
+                                color: structure.note_colors.get(id).cloned(),
+                                created_at: git.map(|n| n.created_at.clone()).unwrap_or_default(),
+                                updated_at: git.map(|n| n.updated_at.clone()).unwrap_or_default(),
+                            }
+                        })
+                        .collect();
+                    let tree = NoteTree {
+                        root_order: structure.root_order.clone(),
+                        children: structure.children.clone().into_iter().collect(),
+                        collapsed: structure.collapsed.iter().cloned().collect(),
+                    };
+                    (listed, tree)
+                }
+                None => (
+                    notes
+                        .into_iter()
+                        .map(|n| Note {
+                            id: n.id,
+                            book_id: book_id.clone(),
+                            title: n.title,
+                            content: n.content,
+                            color: n.color,
+                            created_at: n.created_at,
+                            updated_at: n.updated_at,
+                        })
+                        .collect(),
+                    NoteTree {
+                        root_order: tree.root_order,
+                        children: tree.children,
+                        collapsed: tree.collapsed,
+                    },
+                ),
             };
+            let resp = NotesResponse { notes, tree };
             (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
         }
         Err(_) => {

@@ -277,3 +277,197 @@ async fn an_autosave_of_a_body_does_not_rewrite_the_structure() {
          change is a sync round for every device and a commit for nobody"
     );
 }
+
+// ── Reads ────────────────────────────────────────────────────────────────────
+//
+// The other half of cutover: once the canonical structure is the truth, the chapter
+// list, the notes tree and the book's own metadata have to come from it. What makes
+// this observable is a canonical copy git has not caught up with — exactly the window
+// between a device syncing a change and the mirror committing it.
+
+/// Move the canonical structure ahead of git, as a device's sync would.
+async fn canonical_ahead(
+    app: &TestApp,
+    book_id: &str,
+    edit: impl FnOnce(&mut plotweb_crdt::BookStructureInput),
+) {
+    let mut input = plotweb_server::structure::read_structure_input(&app.state().books, book_id)
+        .await
+        .expect("structure in git");
+    edit(&mut input);
+    plotweb_server::sync::apply_structure(app.crdt_dir(), book_id, &input).expect("apply");
+}
+
+#[tokio::test]
+async fn the_chapter_list_comes_from_the_canonical_structure() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+    let c2 = app.create_chapter(&book_id, "Two").await;
+
+    let gone = c1.clone();
+    canonical_ahead(&app, &book_id, move |input| {
+        input.chapters.retain(|(id, _)| id != &gone);
+        input.chapters.push(("c-new".into(), "Three".into()));
+        input.chapters.reverse();
+        input.chapters[1].1 = "Two, revised".into();
+    })
+    .await;
+
+    let r = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let listed: Vec<(String, String, i64)> = r.json
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|c| {
+            (
+                c["id"].as_str().unwrap().to_string(),
+                c["title"].as_str().unwrap().to_string(),
+                c["sort_order"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        listed,
+        vec![
+            ("c-new".to_string(), "Three".to_string(), 0),
+            (c2.clone(), "Two, revised".to_string(), 1),
+        ],
+        "order, titles, an addition git has not seen and a removal it still has — all \
+         from the canonical copy"
+    );
+    assert!(
+        !listed.iter().any(|(id, _, _)| id == &c1),
+        "a chapter removed canonically must not come back from git"
+    );
+}
+
+#[tokio::test]
+async fn a_chapter_git_still_has_keeps_its_content_and_word_count() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{c1}"),
+            &json!({ "content": r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"three words here"}]}]}"# }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    canonical_ahead(&app, &book_id, |input| {
+        input.chapters[0].1 = "One, renamed on a device".into();
+    })
+    .await;
+
+    let r = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    let ch = &r.json.as_array().unwrap()[0];
+    assert_eq!(ch["title"], "One, renamed on a device");
+    assert_eq!(
+        ch["word_count"], 3,
+        "the CRDT structure holds no word counts — those stay git's, kept current by \
+         the body mirror"
+    );
+    assert!(ch["content"].as_str().unwrap().contains("three words here"));
+}
+
+#[tokio::test]
+async fn the_notes_tree_comes_from_the_canonical_structure() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    let r = app
+        .post(
+            &format!("/api/books/{book_id}/notes"),
+            &json!({ "title": "Characters", "parent_id": null, "color": null }),
+        )
+        .await;
+    let n1 = r.id();
+
+    let parent = n1.clone();
+    canonical_ahead(&app, &book_id, move |input| {
+        input.notes[0].1 = "Cast".into();
+        input.notes[0].2 = Some("teal".into());
+        input.notes.push(("n-new".into(), "Alice".into(), None));
+        input.children.insert(parent.clone(), vec!["n-new".into()]);
+        input.collapsed.push(parent);
+    })
+    .await;
+
+    let r = app.get(&format!("/api/books/{book_id}/notes")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    let notes = r.json["notes"].as_array().unwrap();
+    let cast = notes.iter().find(|n| n["id"] == n1.as_str()).expect("the note");
+    assert_eq!(cast["title"], "Cast");
+    assert_eq!(cast["color"], "teal");
+    assert!(
+        notes.iter().any(|n| n["id"] == "n-new"),
+        "a note added on a device is listed before the mirror commits it"
+    );
+    assert_eq!(r.json["tree"]["children"][&n1][0], "n-new");
+    assert_eq!(r.json["tree"]["collapsed"][0], n1.as_str());
+}
+
+#[tokio::test]
+async fn the_books_own_metadata_comes_from_it_too() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    app.create_chapter(&book_id, "One").await;
+
+    canonical_ahead(&app, &book_id, |input| {
+        input.title = "Renamed on a device".into();
+        input.description = "and described there".into();
+        input.chapters.push(("c-new".into(), "Two".into()));
+    })
+    .await;
+
+    let r = app.get(&format!("/api/books/{book_id}")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json["title"], "Renamed on a device");
+    assert_eq!(r.json["description"], "and described there");
+    assert_eq!(r.json["chapter_count"], 2);
+}
+
+#[tokio::test]
+async fn a_book_with_no_canonical_structure_still_reads_from_git() {
+    // Absence is not evidence: a book cut over before its structure was ever synced or
+    // backfilled has no canonical copy, and refusing to list its chapters would look
+    // like the book had been emptied.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+    app.cut_over(&book_id).await;
+
+    let r = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(r.json.as_array().unwrap()[0]["id"], c1.as_str());
+    let r = app.get(&format!("/api/books/{book_id}")).await;
+    assert_eq!(r.json["title"], "Structure Book");
+}
+
+#[tokio::test]
+async fn a_book_that_is_not_cut_over_reads_git_even_when_a_canonical_copy_disagrees() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Ordinary Book").await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+    canonical_ahead(&app, &book_id, |input| {
+        input.chapters[0].1 = "Not what git says".into();
+    })
+    .await;
+
+    let r = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    let ch = &r.json.as_array().unwrap()[0];
+    assert_eq!(ch["id"], c1.as_str());
+    assert_eq!(ch["title"], "One", "nothing changes for a book still on git");
+}

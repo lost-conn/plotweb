@@ -142,18 +142,34 @@ pub async fn get(
 
     match state.books.get_book(&id).await {
         Ok(data) => {
-            let chapter_count = data.chapter_order.len() as i64;
             let word_count = state.books.book_word_count(&id).await;
+            // Cut over: title, description, typography and cover come from the canonical
+            // structure. Word count stays git's — the CRDT structure does not hold it,
+            // and the body mirror keeps it current.
+            let canonical = super::cutover_structure(&state, &id).await;
+            let chapter_count = canonical
+                .as_ref()
+                .map(|s| s.chapters.len())
+                .unwrap_or(data.chapter_order.len()) as i64;
             let book = Book {
                 id,
-                title: data.title,
-                description: data.description,
+                title: canonical.as_ref().map(|s| s.title.clone()).unwrap_or(data.title),
+                description: canonical
+                    .as_ref()
+                    .map(|s| s.description.clone())
+                    .unwrap_or(data.description),
                 created_at: data.created_at,
                 updated_at: data.updated_at,
                 chapter_count: Some(chapter_count),
                 word_count: Some(word_count),
-                font_settings: data.font_settings,
-                cover_image: data.cover_image,
+                font_settings: canonical
+                    .as_ref()
+                    .and_then(|s| serde_json::from_str(&s.font_settings_json).ok())
+                    .or(data.font_settings),
+                cover_image: canonical
+                    .as_ref()
+                    .map(|s| s.cover_ref.clone())
+                    .unwrap_or(data.cover_image),
             };
             (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))
         }

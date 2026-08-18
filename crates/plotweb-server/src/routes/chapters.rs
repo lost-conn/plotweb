@@ -24,19 +24,47 @@ pub async fn list(
 
     match state.books.list_chapters(&book_id).await {
         Ok(chapters) => {
-            let chapters: Vec<Chapter> = chapters
-                .into_iter()
-                .map(|ch| Chapter {
-                    id: ch.id,
-                    book_id: book_id.clone(),
-                    title: ch.title,
-                    content: ch.content,
-                    sort_order: ch.sort_order,
-                    word_count: ch.word_count,
-                    created_at: ch.created_at,
-                    updated_at: ch.updated_at,
-                })
-                .collect();
+            // Cut over: order and titles are the canonical document's — they are what it
+            // holds. Everything else (content, word counts, timestamps) is git's, kept
+            // current by the mirror; the CRDT structure has no record of them.
+            //
+            // A chapter the canonical copy knows and git does not is one created on a
+            // device whose mirror write has not landed yet. It is listed rather than
+            // hidden: the alternative is a chapter that vanishes from the sidebar for
+            // half a minute after someone adds it on their phone.
+            let chapters: Vec<Chapter> = match super::cutover_structure(&state, &book_id).await {
+                Some(structure) => structure
+                    .chapters
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (id, title))| {
+                        let git = chapters.iter().find(|c| &c.id == id);
+                        Chapter {
+                            id: id.clone(),
+                            book_id: book_id.clone(),
+                            title: title.clone(),
+                            content: git.map(|c| c.content.clone()).unwrap_or_default(),
+                            sort_order: i as i64,
+                            word_count: git.map(|c| c.word_count).unwrap_or(0),
+                            created_at: git.map(|c| c.created_at.clone()).unwrap_or_default(),
+                            updated_at: git.map(|c| c.updated_at.clone()).unwrap_or_default(),
+                        }
+                    })
+                    .collect(),
+                None => chapters
+                    .into_iter()
+                    .map(|ch| Chapter {
+                        id: ch.id,
+                        book_id: book_id.clone(),
+                        title: ch.title,
+                        content: ch.content,
+                        sort_order: ch.sort_order,
+                        word_count: ch.word_count,
+                        created_at: ch.created_at,
+                        updated_at: ch.updated_at,
+                    })
+                    .collect(),
+            };
             (StatusCode::OK, Json(serde_json::to_value(chapters).unwrap()))
         }
         Err(_) => (StatusCode::OK, Json(serde_json::to_value(Vec::<Chapter>::new()).unwrap())),

@@ -130,6 +130,54 @@ pub async fn apply_cutover_body(
     }
 }
 
+/// The structure a cut-over book should be read from, or `None` to read git.
+///
+/// **Deliberately not the tri-state [`cutover_body`] uses.** A body whose copies
+/// disagree is refused, because either version could be the author's real prose and
+/// there is no safe base to author from; refusing costs one document. A structure that
+/// disagrees is different in both directions: under cutover the canonical copy *is* the
+/// intended shape, and git retains every past version of `book.json`, so serving the
+/// canonical one loses nothing that cannot be recovered. Refusing would take the whole
+/// book offline — every chapter, every note, the sidebar — over a disagreement the
+/// mirror closes within its debounce window, and it would do so for exactly the books
+/// someone is actively syncing.
+///
+/// So: serve the canonical structure whenever there is a readable one, fall back to git
+/// when there is not (absence is not evidence — see `cutover_body`), and log a
+/// disagreement so the shadow report has a companion in the live logs.
+pub async fn cutover_structure(
+    state: &AppState,
+    book_id: &str,
+) -> Option<plotweb_crdt::BookStructure> {
+    if !state.cutover.is_cut_over(book_id) {
+        return None;
+    }
+    let doc_id = format!("book:{book_id}");
+    let bytes = match crate::sync::canonical_snapshot(&state.crdt_dir, &doc_id) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return None,
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: store read failed, serving git: {e}");
+            return None;
+        }
+    };
+    let structure = match plotweb_crdt::materialize_book_structure(&bytes) {
+        Ok(structure) => structure,
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {e}");
+            return None;
+        }
+    };
+
+    if let Some(input) = crate::structure::read_structure_input(&state.books, book_id).await
+        && input.structure() != structure
+    {
+        eprintln!("[cutover] {doc_id}: serving the canonical structure; git disagrees (the \
+                   mirror has not caught up, or the two need reconciling)");
+    }
+    Some(structure)
+}
+
 /// Record a structure change — create, rename, reorder, delete, move, retitle — into
 /// the canonical `book:` document of a cut-over book.
 ///
