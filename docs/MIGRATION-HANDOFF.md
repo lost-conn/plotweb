@@ -126,8 +126,19 @@ unrecognised is treated as a dry run; a typo must not rewrite prose. Turn it off
 
 **Cutting a book over** (phase E, `PLOTWEB_CUTOVER_BOOKS=<book-id>[,<book-id>]` + restart):
 that book's chapter/note bodies are read from the canonical store and REST writes land in
-both it and git. Reversible by unsetting and restarting; git has been mirroring, so a
-rollback returns to current content. Cut over a book of ours first, never a user's.
+both it and git. A body whose two copies **disagree** is refused with `409` rather than
+served from either side (there is no safe base to author from); an **absent** canonical
+copy falls back to git. Reversible by unsetting and restarting; git has been mirroring, so
+a rollback returns to current content. Cut over a book of ours first, never a user's.
+
+**Sync writes mirror into git automatically, for cut-over books only.** A sync push moves
+the canonical copy without touching git, so a background pass (`mirror.rs`, always on, no
+flag) materializes and writes it back — once the document has been quiet for 30s, or
+within 5 minutes of the first change if someone keeps typing. No commit when git already
+matches. Non-cut-over books are left alone on purpose: git is still authoritative there,
+so a difference should surface in the shadow report and be reconciled with a stated
+direction, not be silently overwritten by the CRDT. Consequence worth knowing: for a
+cut-over book, commits now appear a little after the edit rather than on save.
 
 **Resolving a divergence** (`plotweb-server reconcile --prefer git|crdt [--dry-run]`):
 only touches documents the shadow pass reports as **diverged** — client-owned *and*
@@ -197,8 +208,12 @@ The canonical Automerge store is **staged but unread**. Everything below is wher
    lossless, while this proves that what clients have actually written still agrees with
    git. Reports match / diverged / no-canonical-copy / unreadable, and only a clean run
    should let phase E proceed.
-4. **Phase E — cutover.** A reversible per-book (or global) `canonical = automerge` flag.
-   Reads/writes hit Automerge; sync goes live. Git stays on disk; **flag flips back**.
+4. **Phase E — cutover.** Per-book `PLOTWEB_CUTOVER_BOOKS` flag; reads come from the
+   canonical store, writes reach both, git stays a **live mirror** (REST writes directly,
+   sync writes via the debounced `mirror` pass) so the flag really flips back. Bodies are
+   done. Remaining: the structure (`book:`) read path, which needs a materializer back to
+   `Book`/`Chapter`/`Note`; deletion semantics (§D7) with the CRDT canonical; and the
+   `book:`/`user:` Automerge equivalent of the yrs unrelated-history check.
 5. **Phase F — retire git.** Last, manual, with a backup/tag. The one hard-to-reverse step.
 
 **Also worth landing** (would remove Option-3's compromise): extend `rinch-editor-collab`'s

@@ -439,9 +439,23 @@ is wanted; it composes with git rather than replacing it.
    `plotweb_crdt::apply_content`. A REST write must land *inside* the canonical document,
    derived from before/after models, so it descends from what synced devices hold.
    Replacing the bytes would orphan them all on the first write.
-2. **Git mirroring on CRDT writes** — materialize and commit, **debounced per document**
-   (on idle or on close, not per save), or the mirror turns history into one commit per
-   autosave, which is worse than today.
+2. **Git mirroring on CRDT writes** — ✅ `mirror::MirrorQueue` / `mirror::run`. A sync
+   write moves the canonical copy and git never hears about it; left alone that freezes
+   version history, export and the beta-reader views at cutover, and stops the flag
+   being a rollback (flipping back would return the book to whatever git last saw).
+   A canonical change on a **cut-over** book marks the document; a background pass
+   materializes and writes it once the document has been quiet for `IDLE` (30s), or in
+   any case within `MAX_WAIT` (5min) of the first change so a long session still
+   checkpoints. Debounced because a syncing client pushes an update every second or two
+   while its author types — a commit each would be worse history than today. It skips a
+   document whose git copy already matches, so a no-op round leaves no commit.
+
+   Deliberately **only** for cut-over books: everywhere else git is still the source of
+   truth and the canonical copy is the mirror, so writing git from the CRDT would have
+   the migration pointing both ways at once. Those books stay on the
+   shadow-then-reconcile path, where a difference is reported and resolved with a stated
+   direction. Structure (`book:`) is not mirrored either — it has no single git file to
+   write, and needs the materializer named in (3) first.
 3. **Read path behind the flag** — ✅ for bodies (`routes::cutover_body`). Three
    outcomes, and the distinction between the last two is the lesson of the first
    cutover: **absent** canonical copy falls back to git (slightly older content is
@@ -451,7 +465,7 @@ is wanted; it composes with git rather than replacing it.
    canonical's and an edit overwrites git, which is precisely how a note lost a
    paragraph on day one. Refusing means nobody authors from an ambiguous base, and the
    shadow report already names the document so it can be reconciled deliberately. The chapter *list* still reads git — it is the sidebar's word counts, and git
-   is current for REST writes; it becomes fully current once (2) mirrors sync writes.
+   is current for REST writes, and now for sync writes too via (2).
    Structure reads (`book:`) still need a materializer to `Book`/`Chapter`/`Note`.
 4. **The flag** — ✅ `PLOTWEB_CUTOVER_BOOKS`, a comma-separated list of book ids, read
    at startup into `AppState`. Env rather than a column on purpose: a schema migration

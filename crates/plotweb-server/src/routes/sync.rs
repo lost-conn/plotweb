@@ -89,10 +89,15 @@ pub async fn adopt_book_doc(
     .await;
 
     match result {
-        Ok(Ok(outcome)) => axum::Json(serde_json::json!({
-            "adopted": outcome == sync::Adoption::Adopted,
-        }))
-        .into_response(),
+        Ok(Ok(outcome)) => {
+            if outcome == sync::Adoption::Adopted {
+                note_canonical_change(&state, &book_id, &doc_id);
+            }
+            axum::Json(serde_json::json!({
+                "adopted": outcome == sync::Adoption::Adopted,
+            }))
+            .into_response()
+        }
         Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Ok(Err(e)) => {
             eprintln!("[sync] adopt {doc_id}: {e}");
@@ -262,6 +267,22 @@ async fn run_body_exchange(state: &AppState, doc_id: &str, body: Bytes) -> Respo
 
 /// `POST /api/books/{book_id}/sync/{doc_id}/update` — apply a client's yrs update to
 /// a body document. The other half of [`run_body_exchange`].
+/// Record that a sync write moved the canonical copy of `doc_id`, so the background
+/// mirror pass writes it back to git (see [`crate::mirror`]).
+///
+/// Only for a **cut-over** book. Everywhere else git is still the source of truth and
+/// the canonical copy is the mirror, so writing git from the CRDT would have the
+/// migration pointing both ways at once; those books stay on the shadow-then-reconcile
+/// path, where a difference is reported and resolved with a stated direction.
+fn note_canonical_change(state: &AppState, book_id: &str, doc_id: &str) {
+    if !state.cutover.is_cut_over(book_id) {
+        return;
+    }
+    if let Some(kind) = crate::mirror::kind_of_doc(doc_id) {
+        state.mirror.mark(book_id, doc_id, kind);
+    }
+}
+
 pub async fn apply_body_update(
     State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
@@ -293,7 +314,12 @@ pub async fn apply_body_update(
     .await;
 
     match result {
-        Ok(Ok(_changed)) => StatusCode::OK.into_response(),
+        Ok(Ok(changed)) => {
+            if changed {
+                note_canonical_change(&state, &book_id, &doc_id);
+            }
+            StatusCode::OK.into_response()
+        }
         Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Ok(Err(e)) => {
             eprintln!("[sync] update {doc_id}: {e}");
