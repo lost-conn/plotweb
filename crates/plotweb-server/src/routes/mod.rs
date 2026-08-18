@@ -31,35 +31,70 @@ pub async fn verify_book_ownership(state: &AppState, book_id: &str, user_id: &st
 // git is the mirror. Both helpers are no-ops for every other book, so the paths below
 // read exactly as they did before for anything not cut over.
 
-/// The body a cut-over book should serve, or `None` to fall back to git.
+/// What a cut-over book should do with a body read.
+pub enum CutoverRead {
+    /// Not cut over, or no usable canonical copy: serve git's content as before.
+    Git,
+    /// Serve the canonical document's content.
+    Canonical(String),
+    /// The two copies disagree. Refuse the read.
+    Locked(String),
+}
+
+/// Decide how to serve a body for a cut-over book.
 ///
-/// Falling back matters: a canonical copy that is missing or unreadable means the
-/// server serves slightly older content, which is recoverable. Serving an error, or an
-/// empty body, is what would look like data loss to the author.
-pub fn cutover_body(state: &AppState, book_id: &str, doc_id: &str) -> Option<String> {
+/// Falling back to git when the canonical copy is missing or unreadable is deliberate:
+/// slightly older content is recoverable, while an error or an empty body looks to an
+/// author exactly like losing a chapter.
+///
+/// **Disagreement is different from absence, and gets refused.** There is no safe side
+/// to serve when the two copies differ: hand over git's and an edit overwrites whatever
+/// the canonical copy held; hand over the canonical's and an edit overwrites git — which
+/// is how a note lost a paragraph the first day this flag was on. Refusing means nobody
+/// authors from an ambiguous base, and the shadow report already names the document so
+/// it can be reconciled deliberately.
+pub fn cutover_body(
+    state: &AppState,
+    book_id: &str,
+    doc_id: &str,
+    git_content: &str,
+    kind: plotweb_crdt::BodyKind,
+) -> CutoverRead {
     if !state.cutover.is_cut_over(book_id) {
-        return None;
+        return CutoverRead::Git;
     }
-    match crate::sync::canonical_snapshot(&state.crdt_dir, doc_id) {
-        Ok(Some(bytes)) => match plotweb_crdt::materialize_body(&bytes) {
-            Ok(content) => Some(content),
-            Err(e) => {
-                eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {e}");
-                None
-            }
-        },
+    let bytes = match crate::sync::canonical_snapshot(&state.crdt_dir, doc_id) {
+        Ok(Some(bytes)) => bytes,
         Ok(None) => {
             eprintln!("[cutover] {doc_id}: no canonical copy, serving git");
-            None
+            return CutoverRead::Git;
         }
         Err(e) => {
             eprintln!("[cutover] {doc_id}: store read failed, serving git: {e}");
-            None
+            return CutoverRead::Git;
+        }
+    };
+
+    match plotweb_crdt::compare_body(git_content, &bytes, kind) {
+        plotweb_crdt::Shadow::Match => match plotweb_crdt::materialize_body(&bytes) {
+            Ok(content) => CutoverRead::Canonical(content),
+            Err(e) => {
+                eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {e}");
+                CutoverRead::Git
+            }
+        },
+        plotweb_crdt::Shadow::Diverged { detail } => {
+            eprintln!("[cutover] {doc_id}: LOCKED — copies disagree: {detail}");
+            CutoverRead::Locked(detail)
+        }
+        plotweb_crdt::Shadow::Unreadable { reason } => {
+            eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {reason}");
+            CutoverRead::Git
         }
     }
 }
 
-/// Apply a REST write into the canonical document of a cut-over book.
+/// Apply a REST write into the canonical document of a cut-over book./// Apply a REST write into the canonical document of a cut-over book.
 ///
 /// Serialized on the same per-document lock sync uses, so a save and an exchange cannot
 /// interleave in the middle of a read-modify-write. Failure is logged, not surfaced:

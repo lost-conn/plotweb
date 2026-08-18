@@ -65,15 +65,73 @@ async fn a_cut_over_book_reads_from_the_canonical_document() {
     app.register("author", "password123").await;
     let (book_id, chapter_id) = book_with_divergent_copies(&mut app).await;
 
+    // Cut over first, *then* write: a write under cutover reaches both copies, which
+    // is what brings them into agreement. (Writing beforehand would only touch git and
+    // the read would rightly be refused — as the locked test below shows.)
     app.cut_over(&book_id).await;
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+            &json!({ "title": "One", "content": doc_json("what both now say") }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
 
     let r = app
         .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
         .await;
+    assert_eq!(r.status, StatusCode::OK);
     let content = r.json["content"].as_str().unwrap().to_string();
     assert!(
-        content.contains("what the CRDT says"),
+        content.contains("what both now say"),
         "the canonical document is the source of truth now: {content}"
+    );
+}
+
+#[tokio::test]
+async fn a_document_whose_copies_disagree_is_locked_rather_than_served() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = book_with_divergent_copies(&mut app).await;
+    app.cut_over(&book_id).await;
+
+    // There is no safe side to serve: git's copy would let an edit overwrite the
+    // canonical one, and the canonical's would let an edit overwrite git — which is
+    // how a note lost a paragraph the first day this flag was on.
+    let r = app
+        .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
+        .await;
+    assert_eq!(
+        r.status,
+        StatusCode::CONFLICT,
+        "a diverged document must be refused, not silently resolved: {}",
+        r.json
+    );
+    assert!(
+        r.json["detail"].as_str().is_some(),
+        "the refusal says what differs: {}",
+        r.json
+    );
+
+    // Reconciling unlocks it, without anyone having had the chance to author from the
+    // wrong base in between.
+    plotweb_server::reconcile::run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        plotweb_server::reconcile::Prefer::Git,
+        false,
+    )
+    .await
+    .expect("reconcile");
+
+    let r = app
+        .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "reconciling unlocks the document");
+    assert!(
+        r.json["content"].as_str().unwrap().contains("what git says"),
+        "and it serves the copy the reconcile chose: {}",
+        r.json["content"]
     );
 }
 
@@ -84,6 +142,8 @@ async fn a_write_to_a_cut_over_book_reaches_both_copies() {
     let (book_id, chapter_id) = book_with_divergent_copies(&mut app).await;
     app.cut_over(&book_id).await;
 
+    // A write reaches both copies whether or not they agreed beforehand — it is the
+    // *read* that refuses ambiguity, and this write is what ends it.
     let r = app
         .put(
             &format!("/api/books/{book_id}/chapters/{chapter_id}"),

@@ -442,11 +442,15 @@ is wanted; it composes with git rather than replacing it.
 2. **Git mirroring on CRDT writes** — materialize and commit, **debounced per document**
    (on idle or on close, not per save), or the mirror turns history into one commit per
    autosave, which is worse than today.
-3. **Read path behind the flag** — ✅ for bodies (`routes::cutover_body` via
-   `materialize_body`). Chapter/note `GET` serves the canonical body for a cut-over
-   book and **falls back to git** when the canonical copy is missing or unreadable:
-   slightly older content is recoverable, an error or an empty body looks like data
-   loss. The chapter *list* still reads git — it is the sidebar's word counts, and git
+3. **Read path behind the flag** — ✅ for bodies (`routes::cutover_body`). Three
+   outcomes, and the distinction between the last two is the lesson of the first
+   cutover: **absent** canonical copy falls back to git (slightly older content is
+   recoverable; an error or empty body looks like data loss), while a copy that
+   **disagrees** is refused with `409`. There is no safe side to serve when the two
+   differ — hand over git's and an edit overwrites the canonical, hand over the
+   canonical's and an edit overwrites git, which is precisely how a note lost a
+   paragraph on day one. Refusing means nobody authors from an ambiguous base, and the
+   shadow report already names the document so it can be reconciled deliberately. The chapter *list* still reads git — it is the sidebar's word counts, and git
    is current for REST writes; it becomes fully current once (2) mirrors sync writes.
    Structure reads (`book:`) still need a materializer to `Book`/`Chapter`/`Note`.
 4. **The flag** — ✅ `PLOTWEB_CUTOVER_BOOKS`, a comma-separated list of book ids, read
