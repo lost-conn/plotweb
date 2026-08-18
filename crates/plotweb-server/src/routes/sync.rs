@@ -48,7 +48,7 @@ pub async fn sync_book_doc(
     let Some(doc_type) = doc_type_in_book(&state, &book_id, &doc_id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    run_round(&state, &doc_id, doc_type, body).await
+    run_round(&state, Some(&book_id), &doc_id, doc_type, body).await
 }
 
 /// `POST /api/books/{book_id}/sync/{doc_id}/adopt` — take ownership of a document
@@ -209,7 +209,7 @@ pub async fn sync_user_doc(
     body: Bytes,
 ) -> Response {
     let doc_id = format!("user:{user_id}");
-    run_round(&state, &doc_id, "user", body).await
+    run_round(&state, None, &doc_id, "user", body).await
 }
 
 /// Serialize on the doc, hand the protocol round to a blocking thread, and map the
@@ -278,8 +278,8 @@ fn note_canonical_change(state: &AppState, book_id: &str, doc_id: &str) {
     if !state.cutover.is_cut_over(book_id) {
         return;
     }
-    if let Some(kind) = crate::mirror::kind_of_doc(doc_id) {
-        state.mirror.mark(book_id, doc_id, kind);
+    if let Some(target) = crate::mirror::target_of_doc(doc_id) {
+        state.mirror.mark(book_id, doc_id, target);
     }
 }
 
@@ -332,7 +332,13 @@ pub async fn apply_body_update(
     }
 }
 
-async fn run_round(state: &AppState, doc_id: &str, doc_type: &str, body: Bytes) -> Response {
+async fn run_round(
+    state: &AppState,
+    book_id: Option<&str>,
+    doc_id: &str,
+    doc_type: &str,
+    body: Bytes,
+) -> Response {
     if body.len() > MAX_SYNC_BODY {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();
     }
@@ -348,24 +354,29 @@ async fn run_round(state: &AppState, doc_id: &str, doc_type: &str, body: Bytes) 
     let _guard = lock.lock().await;
 
     let crdt_dir = state.crdt_dir.clone();
-    let doc_id = doc_id.to_string();
+    let doc_id_owned = doc_id.to_string();
     let doc_type = doc_type.to_string();
     let result = tokio::task::spawn_blocking(move || {
-        sync::sync_round(&crdt_dir, &doc_id, &doc_type, &body)
+        sync::sync_round(&crdt_dir, &doc_id_owned, &doc_type, &body)
     })
     .await;
 
     match result {
-        Ok(Ok(reply)) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/octet-stream")],
-            reply,
-        )
-            .into_response(),
-        // A message we can't decode is the client's fault and is not retryable.
-        Ok(Err(SyncError::BadMessage(msg))) => {
-            (StatusCode::BAD_REQUEST, msg).into_response()
+        Ok(Ok(round)) => {
+            // A structure change from a device leaves git owed a write, exactly as a
+            // body change does. `user:` has no git representation and marks nothing.
+            if round.changed && let Some(book_id) = book_id {
+                note_canonical_change(state, book_id, doc_id);
+            }
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                round.reply,
+            )
+                .into_response()
         }
+        // A message we can't decode is the client's fault and is not retryable.
+        Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
         Ok(Err(e)) => {
             eprintln!("[sync] {e}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

@@ -234,7 +234,7 @@ fn next_gen(prev: Option<&str>) -> String {
     format!("g{n}")
 }
 
-fn now_stamp() -> String {
+pub fn now_stamp() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
@@ -410,12 +410,21 @@ pub fn adopt_doc(
     Ok(Adoption::Adopted)
 }
 
+/// The outcome of one sync round: what to send back, and whether the client's message
+/// actually moved the canonical document. The caller needs the second part to know
+/// whether git is now owed a mirror write.
+#[derive(Debug)]
+pub struct SyncRoundResult {
+    pub reply: Vec<u8>,
+    pub changed: bool,
+}
+
 pub fn sync_round(
     crdt_dir: &Path,
     doc_id: &str,
     doc_type: &str,
     incoming: &[u8],
-) -> Result<Vec<u8>, SyncError> {
+) -> Result<SyncRoundResult, SyncError> {
     let store = FsStore::open(PathBuf::from(crdt_dir))
         .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
 
@@ -442,7 +451,8 @@ pub fn sync_round(
         .map(SyncMessage::encode)
         .unwrap_or_default();
 
-    if doc.get_heads() != before {
+    let changed = doc.get_heads() != before;
+    if changed {
         // The client moved the canonical doc: republish it.
         let heads = doc.get_heads().iter().map(|h| h.to_string()).collect();
         let snapshot = doc.save();
@@ -470,7 +480,7 @@ pub fn sync_round(
             .map_err(|e| SyncError::Store(e.to_string()))?;
     }
 
-    Ok(reply)
+    Ok(SyncRoundResult { reply, changed })
 }
 
 /// Single-poll drive of a `!Send` [`FsStore`] future — the native backend does its
@@ -803,7 +813,9 @@ mod tests {
         loop {
             let outgoing = doc.sync().generate_sync_message(state);
             let Some(msg) = outgoing else { break };
-            let reply = sync_round(dir, doc_id, "book", &msg.encode()).expect("sync round");
+            let reply = sync_round(dir, doc_id, "book", &msg.encode())
+                .expect("sync round")
+                .reply;
             rounds += 1;
             assert!(rounds < 20, "sync did not converge");
             if reply.is_empty() {
