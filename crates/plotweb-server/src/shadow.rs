@@ -20,7 +20,7 @@
 
 use std::path::PathBuf;
 
-use plotweb_crdt::{compare_body, compare_book_structure, BodyKind, BookStructureInput, Shadow};
+use plotweb_crdt::{compare_body, compare_book_structure, BodyKind, Shadow};
 use plotweb_git::BookStore;
 use rinch_storage::FsStore;
 
@@ -123,21 +123,7 @@ pub async fn run_shadow_pass(data_dir: &str, crdt_dir: &str) -> Result<ShadowSum
         // book: structure
         let book_doc_id = format!("book:{book_id}");
         if let Ok(d) = &book_data {
-            let input = BookStructureInput {
-                title: d.title.clone(),
-                description: d.description.clone(),
-                font_settings: d.font_settings.clone(),
-                cover_ref: d.cover_image.clone(),
-                created_at: d.created_at.clone(),
-                chapters: chapters.iter().map(|c| (c.id.clone(), c.title.clone())).collect(),
-                root_order: notes_tree.root_order.clone(),
-                children: notes_tree.children.clone(),
-                collapsed: notes_tree.collapsed.clone(),
-                notes: notes
-                    .iter()
-                    .map(|n| (n.id.clone(), n.title.clone(), n.color.clone()))
-                    .collect(),
-            };
+            let input = crate::structure::structure_input(d, &chapters, &notes, &notes_tree);
             match crate::sync::canonical_snapshot(&PathBuf::from(crdt_dir), &book_doc_id) {
                 Ok(Some(bytes)) => record(
                     &mut summary,

@@ -126,6 +126,7 @@ pub async fn create(
 
     match state.books.create_chapter(&book_id, &id, &req.title, &now).await {
         Ok(ch) => {
+            super::apply_cutover_structure(&state, &book_id).await;
             let chapter = Chapter {
                 id: ch.id,
                 book_id,
@@ -183,6 +184,12 @@ pub async fn update(
         )
         .await;
     }
+    // Only when a title came with the request. An autosave carries content alone, and
+    // re-reading the whole book on every keystroke's worth of save would be a real cost
+    // for a structure that did not move.
+    if req.title.is_some() {
+        super::apply_cutover_structure(&state, &book_id).await;
+    }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
@@ -206,6 +213,9 @@ pub async fn delete(
             Json(json!({ "error": "failed to delete chapter" })),
         );
     }
+    // Removal from the parent index *is* the deletion (§D7); the orphaned body document
+    // is left in the store, and phase F decides when unreferenced blobs are collected.
+    super::apply_cutover_structure(&state, &book_id).await;
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
@@ -230,6 +240,7 @@ pub async fn reorder(
             Json(json!({ "error": "failed to reorder chapters" })),
         );
     }
+    super::apply_cutover_structure(&state, &book_id).await;
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }

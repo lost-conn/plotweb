@@ -152,6 +152,7 @@ pub async fn create(
         .await
     {
         Ok(n) => {
+            super::apply_cutover_structure(&state, &book_id).await;
             let note = Note {
                 id: n.id,
                 book_id,
@@ -221,6 +222,11 @@ pub async fn update(
         )
         .await;
     }
+    // A note's title and colour live in the book structure, its body does not — so an
+    // autosave of the body alone skips the book read.
+    if req.title.is_some() || req.color.is_some() {
+        super::apply_cutover_structure(&state, &book_id).await;
+    }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
@@ -244,6 +250,8 @@ pub async fn delete(
             Json(json!({ "error": "failed to delete note" })),
         );
     }
+    // As with chapters: removal from the tree is the deletion (§D7).
+    super::apply_cutover_structure(&state, &book_id).await;
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
@@ -271,7 +279,10 @@ pub async fn move_note(
         )
         .await
     {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
+        Ok(()) => {
+            super::apply_cutover_structure(&state, &book_id).await;
+            (StatusCode::OK, Json(json!({ "ok": true })))
+        }
         Err(plotweb_git::error::GitStoreError::CircularReference) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "cannot move note into its own subtree" })),
@@ -312,6 +323,7 @@ pub async fn update_tree(
             Json(json!({ "error": "failed to save note tree" })),
         );
     }
+    super::apply_cutover_structure(&state, &book_id).await;
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }

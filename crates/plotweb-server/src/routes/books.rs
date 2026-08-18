@@ -209,6 +209,9 @@ pub async fn update(
             .await;
     }
 
+    // Title, description, typography and cover all live in the book structure.
+    super::apply_cutover_structure(&state, &id).await;
+
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
 

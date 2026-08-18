@@ -662,11 +662,12 @@ pub fn body_apply(
 /// Ownership is carried through untouched: applying a REST write is not a client taking
 /// the document, and marking it so would quietly remove it from the backfill's care.
 ///
-/// **Not yet wired to a route.** Which writes should land here is the cutover flag's
-/// business, and getting it wrong double-applies: a client that both saves over REST
-/// *and* syncs would contribute the same edit twice, once as its own change and once as
-/// the server's. The rule that avoids it — a syncing client stops REST-writing the
-/// bodies it syncs — belongs with the flag, so this ships as a tested primitive first.
+/// Wired to the write path for cut-over books only (`routes::apply_cutover_body`).
+/// Which writes land here is the cutover flag's business, and getting it wrong
+/// double-applies: a client that both saves over REST *and* syncs would contribute the
+/// same edit twice, once as its own change and once as the server's. The rule that
+/// avoids it — a syncing client stops REST-writing the bodies it syncs — belongs with
+/// the flag.
 pub fn apply_body_content(
     crdt_dir: &Path,
     doc_id: &str,
@@ -710,6 +711,67 @@ pub fn apply_body_content(
         manifest.as_ref().and_then(|m| m.synced_at.clone()),
     )?;
     Ok(true)
+}
+
+/// Record a book's git-side structure into its canonical `book:` document as an edit.
+///
+/// The structure counterpart of [`apply_body_content`]. Callers hand over the whole
+/// structure rather than a delta on purpose: [`plotweb_crdt::apply_book_structure`]
+/// works out what actually differs, so every structure-changing route — create, rename,
+/// reorder, delete, move, retitle — is one call with no per-route diffing to get wrong.
+///
+/// Returns whether anything changed. Ownership is carried through untouched: applying a
+/// REST write is not a client taking the document.
+pub fn apply_structure(
+    crdt_dir: &Path,
+    book_id: &str,
+    input: &plotweb_crdt::BookStructureInput,
+) -> Result<bool, SyncError> {
+    let doc_id = format!("book:{book_id}");
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let manifest = read_manifest(&store, &doc_id)?;
+
+    let Some(existing) = load_snapshot(&store, &doc_id, manifest.as_ref())? else {
+        // Nothing stored yet: a fresh projection is the whole history, so there is
+        // nothing to orphan.
+        let bytes = plotweb_crdt::project_book_structure(input).map_err(SyncError::Automerge)?;
+        let heads = automerge_heads(&bytes)?;
+        save_snapshot(
+            &store,
+            &doc_id,
+            "book",
+            manifest.as_ref(),
+            &bytes,
+            heads,
+            manifest.as_ref().and_then(|m| m.synced_at.clone()),
+        )?;
+        return Ok(true);
+    };
+
+    let updated =
+        plotweb_crdt::apply_book_structure(&existing, input).map_err(SyncError::Automerge)?;
+    if updated == existing {
+        return Ok(false);
+    }
+
+    let heads = automerge_heads(&updated)?;
+    save_snapshot(
+        &store,
+        &doc_id,
+        "book",
+        manifest.as_ref(),
+        &updated,
+        heads,
+        manifest.as_ref().and_then(|m| m.synced_at.clone()),
+    )?;
+    Ok(true)
+}
+
+fn automerge_heads(bytes: &[u8]) -> Result<Vec<String>, SyncError> {
+    let mut doc = AutoCommit::load(bytes)
+        .map_err(|e| SyncError::Automerge(format!("reload for heads: {e}")))?;
+    Ok(doc.get_heads().iter().map(|h| h.to_string()).collect())
 }
 
 /// A content fingerprint for a body document, used where Automerge would use heads.
