@@ -101,6 +101,9 @@ pub enum SyncError {
     /// The stored canonical document could not be loaded, or the protocol rejected
     /// the message.
     Automerge(String),
+    /// The client's document shares no origin with the canonical one, so merging would
+    /// concatenate rather than converge (§D8). Nothing was written.
+    UnrelatedHistory,
 }
 
 impl std::fmt::Display for SyncError {
@@ -109,6 +112,9 @@ impl std::fmt::Display for SyncError {
             SyncError::BadMessage(m) => write!(f, "malformed sync message: {m}"),
             SyncError::Store(m) => write!(f, "crdt store: {m}"),
             SyncError::Automerge(m) => write!(f, "automerge: {m}"),
+            SyncError::UnrelatedHistory => {
+                write!(f, "document shares no history with the canonical one")
+            }
         }
     }
 }
@@ -445,6 +451,12 @@ pub fn sync_round(
         .receive_sync_message(&mut state, message)
         .map_err(|e| SyncError::Automerge(e.to_string()))?;
 
+    // §D8, for structure documents. The merge above has happened in memory only; if it
+    // joined two histories that share no origin, nothing of it is saved.
+    if histories_are_disjoint(&mut doc) {
+        return Err(SyncError::UnrelatedHistory);
+    }
+
     let reply = doc
         .sync()
         .generate_sync_message(&mut state)
@@ -481,6 +493,26 @@ pub fn sync_round(
     }
 
     Ok(SyncRoundResult { reply, changed })
+}
+
+/// Whether a document is the join of two histories that share no origin.
+///
+/// The Automerge counterpart of the yrs [`histories_are_unrelated`] check, and it exists
+/// for the same reason (§D8): a client whose `book:` document was seeded from REST
+/// rather than pulled from the server shares no ancestry with the canonical one, and
+/// Automerge merges the two by *concatenation* — the book comes back with every chapter
+/// twice, in an order neither device asked for.
+///
+/// Concurrent heads do not indicate this; two devices editing at once produce those
+/// routinely. What does is the origin: a document grown from one seed has exactly one
+/// change with no dependencies. Two of them means two seeds, and no amount of further
+/// syncing will ever reconcile them.
+fn histories_are_disjoint(doc: &mut AutoCommit) -> bool {
+    doc.get_changes(&[])
+        .iter()
+        .filter(|change| change.deps().is_empty())
+        .count()
+        > 1
 }
 
 /// Single-poll drive of a `!Send` [`FsStore`] future — the native backend does its

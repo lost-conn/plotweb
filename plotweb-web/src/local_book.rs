@@ -155,6 +155,36 @@ pub(crate) fn persist_book(book_id: &str) {
     });
 }
 
+/// Replace the open book's document with the server's canonical copy.
+///
+/// The way out of §D8 for a structure document: ours was seeded independently (built
+/// from REST data rather than pulled), so it descends from nothing the server holds and
+/// the two would merge by concatenation. The server sees that from the documents
+/// themselves and refuses; this is what we do about it. Replacing rather than merging
+/// is the whole point — anything we hold that the canonical copy does not is lost, but
+/// what we hold is a second copy of the same book, not unsynced work.
+///
+/// `false` if a different book (or none) is open, in which case the caller's cycle is
+/// moot rather than failed.
+pub(crate) fn install_server_book(book_id: &str, bytes: &[u8]) -> bool {
+    let Ok(doc) = AutoCommit::load(bytes) else {
+        log::warn!("sync book:{book_id}: canonical copy did not load");
+        return false;
+    };
+    BOOK.with(|b| {
+        let mut slot = b.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return false;
+        };
+        if state.book_id != book_id {
+            return false;
+        }
+        state.doc = doc;
+        state.persister.persist(state.doc.save());
+        true
+    })
+}
+
 /// Record a typography change in the book document.
 ///
 /// Font settings used to reach only REST: the `book:` document took them once, when it

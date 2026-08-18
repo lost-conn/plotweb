@@ -152,6 +152,27 @@ pub(crate) fn persist_user(user_id: &str) {
     });
 }
 
+/// Replace the open account's document with the server's canonical copy — the `user:`
+/// counterpart of [`crate::local_book::install_server_book`], for the same §D8 reason.
+pub(crate) fn install_server_user(user_id: &str, bytes: &[u8]) -> bool {
+    let Ok(doc) = AutoCommit::load(bytes) else {
+        log::warn!("sync user:{user_id}: canonical copy did not load");
+        return false;
+    };
+    USER.with(|u| {
+        let mut slot = u.borrow_mut();
+        let Some(state) = slot.as_mut() else {
+            return false;
+        };
+        if state.user_id != user_id {
+            return false;
+        }
+        state.doc = doc;
+        state.persister.persist(state.doc.save());
+        true
+    })
+}
+
 /// Run `f` against the open user's doc iff it matches `user_id`, then persist the
 /// resulting full snapshot. No-op if no matching account is open (REST still persists).
 fn with_user(user_id: &str, f: impl FnOnce(&mut AutoCommit)) {

@@ -377,6 +377,16 @@ async fn run_round(
         }
         // A message we can't decode is the client's fault and is not retryable.
         Ok(Err(SyncError::BadMessage(msg))) => (StatusCode::BAD_REQUEST, msg).into_response(),
+        // Same answer, and the same reasoning, as the body path: 409 rather than a flag
+        // in the reply, so an older client backs off instead of merging two documents
+        // that share no origin. The client fetches the canonical copy and replaces its
+        // own.
+        Ok(Err(SyncError::UnrelatedHistory)) => (
+            StatusCode::CONFLICT,
+            "this document shares no history with the canonical one; fetch it and replace \
+             your copy",
+        )
+            .into_response(),
         Ok(Err(e)) => {
             eprintln!("[sync] {e}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()

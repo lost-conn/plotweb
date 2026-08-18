@@ -471,3 +471,125 @@ async fn a_book_that_is_not_cut_over_reads_git_even_when_a_canonical_copy_disagr
     assert_eq!(ch["id"], c1.as_str());
     assert_eq!(ch["title"], "One", "nothing changes for a book still on git");
 }
+
+// ── Disjoint histories (§D8) ─────────────────────────────────────────────────
+
+/// Drive an exchange to completion, returning the first non-OK status if one comes up.
+async fn try_sync(device: &mut Device, app: &mut TestApp, book_id: &str) -> Option<StatusCode> {
+    use automerge::sync::Message as SyncMessage;
+    let uri = format!("/api/books/{book_id}/sync/book:{book_id}");
+    let mut state = SyncState::new();
+    for _ in 0..20 {
+        let Some(msg) = device.doc.sync().generate_sync_message(&mut state) else {
+            return None;
+        };
+        let (status, reply) = app.post_bytes(&uri, &msg.encode()).await;
+        if status != StatusCode::OK {
+            return Some(status);
+        }
+        if reply.is_empty() {
+            return None;
+        }
+        let reply = SyncMessage::decode(&reply).expect("decodable");
+        device
+            .doc
+            .sync()
+            .receive_sync_message(&mut state, reply)
+            .expect("integrate");
+    }
+    panic!("sync did not settle");
+}
+
+#[tokio::test]
+async fn a_structure_document_seeded_independently_is_refused_rather_than_merged() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+
+    // A device that built its own `book:` document from REST data instead of pulling
+    // the canonical one — the §D8 trap. Same content, no shared origin.
+    let input = plotweb_server::structure::read_structure_input(&app.state().books, &book_id)
+        .await
+        .expect("structure in git");
+    let mine = plotweb_crdt::project_book_structure(&input).expect("project");
+    let mut device = Device {
+        doc: AutoCommit::load(&mine).expect("load"),
+    };
+
+    assert_eq!(
+        try_sync(&mut device, &mut app, &book_id).await,
+        Some(StatusCode::CONFLICT),
+        "merging would concatenate the two histories, giving the book every chapter twice"
+    );
+
+    // And the refusal wrote nothing: the canonical copy still holds one chapter.
+    let stored = canonical(&app, &book_id).expect("still there");
+    assert_eq!(stored.chapters, vec![(c1.clone(), "One".into())]);
+
+    // The way out is the one the client takes: fetch the canonical copy and replace.
+    let (status, bytes) = app
+        .get_bytes(&format!("/api/books/{book_id}/sync/book:{book_id}"))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    device.doc = AutoCommit::load(&bytes).expect("load canonical");
+    assert_eq!(try_sync(&mut device, &mut app, &book_id).await, None);
+    let seen = plotweb_crdt::materialize_book_structure(&device.doc.save()).expect("materialize");
+    assert_eq!(seen.chapters, vec![(c1, "One".into())], "one chapter, not two");
+}
+
+#[tokio::test]
+async fn an_ordinary_first_pull_is_not_mistaken_for_a_disjoint_history() {
+    // The check has to distinguish "never synced" from "seeded elsewhere". A fresh
+    // device holds no changes at all, so there is only ever one origin.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+
+    let mut device = Device { doc: AutoCommit::new() };
+    assert_eq!(try_sync(&mut device, &mut app, &book_id).await, None);
+    let seen = plotweb_crdt::materialize_book_structure(&device.doc.save()).expect("materialize");
+    assert_eq!(seen.chapters, vec![(c1, "One".into())]);
+}
+
+#[tokio::test]
+async fn two_devices_editing_at_once_still_converge() {
+    // Concurrent heads are routine and must not be read as disjoint histories.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    app.create_chapter(&book_id, "One").await;
+
+    let mut a = Device { doc: AutoCommit::new() };
+    let mut b = Device { doc: AutoCommit::new() };
+    assert_eq!(try_sync(&mut a, &mut app, &book_id).await, None);
+    assert_eq!(try_sync(&mut b, &mut app, &book_id).await, None);
+
+    // Each renames the book, without seeing the other.
+    for (device, title) in [(&mut a, "From A"), (&mut b, "From B")] {
+        let mut input =
+            plotweb_server::structure::read_structure_input(&app.state().books, &book_id)
+                .await
+                .expect("structure");
+        input.title = title.into();
+        let bytes =
+            plotweb_crdt::apply_book_structure(&device.doc.save(), &input).expect("edit");
+        device.doc = AutoCommit::load(&bytes).expect("load");
+    }
+
+    assert_eq!(try_sync(&mut a, &mut app, &book_id).await, None);
+    assert_eq!(try_sync(&mut b, &mut app, &book_id).await, None);
+    assert_eq!(try_sync(&mut a, &mut app, &book_id).await, None);
+
+    let seen = plotweb_crdt::materialize_book_structure(&a.doc.save()).expect("materialize");
+    assert_eq!(
+        seen.chapters.len(),
+        1,
+        "one chapter, not two — the histories are related and merge rather than concatenate"
+    );
+    assert!(seen.title == "From A" || seen.title == "From B");
+}
