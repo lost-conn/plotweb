@@ -142,9 +142,12 @@ pub async fn apply_cutover_body(
 /// mirror closes within its debounce window, and it would do so for exactly the books
 /// someone is actively syncing.
 ///
-/// So: serve the canonical structure whenever there is a readable one, fall back to git
-/// when there is not (absence is not evidence — see `cutover_body`), and log a
-/// disagreement so the shadow report has a companion in the live logs.
+/// So: serve the canonical structure whenever there is a readable one, and fall back to
+/// git when there is not (absence is not evidence — see `cutover_body`).
+///
+/// It deliberately does **not** compare the two. This is the chapter-list path, hit on
+/// every page load; reading the whole book out of git to produce a log line would cost
+/// more than the read it is checking. Reporting disagreement is the shadow pass's job.
 pub async fn cutover_structure(
     state: &AppState,
     book_id: &str,
@@ -169,12 +172,6 @@ pub async fn cutover_structure(
         }
     };
 
-    if let Some(input) = crate::structure::read_structure_input(&state.books, book_id).await
-        && input.structure() != structure
-    {
-        eprintln!("[cutover] {doc_id}: serving the canonical structure; git disagrees (the \
-                   mirror has not caught up, or the two need reconciling)");
-    }
     Some(structure)
 }
 

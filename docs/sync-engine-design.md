@@ -169,14 +169,33 @@ GET /api/books/{book_id}/sync/heads → { doc_id: heads[] }
 — so the client can skip docs whose server heads it already has instead of paying a
 round trip per doc. Not required for v1 correctness; ship if the poll cost bites.
 
-### D7 — Deletion
+### D7 — Deletion — **implemented**
 
 Automerge has no doc delete. v1 follows the locked schema: removal from the parent index
 (`book:` doc's `chapters` list / notes tree) **is** the deletion; the orphaned body doc is
 dropped from the local store and left server-side. Server-side GC of unreferenced blobs is
 deferred to phase F, where git retirement forces the question anyway.
 
+Under cutover this runs in both directions. A REST delete removes the entry from git and
+from the canonical structure. A deletion arriving by sync is carried into git by the
+mirror — which is not a departure from "git is the archive": a git delete removes the
+file but keeps every past version of it, so mirroring one is exactly as destructive as
+the author deleting the chapter in the browser, which does the same thing.
+
+One refusal guards it. A canonical structure that has lost *every* chapter or *every*
+note while git still has them is not mirrored: that is far more likely a half-written
+document than an author who emptied their book, and an author who really means it can do
+it through the UI. The cost of refusing is a stale mirror and a line in the log.
+
 ### D8 — Provenance: the duplicate-content trap (**the highest-risk part of this design**)
+
+> **Status:** enforced server-side for both CRDTs. Bodies: `sync::histories_are_unrelated`
+> compares yrs state vectors. Structure: `sync::histories_are_disjoint` counts changes
+> with no dependencies — a document grown from one seed has exactly one, so two means two
+> seeds. Both answer `409`, and the client replaces its copy (`take_server_body` /
+> `take_server_structure`). Detected from the documents themselves rather than a
+> client-side flag, because after a reconcile resolves in git's favour that flag is wrong.
+
 
 Today the client seeds a local doc from REST content, and the server's canonical doc was
 seeded independently by the backfill from the *same* git content. Two Automerge docs built
@@ -456,17 +475,35 @@ is wanted; it composes with git rather than replacing it.
    shadow-then-reconcile path, where a difference is reported and resolved with a stated
    direction. Structure (`book:`) is not mirrored either — it has no single git file to
    write, and needs the materializer named in (3) first.
-3. **Read path behind the flag** — ✅ for bodies (`routes::cutover_body`). Three
-   outcomes, and the distinction between the last two is the lesson of the first
-   cutover: **absent** canonical copy falls back to git (slightly older content is
-   recoverable; an error or empty body looks like data loss), while a copy that
-   **disagrees** is refused with `409`. There is no safe side to serve when the two
+3. **Read path behind the flag** — ✅ for bodies (`routes::cutover_body`) and for
+   structure (`routes::cutover_structure`).
+
+   *Bodies* have three outcomes, and the distinction between the last two is the lesson
+   of the first cutover: **absent** canonical copy falls back to git (slightly older
+   content is recoverable; an error or empty body looks like data loss), while a copy
+   that **disagrees** is refused with `409`. There is no safe side to serve when the two
    differ — hand over git's and an edit overwrites the canonical, hand over the
    canonical's and an edit overwrites git, which is precisely how a note lost a
    paragraph on day one. Refusing means nobody authors from an ambiguous base, and the
-   shadow report already names the document so it can be reconciled deliberately. The chapter *list* still reads git — it is the sidebar's word counts, and git
-   is current for REST writes, and now for sync writes too via (2).
-   Structure reads (`book:`) still need a materializer to `Book`/`Chapter`/`Note`.
+   shadow report already names the document so it can be reconciled deliberately.
+
+   *Structure* deliberately does **not** lock on disagreement. The asymmetry is real in
+   both directions: under cutover the canonical copy is the intended shape, and git
+   retains every past version of `book.json`, so serving the canonical one loses nothing
+   unrecoverable — whereas refusing would take the whole book offline (every chapter,
+   every note, the sidebar) over a disagreement the mirror closes within its debounce
+   window, and would do so for exactly the books someone is actively syncing. So the
+   chapter list, the notes tree and the book's metadata come from the canonical document
+   whenever there is a readable one, git otherwise, with a disagreement logged. Content,
+   word counts and timestamps stay git's — the CRDT structure has no record of them, and
+   (2) keeps them current. A chapter the canonical copy knows and git does not is listed
+   rather than hidden; the alternative is a chapter vanishing from the sidebar for half a
+   minute after someone adds it on their phone.
+
+   The write side is symmetric: every structure-changing route (create, rename, reorder,
+   delete, move, retitle) records into the canonical document via
+   `plotweb_crdt::apply_book_structure`, which computes the delta itself so no route has
+   to. A content-only autosave skips it entirely.
 4. **The flag** — ✅ `PLOTWEB_CUTOVER_BOOKS`, a comma-separated list of book ids, read
    at startup into `AppState`. Env rather than a column on purpose: a schema migration
    would make the first cutover harder to undo than to do, and the promise of phase E is
