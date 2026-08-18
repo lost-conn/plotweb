@@ -76,6 +76,7 @@ async fn main() {
     let boot_rhype = state.rhype.clone();
     let boot_books = state.books.clone();
     let state_cutover = state.cutover.clone();
+    let mirror_state = state.clone();
 
     // Static files — serve the built frontend, with SPA fallback to index.html
     let dist_path = std::env::var("DIST_DIR").unwrap_or_else(|_| "../plotweb-web/dist".into());
@@ -97,6 +98,12 @@ async fn main() {
             println!("[cutover] book {book_id} reads from the canonical store");
         }
     }
+
+    // Sync writes to a cut-over book move the canonical copy without touching git.
+    // This pass carries them across, debounced, so version history, export and the
+    // beta-reader views keep seeing current content — and so the cutover flag stays a
+    // real rollback. Idle books cost nothing; see `mirror`'s module docs.
+    tokio::spawn(plotweb_server::mirror::run(mirror_state));
 
     let addr = "0.0.0.0:3000";
     println!("PlotWeb server running on http://{}", addr);

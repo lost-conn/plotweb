@@ -10,6 +10,7 @@ pub mod backfill;
 pub mod cutover;
 pub mod db;
 pub mod email;
+pub mod mirror;
 pub mod rhype;
 pub mod rhype_migrate;
 pub mod reconcile;
@@ -55,6 +56,8 @@ pub struct AppState {
     pub doc_locks: sync::DocLocks,
     /// Books reading from the canonical store rather than git (phase E).
     pub cutover: cutover::Cutover,
+    /// Documents whose canonical copy has moved and owe git a mirror write.
+    pub mirror: mirror::MirrorQueue,
 }
 
 /// Build `AppState` from explicit paths. Used by `main` (via env) and by tests
@@ -92,6 +95,7 @@ pub async fn build_state(
         crdt_dir,
         doc_locks: sync::DocLocks::new(),
         cutover: cutover::Cutover::from_env(),
+        mirror: mirror::MirrorQueue::new(),
     }
 }
 
