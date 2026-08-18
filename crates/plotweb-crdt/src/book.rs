@@ -43,19 +43,25 @@ pub struct BookStructureInput {
 /// The normalized, comparable view of a book structure. `List`s (chapter order, note
 /// root/child order) keep order; `Map`s compare as maps regardless of Automerge key
 /// order.
-#[derive(Debug, PartialEq, Eq)]
-struct BookNorm {
-    title: String,
-    description: String,
-    font_settings_json: String,
-    cover_ref: Option<String>,
-    created_at: String,
-    chapters: Vec<(String, String)>,
-    root_order: Vec<String>,
-    children: BTreeMap<String, Vec<String>>,
-    collapsed: BTreeSet<String>,
-    titles: BTreeMap<String, String>,
-    colors: BTreeMap<String, String>,
+///
+/// This is both the shadow pass's comparison view and what a cut-over read serves, so
+/// the two can never drift apart: whatever the reader hands the frontend is exactly
+/// what the validator checked against git.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BookStructure {
+    pub title: String,
+    pub description: String,
+    /// Font settings as the stored JSON string (whole-value LWW, schema §2 v1).
+    pub font_settings_json: String,
+    pub cover_ref: Option<String>,
+    pub created_at: String,
+    /// `(chapter_id, title)` in authoritative order.
+    pub chapters: Vec<(String, String)>,
+    pub root_order: Vec<String>,
+    pub children: BTreeMap<String, Vec<String>>,
+    pub collapsed: BTreeSet<String>,
+    pub note_titles: BTreeMap<String, String>,
+    pub note_colors: BTreeMap<String, String>,
 }
 
 fn font_settings_json(fs: &Option<FontSettings>) -> String {
@@ -65,22 +71,22 @@ fn font_settings_json(fs: &Option<FontSettings>) -> String {
 impl BookStructureInput {
     /// The structure we EXPECT to read back, with the same filtering the projection
     /// applies (empty child lists dropped; colors only for notes that have one).
-    fn expected(&self) -> BookNorm {
+    pub fn structure(&self) -> BookStructure {
         let mut children = BTreeMap::new();
         for (parent, kids) in &self.children {
             if !kids.is_empty() {
                 children.insert(parent.clone(), kids.clone());
             }
         }
-        let mut titles = BTreeMap::new();
-        let mut colors = BTreeMap::new();
+        let mut note_titles = BTreeMap::new();
+        let mut note_colors = BTreeMap::new();
         for (id, title, color) in &self.notes {
-            titles.insert(id.clone(), title.clone());
+            note_titles.insert(id.clone(), title.clone());
             if let Some(c) = color {
-                colors.insert(id.clone(), c.clone());
+                note_colors.insert(id.clone(), c.clone());
             }
         }
-        BookNorm {
+        BookStructure {
             title: self.title.clone(),
             description: self.description.clone(),
             font_settings_json: font_settings_json(&self.font_settings),
@@ -90,8 +96,8 @@ impl BookStructureInput {
             root_order: self.root_order.clone(),
             children,
             collapsed: self.collapsed.iter().cloned().collect(),
-            titles,
-            colors,
+            note_titles,
+            note_colors,
         }
     }
 }
@@ -111,8 +117,8 @@ pub fn roundtrip_book_structure(input: &BookStructureInput) -> RoundTrip {
         Err(e) => return RoundTrip::flag(format!("book doc did not reload: {e}")),
     };
 
-    let expected = input.expected();
-    let actual = read_book_norm(&reloaded);
+    let expected = input.structure();
+    let actual = read_book_structure(&reloaded);
 
     if expected == actual {
         RoundTrip::Clean
@@ -130,6 +136,183 @@ pub fn project_book_structure(input: &BookStructureInput) -> Result<Vec<u8>, Str
     let mut doc = AutoCommit::new();
     build_book_doc(&mut doc, input);
     Ok(doc.save())
+}
+
+/// Read a stored `book:` document back into the structure the API serves.
+///
+/// The counterpart to [`project_book_structure`], and the structure half of cutover:
+/// once a book reads from the canonical store, this is where its chapter order, titles
+/// and notes tree come from. It is the same read-back the shadow pass compares with, so
+/// a document the validator called clean is a document this returns git's answer for.
+pub fn materialize_book_structure(canonical: &[u8]) -> Result<BookStructure, String> {
+    let doc =
+        AutoCommit::load(canonical).map_err(|e| format!("book document did not load: {e}"))?;
+    Ok(read_book_structure(&doc))
+}
+
+/// Record `input` into an existing canonical `book:` document **as an edit**, returning
+/// the updated bytes.
+///
+/// The structure counterpart of [`apply_content`](crate::body::apply_content), and it
+/// exists for the same reason: a REST write to a cut-over book has to land *inside* the
+/// canonical document, descending from what synced devices already hold. Re-projecting
+/// from git instead would produce a document sharing no history with theirs, and the
+/// first merge would concatenate the two rather than reconcile them (§D8).
+///
+/// Only what actually differs is written, so a save that renames one chapter is one
+/// small change rather than a rewrite of the whole structure — which matters when two
+/// devices are editing different parts of the same book at once.
+pub fn apply_book_structure(
+    canonical: &[u8],
+    input: &BookStructureInput,
+) -> Result<Vec<u8>, String> {
+    let mut doc =
+        AutoCommit::load(canonical).map_err(|e| format!("book document did not load: {e}"))?;
+    let current = read_book_structure(&doc);
+    let want = input.structure();
+    if current == want {
+        return Ok(canonical.to_vec());
+    }
+
+    let meta = ensure_obj(&mut doc, &ROOT, "meta", ObjType::Map)?;
+    if current.title != want.title {
+        let _ = doc.put(&meta, "title", want.title.as_str());
+    }
+    if current.description != want.description {
+        let _ = doc.put(&meta, "description", want.description.as_str());
+    }
+    if current.font_settings_json != want.font_settings_json {
+        let _ = doc.put(&meta, "font_settings", want.font_settings_json.as_str());
+    }
+    if current.cover_ref != want.cover_ref {
+        match &want.cover_ref {
+            Some(cover) => {
+                let _ = doc.put(&meta, "cover_ref", cover.as_str());
+            }
+            None => {
+                let _ = doc.delete(&meta, "cover_ref");
+            }
+        }
+    }
+    if current.created_at != want.created_at {
+        let _ = doc.put(&meta, "created_at", want.created_at.as_str());
+    }
+
+    // Chapters: order in a list, titles in a map beside it.
+    let chapter_ids: Vec<String> = want.chapters.iter().map(|(id, _)| id.clone()).collect();
+    let chapters_obj = ensure_obj(&mut doc, &ROOT, "chapters", ObjType::List)?;
+    reconcile_list(&mut doc, &chapters_obj, &chapter_ids);
+    let titles_obj = ensure_obj(&mut doc, &ROOT, "chapter_titles", ObjType::Map)?;
+    let want_titles: BTreeMap<String, String> = want.chapters.iter().cloned().collect();
+    let have_titles: BTreeMap<String, String> = current.chapters.iter().cloned().collect();
+    reconcile_string_map(&mut doc, &titles_obj, &have_titles, &want_titles);
+
+    let notes_obj = ensure_obj(&mut doc, &ROOT, "notes", ObjType::Map)?;
+
+    let root_obj = ensure_obj(&mut doc, &notes_obj, "root_order", ObjType::List)?;
+    reconcile_list(&mut doc, &root_obj, &want.root_order);
+
+    let children_obj = ensure_obj(&mut doc, &notes_obj, "children", ObjType::Map)?;
+    for parent in current.children.keys() {
+        // An empty child list is *absent*, not an empty list — the projection drops it,
+        // so leaving one behind would read back as a difference forever.
+        if !want.children.contains_key(parent) {
+            let _ = doc.delete(&children_obj, parent.as_str());
+        }
+    }
+    for (parent, kids) in &want.children {
+        let list = ensure_obj(&mut doc, &children_obj, parent.as_str(), ObjType::List)?;
+        reconcile_list(&mut doc, &list, kids);
+    }
+
+    let collapsed_obj = ensure_obj(&mut doc, &notes_obj, "collapsed", ObjType::Map)?;
+    for id in current.collapsed.difference(&want.collapsed) {
+        let _ = doc.delete(&collapsed_obj, id.as_str());
+    }
+    for id in want.collapsed.difference(&current.collapsed) {
+        let _ = doc.put(&collapsed_obj, id.as_str(), true);
+    }
+
+    let note_titles_obj = ensure_obj(&mut doc, &notes_obj, "titles", ObjType::Map)?;
+    reconcile_string_map(
+        &mut doc,
+        &note_titles_obj,
+        &current.note_titles,
+        &want.note_titles,
+    );
+    let note_colors_obj = ensure_obj(&mut doc, &notes_obj, "colors", ObjType::Map)?;
+    reconcile_string_map(
+        &mut doc,
+        &note_colors_obj,
+        &current.note_colors,
+        &want.note_colors,
+    );
+
+    Ok(doc.save())
+}
+
+/// Bring a list to `want` with as few edits as possible.
+///
+/// Not "delete everything and re-insert": that would be a change touching every element,
+/// and two devices doing it concurrently merge into a list holding both copies. Removing
+/// what left and moving only what actually moved keeps a rename or a single reorder
+/// small enough to merge cleanly with an edit elsewhere in the same list.
+fn reconcile_list(doc: &mut AutoCommit, obj: &ObjId, want: &[String]) {
+    let mut have = read_list_strings(doc, obj);
+    let wanted: BTreeSet<&String> = want.iter().collect();
+
+    for i in (0..have.len()).rev() {
+        if !wanted.contains(&have[i]) {
+            let _ = doc.delete(obj, i);
+            have.remove(i);
+        }
+    }
+    for (i, id) in want.iter().enumerate() {
+        if have.get(i) == Some(id) {
+            continue;
+        }
+        if let Some(pos) = have.iter().position(|h| h == id) {
+            let _ = doc.delete(obj, pos);
+            have.remove(pos);
+        }
+        let _ = doc.insert(obj, i, id.as_str());
+        have.insert(i, id.clone());
+    }
+}
+
+fn reconcile_string_map(
+    doc: &mut AutoCommit,
+    obj: &ObjId,
+    have: &BTreeMap<String, String>,
+    want: &BTreeMap<String, String>,
+) {
+    for key in have.keys() {
+        if !want.contains_key(key) {
+            let _ = doc.delete(obj, key.as_str());
+        }
+    }
+    for (key, value) in want {
+        if have.get(key) != Some(value) {
+            let _ = doc.put(obj, key.as_str(), value.as_str());
+        }
+    }
+}
+
+/// The object at `prop`, creating it if the document has none.
+///
+/// A document written by an older client can be missing a whole section (notes, say),
+/// and an apply that assumed otherwise would silently drop the write.
+fn ensure_obj(
+    doc: &mut AutoCommit,
+    parent: &ObjId,
+    prop: &str,
+    kind: ObjType,
+) -> Result<ObjId, String> {
+    if let Some(id) = get_obj(doc, parent, prop) {
+        return Ok(id);
+    }
+    doc.put_object(parent, prop, kind)
+        .map_err(|e| format!("could not create {prop}: {e}"))
 }
 
 // ── Construction (mirror of local_book::build_doc) ───────────────────────────
@@ -189,7 +372,7 @@ fn build_book_doc(doc: &mut AutoCommit, input: &BookStructureInput) {
 
 // ── Read-back (mirror of local_book::project_*) ──────────────────────────────
 
-fn read_book_norm(doc: &AutoCommit) -> BookNorm {
+fn read_book_structure(doc: &AutoCommit) -> BookStructure {
     let meta = get_obj(doc, &ROOT, "meta");
     let title = meta.as_ref().and_then(|m| get_str(doc, m, "title")).unwrap_or_default();
     let description = meta
@@ -254,18 +437,18 @@ fn read_book_norm(doc: &AutoCommit) -> BookNorm {
         }
     }
 
-    let titles = notes_obj
+    let note_titles = notes_obj
         .as_ref()
         .and_then(|n| get_obj(doc, n, "titles"))
         .map(|o| read_map_strings_sorted(doc, &o))
         .unwrap_or_default();
-    let colors = notes_obj
+    let note_colors = notes_obj
         .as_ref()
         .and_then(|n| get_obj(doc, n, "colors"))
         .map(|o| read_map_strings_sorted(doc, &o))
         .unwrap_or_default();
 
-    BookNorm {
+    BookStructure {
         title,
         description,
         font_settings_json,
@@ -275,12 +458,12 @@ fn read_book_norm(doc: &AutoCommit) -> BookNorm {
         root_order,
         children,
         collapsed,
-        titles,
-        colors,
+        note_titles,
+        note_colors,
     }
 }
 
-fn describe_book_diff(expected: &BookNorm, actual: &BookNorm) -> String {
+fn describe_book_diff(expected: &BookStructure, actual: &BookStructure) -> String {
     let mut parts = Vec::new();
     if expected.title != actual.title {
         parts.push("meta.title".to_string());
@@ -309,10 +492,10 @@ fn describe_book_diff(expected: &BookNorm, actual: &BookNorm) -> String {
     if expected.collapsed != actual.collapsed {
         parts.push("notes.collapsed".to_string());
     }
-    if expected.titles != actual.titles {
+    if expected.note_titles != actual.note_titles {
         parts.push("notes.titles".to_string());
     }
-    if expected.colors != actual.colors {
+    if expected.note_colors != actual.note_colors {
         parts.push("notes.colors".to_string());
     }
     format!("book structure differs at: {}", parts.join(", "))
@@ -390,6 +573,170 @@ mod tests {
         }
     }
 
+    /// What a peer device holding the canonical document ends up with after the
+    /// server's edit reaches it. Merging rather than reloading is the point: it proves
+    /// the applied write is a *change* to the shared history, not a new document.
+    fn merged_with(original: &[u8], applied: &[u8]) -> BookStructure {
+        let mut peer = AutoCommit::load(original).expect("peer loads");
+        let mut server = AutoCommit::load(applied).expect("server loads");
+        peer.merge(&mut server).expect("merge");
+        read_book_structure(&peer)
+    }
+
+    #[test]
+    fn a_stored_structure_materializes_back_to_what_was_projected() {
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let got = materialize_book_structure(&bytes).expect("materialize");
+        assert_eq!(got, input.structure());
+    }
+
+    #[test]
+    fn applying_an_unchanged_structure_writes_nothing() {
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let again = apply_book_structure(&bytes, &input).expect("apply");
+        assert_eq!(
+            again, bytes,
+            "an idle save must not add a change — every one of those is a sync round \
+             and a mirror commit for nobody"
+        );
+    }
+
+    #[test]
+    fn a_renamed_chapter_reaches_a_device_holding_the_document() {
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let mut renamed = input.clone();
+        renamed.chapters[1].1 = "The Squall".into();
+
+        let applied = apply_book_structure(&bytes, &renamed).expect("apply");
+        assert_eq!(merged_with(&bytes, &applied), renamed.structure());
+    }
+
+    #[test]
+    fn a_reorder_moves_chapters_rather_than_duplicating_them() {
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let mut reordered = input.clone();
+        reordered.chapters.reverse();
+
+        let applied = apply_book_structure(&bytes, &reordered).expect("apply");
+        let merged = merged_with(&bytes, &applied);
+        assert_eq!(merged.chapters, reordered.structure().chapters);
+        assert_eq!(
+            merged.chapters.len(),
+            2,
+            "a rebuilt list would merge into one holding both orders"
+        );
+    }
+
+    #[test]
+    fn adding_and_removing_chapters_is_carried_through() {
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let mut changed = input.clone();
+        changed.chapters.remove(0);
+        changed.chapters.push(("c3".into(), "Aftermath".into()));
+
+        let applied = apply_book_structure(&bytes, &changed).expect("apply");
+        let merged = merged_with(&bytes, &applied);
+        assert_eq!(
+            merged.chapters,
+            vec![
+                ("c2".to_string(), "The Storm".to_string()),
+                ("c3".to_string(), "Aftermath".to_string())
+            ]
+        );
+        assert_eq!(merged, changed.structure(), "including the titles map");
+    }
+
+    #[test]
+    fn the_notes_tree_follows_too() {
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let mut changed = input.clone();
+        // n2 moves out from under n1 to the root; n1 is expanded; n3 loses its title.
+        changed.children.clear();
+        changed.root_order = vec!["n1".into(), "n2".into(), "n3".into()];
+        changed.collapsed.clear();
+        changed.notes[2].1 = "Settings".into();
+        changed.notes[1].2 = None;
+
+        let applied = apply_book_structure(&bytes, &changed).expect("apply");
+        let merged = merged_with(&bytes, &applied);
+        assert_eq!(merged, changed.structure());
+        assert!(
+            merged.children.is_empty(),
+            "an emptied child list is absent, not an empty list"
+        );
+        assert!(
+            !merged.note_colors.contains_key("n2"),
+            "a cleared colour must be removed, not left at its old value"
+        );
+    }
+
+    #[test]
+    fn meta_changes_including_a_cleared_cover_are_carried_through() {
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let mut changed = input.clone();
+        changed.title = "The Book, Revised".into();
+        changed.description = "a better description".into();
+        changed.cover_ref = None;
+
+        let applied = apply_book_structure(&bytes, &changed).expect("apply");
+        assert_eq!(merged_with(&bytes, &applied), changed.structure());
+    }
+
+    #[test]
+    fn an_edit_elsewhere_in_the_book_survives_the_apply() {
+        // The property that decides whether cutover is safe with two devices open: a
+        // server-applied write must merge with a device's concurrent change, not
+        // clobber it. Here the device renames chapter one while the server reorders.
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+
+        let mut device = AutoCommit::load(&bytes).expect("device loads");
+        let ctitles = get_obj(&device, &ROOT, "chapter_titles").expect("titles");
+        device.put(&ctitles, "c1", "Opening, revised").expect("device edit");
+        let device_bytes = device.save();
+
+        let mut reordered = input.clone();
+        reordered.chapters.reverse();
+        let applied = apply_book_structure(&bytes, &reordered).expect("apply");
+
+        let mut merged = AutoCommit::load(&applied).expect("load");
+        let mut theirs = AutoCommit::load(&device_bytes).expect("load");
+        merged.merge(&mut theirs).expect("merge");
+        let structure = read_book_structure(&merged);
+
+        assert_eq!(
+            structure.chapters,
+            vec![
+                ("c2".to_string(), "The Storm".to_string()),
+                ("c1".to_string(), "Opening, revised".to_string())
+            ],
+            "the server's reorder and the device's rename must both survive"
+        );
+    }
+
+    #[test]
+    fn a_document_missing_a_section_gains_it_rather_than_dropping_the_write() {
+        // A `book:` doc written before a section existed (or by an older client): the
+        // apply has to create it, or the write silently disappears.
+        let mut bare = AutoCommit::new();
+        let meta = bare.put_object(ROOT, "meta", ObjType::Map).unwrap();
+        bare.put(&meta, "title", "The Book").unwrap();
+        let bytes = bare.save();
+
+        let applied = apply_book_structure(&bytes, &sample()).expect("apply");
+        assert_eq!(
+            materialize_book_structure(&applied).expect("materialize"),
+            sample().structure()
+        );
+    }
+
     #[test]
     fn book_structure_round_trips_clean() {
         assert_eq!(roundtrip_book_structure(&sample()), RoundTrip::Clean);
@@ -441,8 +788,8 @@ pub fn compare_book_structure(input: &BookStructureInput, canonical: &[u8]) -> c
             }
         }
     };
-    let expected = input.expected();
-    let actual = read_book_norm(&reloaded);
+    let expected = input.structure();
+    let actual = read_book_structure(&reloaded);
     if expected == actual {
         crate::Shadow::Match
     } else {

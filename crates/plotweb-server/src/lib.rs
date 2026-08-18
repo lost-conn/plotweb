@@ -16,6 +16,7 @@ pub mod rhype_migrate;
 pub mod reconcile;
 pub mod routes;
 pub mod shadow;
+pub mod structure;
 pub mod sync;
 pub mod ws;
 

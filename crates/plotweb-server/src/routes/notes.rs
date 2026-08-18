@@ -24,26 +24,55 @@ pub async fn list(
 
     match state.books.list_notes(&book_id).await {
         Ok((notes, tree)) => {
-            let notes: Vec<Note> = notes
-                .into_iter()
-                .map(|n| Note {
-                    id: n.id,
-                    book_id: book_id.clone(),
-                    title: n.title,
-                    content: n.content,
-                    color: n.color,
-                    created_at: n.created_at,
-                    updated_at: n.updated_at,
-                })
-                .collect();
-            let resp = NotesResponse {
-                notes,
-                tree: NoteTree {
-                    root_order: tree.root_order,
-                    children: tree.children,
-                    collapsed: tree.collapsed,
-                },
+            // Cut over: titles, colours and the tree come from the canonical document;
+            // bodies and timestamps stay git's. Same overlay as the chapter list, and
+            // for the same reason.
+            let (notes, tree) = match super::cutover_structure(&state, &book_id).await {
+                Some(structure) => {
+                    let listed = structure
+                        .note_titles
+                        .iter()
+                        .map(|(id, title)| {
+                            let git = notes.iter().find(|n| &n.id == id);
+                            Note {
+                                id: id.clone(),
+                                book_id: book_id.clone(),
+                                title: title.clone(),
+                                content: git.map(|n| n.content.clone()).unwrap_or_default(),
+                                color: structure.note_colors.get(id).cloned(),
+                                created_at: git.map(|n| n.created_at.clone()).unwrap_or_default(),
+                                updated_at: git.map(|n| n.updated_at.clone()).unwrap_or_default(),
+                            }
+                        })
+                        .collect();
+                    let tree = NoteTree {
+                        root_order: structure.root_order.clone(),
+                        children: structure.children.clone().into_iter().collect(),
+                        collapsed: structure.collapsed.iter().cloned().collect(),
+                    };
+                    (listed, tree)
+                }
+                None => (
+                    notes
+                        .into_iter()
+                        .map(|n| Note {
+                            id: n.id,
+                            book_id: book_id.clone(),
+                            title: n.title,
+                            content: n.content,
+                            color: n.color,
+                            created_at: n.created_at,
+                            updated_at: n.updated_at,
+                        })
+                        .collect(),
+                    NoteTree {
+                        root_order: tree.root_order,
+                        children: tree.children,
+                        collapsed: tree.collapsed,
+                    },
+                ),
             };
+            let resp = NotesResponse { notes, tree };
             (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
         }
         Err(_) => {
@@ -152,6 +181,7 @@ pub async fn create(
         .await
     {
         Ok(n) => {
+            super::apply_cutover_structure(&state, &book_id).await;
             let note = Note {
                 id: n.id,
                 book_id,
@@ -221,6 +251,11 @@ pub async fn update(
         )
         .await;
     }
+    // A note's title and colour live in the book structure, its body does not — so an
+    // autosave of the body alone skips the book read.
+    if req.title.is_some() || req.color.is_some() {
+        super::apply_cutover_structure(&state, &book_id).await;
+    }
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
@@ -244,6 +279,8 @@ pub async fn delete(
             Json(json!({ "error": "failed to delete note" })),
         );
     }
+    // As with chapters: removal from the tree is the deletion (§D7).
+    super::apply_cutover_structure(&state, &book_id).await;
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }
@@ -271,7 +308,10 @@ pub async fn move_note(
         )
         .await
     {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
+        Ok(()) => {
+            super::apply_cutover_structure(&state, &book_id).await;
+            (StatusCode::OK, Json(json!({ "ok": true })))
+        }
         Err(plotweb_git::error::GitStoreError::CircularReference) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "cannot move note into its own subtree" })),
@@ -312,6 +352,7 @@ pub async fn update_tree(
             Json(json!({ "error": "failed to save note tree" })),
         );
     }
+    super::apply_cutover_structure(&state, &book_id).await;
 
     (StatusCode::OK, Json(json!({ "ok": true })))
 }

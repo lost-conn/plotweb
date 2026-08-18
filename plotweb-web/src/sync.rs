@@ -704,6 +704,14 @@ fn round(label: String, state: Rc<RefCell<SyncState>>, n: u32) {
                 }
             }
         }
+        // The server can see, from the documents themselves, that ours descends from
+        // nothing it holds. Merging would concatenate the two — the book coming back
+        // with every chapter twice (§D8). Replace ours with the canonical copy; the
+        // same answer the body path gives, for the same reason.
+        Err(e) if e.status == 409 => {
+            log::info!("sync {label}: unrelated to the canonical document; replacing ours");
+            take_server_structure(label);
+        }
         // Signed out: stop, quietly, until the next sign-in re-registers us.
         Err(e) if e.status == 401 => park_unauthed(&label),
         // 403/404 — not ours, or gone. Retrying can't help; drop the registration.
@@ -713,6 +721,38 @@ fn round(label: String, state: Rc<RefCell<SyncState>>, n: u32) {
             log::debug!("sync {label}: {} {}", e.status, e.message);
             finish(&label, false);
         }
+    });
+}
+
+/// Install the server's canonical structure document over ours, then sync again.
+fn take_server_structure(label: String) {
+    let Some(doc) = doc_of(&label) else { return };
+    crate::api::get_bytes(&doc.url(), move |result| match result {
+        // No canonical copy at all: nothing to reconcile, ours stands.
+        Ok(None) => finish(&label, true),
+        Ok(Some(bytes)) => {
+            let installed = match &doc {
+                Doc::Book(id) => crate::local_book::install_server_book(id, &bytes),
+                Doc::User(id) => crate::local_user::install_server_user(id, &bytes),
+                // Bodies take `take_server_body` instead; they never reach this path.
+                Doc::Body { .. } => false,
+            };
+            if installed {
+                STORE.with(|s| {
+                    if let Some(store) = s.borrow().as_ref() {
+                        doc.persist_and_project(store);
+                    }
+                });
+                start_cycle(&label);
+            } else {
+                // A different book is open now, or the copy did not load. Leave it
+                // rather than risk merging two unrelated documents.
+                finish(&label, false);
+            }
+        }
+        Err(e) if e.status == 401 => park_unauthed(&label),
+        Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),
+        Err(_) => finish(&label, false),
     });
 }
 

@@ -94,7 +94,7 @@ pub fn cutover_body(
     }
 }
 
-/// Apply a REST write into the canonical document of a cut-over book./// Apply a REST write into the canonical document of a cut-over book.
+/// Apply a REST write into the canonical document of a cut-over book.
 ///
 /// Serialized on the same per-document lock sync uses, so a save and an exchange cannot
 /// interleave in the middle of a read-modify-write. Failure is logged, not surfaced:
@@ -127,6 +127,89 @@ pub async fn apply_cutover_body(
         Ok(Ok(_)) => {}
         Ok(Err(e)) => eprintln!("[cutover] {doc_id}: could not apply the write: {e}"),
         Err(e) => eprintln!("[cutover] {doc_id}: apply worker panicked: {e}"),
+    }
+}
+
+/// The structure a cut-over book should be read from, or `None` to read git.
+///
+/// **Deliberately not the tri-state [`cutover_body`] uses.** A body whose copies
+/// disagree is refused, because either version could be the author's real prose and
+/// there is no safe base to author from; refusing costs one document. A structure that
+/// disagrees is different in both directions: under cutover the canonical copy *is* the
+/// intended shape, and git retains every past version of `book.json`, so serving the
+/// canonical one loses nothing that cannot be recovered. Refusing would take the whole
+/// book offline — every chapter, every note, the sidebar — over a disagreement the
+/// mirror closes within its debounce window, and it would do so for exactly the books
+/// someone is actively syncing.
+///
+/// So: serve the canonical structure whenever there is a readable one, and fall back to
+/// git when there is not (absence is not evidence — see `cutover_body`).
+///
+/// It deliberately does **not** compare the two. This is the chapter-list path, hit on
+/// every page load; reading the whole book out of git to produce a log line would cost
+/// more than the read it is checking. Reporting disagreement is the shadow pass's job.
+pub async fn cutover_structure(
+    state: &AppState,
+    book_id: &str,
+) -> Option<plotweb_crdt::BookStructure> {
+    if !state.cutover.is_cut_over(book_id) {
+        return None;
+    }
+    let doc_id = format!("book:{book_id}");
+    let bytes = match crate::sync::canonical_snapshot(&state.crdt_dir, &doc_id) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => return None,
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: store read failed, serving git: {e}");
+            return None;
+        }
+    };
+    let structure = match plotweb_crdt::materialize_book_structure(&bytes) {
+        Ok(structure) => structure,
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {e}");
+            return None;
+        }
+    };
+
+    Some(structure)
+}
+
+/// Record a structure change — create, rename, reorder, delete, move, retitle — into
+/// the canonical `book:` document of a cut-over book.
+///
+/// Callers pass no delta. The route has just written git, so git *is* the intended
+/// structure; this re-reads it and lets `plotweb_crdt::apply_book_structure` work out
+/// what differs. That is deliberate: a dozen routes computing their own deltas is a
+/// dozen chances to describe a move as a delete-and-insert, and a wrong delta on a
+/// structure document loses a chapter rather than a character.
+///
+/// Cost is a book read per structure change. Those are rare — creating, renaming,
+/// reordering — and the frequent path, an autosave of a chapter body, does not come
+/// through here.
+pub async fn apply_cutover_structure(state: &AppState, book_id: &str) {
+    if !state.cutover.is_cut_over(book_id) {
+        return;
+    }
+    let Some(input) = crate::structure::read_structure_input(&state.books, book_id).await else {
+        eprintln!("[cutover] book:{book_id}: no readable structure in git, nothing applied");
+        return;
+    };
+
+    let doc_id = format!("book:{book_id}");
+    let lock = state.doc_locks.for_doc(&doc_id);
+    let _guard = lock.lock().await;
+
+    let crdt_dir = state.crdt_dir.clone();
+    let book = book_id.to_string();
+    let applied =
+        tokio::task::spawn_blocking(move || crate::sync::apply_structure(&crdt_dir, &book, &input))
+            .await;
+
+    match applied {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => eprintln!("[cutover] {doc_id}: could not apply the structure change: {e}"),
+        Err(e) => eprintln!("[cutover] {doc_id}: structure apply worker panicked: {e}"),
     }
 }
 

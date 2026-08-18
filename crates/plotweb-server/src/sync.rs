@@ -101,6 +101,9 @@ pub enum SyncError {
     /// The stored canonical document could not be loaded, or the protocol rejected
     /// the message.
     Automerge(String),
+    /// The client's document shares no origin with the canonical one, so merging would
+    /// concatenate rather than converge (§D8). Nothing was written.
+    UnrelatedHistory,
 }
 
 impl std::fmt::Display for SyncError {
@@ -109,6 +112,9 @@ impl std::fmt::Display for SyncError {
             SyncError::BadMessage(m) => write!(f, "malformed sync message: {m}"),
             SyncError::Store(m) => write!(f, "crdt store: {m}"),
             SyncError::Automerge(m) => write!(f, "automerge: {m}"),
+            SyncError::UnrelatedHistory => {
+                write!(f, "document shares no history with the canonical one")
+            }
         }
     }
 }
@@ -234,7 +240,7 @@ fn next_gen(prev: Option<&str>) -> String {
     format!("g{n}")
 }
 
-fn now_stamp() -> String {
+pub fn now_stamp() -> String {
     chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
@@ -410,12 +416,21 @@ pub fn adopt_doc(
     Ok(Adoption::Adopted)
 }
 
+/// The outcome of one sync round: what to send back, and whether the client's message
+/// actually moved the canonical document. The caller needs the second part to know
+/// whether git is now owed a mirror write.
+#[derive(Debug)]
+pub struct SyncRoundResult {
+    pub reply: Vec<u8>,
+    pub changed: bool,
+}
+
 pub fn sync_round(
     crdt_dir: &Path,
     doc_id: &str,
     doc_type: &str,
     incoming: &[u8],
-) -> Result<Vec<u8>, SyncError> {
+) -> Result<SyncRoundResult, SyncError> {
     let store = FsStore::open(PathBuf::from(crdt_dir))
         .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
 
@@ -436,13 +451,20 @@ pub fn sync_round(
         .receive_sync_message(&mut state, message)
         .map_err(|e| SyncError::Automerge(e.to_string()))?;
 
+    // §D8, for structure documents. The merge above has happened in memory only; if it
+    // joined two histories that share no origin, nothing of it is saved.
+    if histories_are_disjoint(&mut doc) {
+        return Err(SyncError::UnrelatedHistory);
+    }
+
     let reply = doc
         .sync()
         .generate_sync_message(&mut state)
         .map(SyncMessage::encode)
         .unwrap_or_default();
 
-    if doc.get_heads() != before {
+    let changed = doc.get_heads() != before;
+    if changed {
         // The client moved the canonical doc: republish it.
         let heads = doc.get_heads().iter().map(|h| h.to_string()).collect();
         let snapshot = doc.save();
@@ -470,7 +492,27 @@ pub fn sync_round(
             .map_err(|e| SyncError::Store(e.to_string()))?;
     }
 
-    Ok(reply)
+    Ok(SyncRoundResult { reply, changed })
+}
+
+/// Whether a document is the join of two histories that share no origin.
+///
+/// The Automerge counterpart of the yrs [`histories_are_unrelated`] check, and it exists
+/// for the same reason (§D8): a client whose `book:` document was seeded from REST
+/// rather than pulled from the server shares no ancestry with the canonical one, and
+/// Automerge merges the two by *concatenation* — the book comes back with every chapter
+/// twice, in an order neither device asked for.
+///
+/// Concurrent heads do not indicate this; two devices editing at once produce those
+/// routinely. What does is the origin: a document grown from one seed has exactly one
+/// change with no dependencies. Two of them means two seeds, and no amount of further
+/// syncing will ever reconcile them.
+fn histories_are_disjoint(doc: &mut AutoCommit) -> bool {
+    doc.get_changes(&[])
+        .iter()
+        .filter(|change| change.deps().is_empty())
+        .count()
+        > 1
 }
 
 /// Single-poll drive of a `!Send` [`FsStore`] future — the native backend does its
@@ -662,11 +704,12 @@ pub fn body_apply(
 /// Ownership is carried through untouched: applying a REST write is not a client taking
 /// the document, and marking it so would quietly remove it from the backfill's care.
 ///
-/// **Not yet wired to a route.** Which writes should land here is the cutover flag's
-/// business, and getting it wrong double-applies: a client that both saves over REST
-/// *and* syncs would contribute the same edit twice, once as its own change and once as
-/// the server's. The rule that avoids it — a syncing client stops REST-writing the
-/// bodies it syncs — belongs with the flag, so this ships as a tested primitive first.
+/// Wired to the write path for cut-over books only (`routes::apply_cutover_body`).
+/// Which writes land here is the cutover flag's business, and getting it wrong
+/// double-applies: a client that both saves over REST *and* syncs would contribute the
+/// same edit twice, once as its own change and once as the server's. The rule that
+/// avoids it — a syncing client stops REST-writing the bodies it syncs — belongs with
+/// the flag.
 pub fn apply_body_content(
     crdt_dir: &Path,
     doc_id: &str,
@@ -712,6 +755,67 @@ pub fn apply_body_content(
     Ok(true)
 }
 
+/// Record a book's git-side structure into its canonical `book:` document as an edit.
+///
+/// The structure counterpart of [`apply_body_content`]. Callers hand over the whole
+/// structure rather than a delta on purpose: [`plotweb_crdt::apply_book_structure`]
+/// works out what actually differs, so every structure-changing route — create, rename,
+/// reorder, delete, move, retitle — is one call with no per-route diffing to get wrong.
+///
+/// Returns whether anything changed. Ownership is carried through untouched: applying a
+/// REST write is not a client taking the document.
+pub fn apply_structure(
+    crdt_dir: &Path,
+    book_id: &str,
+    input: &plotweb_crdt::BookStructureInput,
+) -> Result<bool, SyncError> {
+    let doc_id = format!("book:{book_id}");
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let manifest = read_manifest(&store, &doc_id)?;
+
+    let Some(existing) = load_snapshot(&store, &doc_id, manifest.as_ref())? else {
+        // Nothing stored yet: a fresh projection is the whole history, so there is
+        // nothing to orphan.
+        let bytes = plotweb_crdt::project_book_structure(input).map_err(SyncError::Automerge)?;
+        let heads = automerge_heads(&bytes)?;
+        save_snapshot(
+            &store,
+            &doc_id,
+            "book",
+            manifest.as_ref(),
+            &bytes,
+            heads,
+            manifest.as_ref().and_then(|m| m.synced_at.clone()),
+        )?;
+        return Ok(true);
+    };
+
+    let updated =
+        plotweb_crdt::apply_book_structure(&existing, input).map_err(SyncError::Automerge)?;
+    if updated == existing {
+        return Ok(false);
+    }
+
+    let heads = automerge_heads(&updated)?;
+    save_snapshot(
+        &store,
+        &doc_id,
+        "book",
+        manifest.as_ref(),
+        &updated,
+        heads,
+        manifest.as_ref().and_then(|m| m.synced_at.clone()),
+    )?;
+    Ok(true)
+}
+
+fn automerge_heads(bytes: &[u8]) -> Result<Vec<String>, SyncError> {
+    let mut doc = AutoCommit::load(bytes)
+        .map_err(|e| SyncError::Automerge(format!("reload for heads: {e}")))?;
+    Ok(doc.get_heads().iter().map(|h| h.to_string()).collect())
+}
+
 /// A content fingerprint for a body document, used where Automerge would use heads.
 ///
 /// A yrs **state vector deliberately is not** one: it counts insertions, so a
@@ -741,7 +845,9 @@ mod tests {
         loop {
             let outgoing = doc.sync().generate_sync_message(state);
             let Some(msg) = outgoing else { break };
-            let reply = sync_round(dir, doc_id, "book", &msg.encode()).expect("sync round");
+            let reply = sync_round(dir, doc_id, "book", &msg.encode())
+                .expect("sync round")
+                .reply;
             rounds += 1;
             assert!(rounds < 20, "sync did not converge");
             if reply.is_empty() {

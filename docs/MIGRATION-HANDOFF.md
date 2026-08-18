@@ -135,7 +135,10 @@ a rollback returns to current content. Cut over a book of ours first, never a us
 the canonical copy without touching git, so a background pass (`mirror.rs`, always on, no
 flag) materializes and writes it back — once the document has been quiet for 30s, or
 within 5 minutes of the first change if someone keeps typing. No commit when git already
-matches. Non-cut-over books are left alone on purpose: git is still authoritative there,
+matches. Structure as well as bodies: a chapter added, renamed, reordered or deleted on a
+device is carried across the same way. It refuses one thing — a canonical structure that
+has lost *every* chapter or note while git still has them, which is likelier a
+half-written document than an emptied book. Non-cut-over books are left alone on purpose: git is still authoritative there,
 so a difference should surface in the shadow report and be reconciled with a stated
 direction, not be silently overwritten by the CRDT. Consequence worth knowing: for a
 cut-over book, commits now appear a little after the edit rather than on save.
@@ -208,12 +211,14 @@ The canonical Automerge store is **staged but unread**. Everything below is wher
    lossless, while this proves that what clients have actually written still agrees with
    git. Reports match / diverged / no-canonical-copy / unreadable, and only a clean run
    should let phase E proceed.
-4. **Phase E — cutover.** Per-book `PLOTWEB_CUTOVER_BOOKS` flag; reads come from the
-   canonical store, writes reach both, git stays a **live mirror** (REST writes directly,
-   sync writes via the debounced `mirror` pass) so the flag really flips back. Bodies are
-   done. Remaining: the structure (`book:`) read path, which needs a materializer back to
-   `Book`/`Chapter`/`Note`; deletion semantics (§D7) with the CRDT canonical; and the
-   `book:`/`user:` Automerge equivalent of the yrs unrelated-history check.
+4. ~~**Phase E — cutover.**~~ **DONE.** Per-book `PLOTWEB_CUTOVER_BOOKS` flag; reads come
+   from the canonical store, writes reach both, git stays a **live mirror** (REST writes
+   directly, sync writes via the debounced `mirror` pass) so the flag really flips back.
+   Bodies and structure both: the chapter list, notes tree and book metadata read from
+   the `book:` document, every structure-changing route records into it, and structure
+   changes made on a device are mirrored into git. Deletion follows §D7 in both
+   directions. The `book:`/`user:` disjoint-history check now exists too
+   (`sync::histories_are_disjoint`), so §D8 is enforced for both CRDTs.
 5. **Phase F — retire git.** Last, manual, with a backup/tag. The one hard-to-reverse step.
 
 **Also worth landing** (would remove Option-3's compromise): extend `rinch-editor-collab`'s

@@ -294,3 +294,222 @@ async fn a_synced_note_is_mirrored_too() {
         "a note's git copy must follow its canonical one too: {git}"
     );
 }
+
+// ── Structure ────────────────────────────────────────────────────────────────
+//
+// A device can change a book's shape as well as its prose — add a chapter, rename one,
+// reorder, reparent a note. Those arrive as changes to the `book:` document and, like
+// bodies, never touch git on their own.
+
+use automerge::{sync::State as SyncState, sync::SyncDoc, AutoCommit};
+use plotweb_crdt::BookStructureInput;
+
+struct Device {
+    doc: AutoCommit,
+}
+
+impl Device {
+    /// One poll cycle against a structure document.
+    async fn sync(&mut self, app: &mut TestApp, book_id: &str) {
+        use automerge::sync::Message as SyncMessage;
+        let uri = format!("/api/books/{book_id}/sync/book:{book_id}");
+        let mut state = SyncState::new();
+        let mut rounds = 0;
+        loop {
+            let outgoing = self.doc.sync().generate_sync_message(&mut state);
+            let Some(msg) = outgoing else { break };
+            let (status, reply) = app.post_bytes(&uri, &msg.encode()).await;
+            assert_eq!(status, StatusCode::OK);
+            rounds += 1;
+            assert!(rounds < 20, "sync did not converge");
+            if reply.is_empty() {
+                break;
+            }
+            let reply = SyncMessage::decode(&reply).expect("decodable");
+            self.doc
+                .sync()
+                .receive_sync_message(&mut state, reply)
+                .expect("integrate");
+        }
+    }
+}
+
+/// Pull the canonical structure onto a device, change it there, and push it back —
+/// which is all a real device does when someone adds a chapter offline.
+async fn device_changes(
+    app: &mut TestApp,
+    book_id: &str,
+    edit: impl FnOnce(&mut BookStructureInput),
+) {
+    let mut device = Device { doc: AutoCommit::new() };
+    device.sync(app, book_id).await;
+
+    let mut input = plotweb_server::structure::read_structure_input(&app.state().books, book_id)
+        .await
+        .expect("structure in git");
+    edit(&mut input);
+
+    let changed =
+        plotweb_crdt::apply_book_structure(&device.doc.save(), &input).expect("device edit");
+    device.doc = AutoCommit::load(&changed).expect("reload");
+    device.sync(app, book_id).await;
+}
+
+async fn git_structure(app: &TestApp, book_id: &str) -> plotweb_crdt::BookStructure {
+    plotweb_server::structure::read_structure_input(&app.state().books, book_id)
+        .await
+        .expect("structure in git")
+        .structure()
+}
+
+/// A cut-over book with two chapters and a note, whose canonical structure exists.
+async fn structured_book(app: &mut TestApp) -> (String, String, String, String) {
+    let book_id = app.create_book("Mirror Structure").await;
+    app.cut_over(&book_id).await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+    let c2 = app.create_chapter(&book_id, "Two").await;
+    let r = app
+        .post(
+            &format!("/api/books/{book_id}/notes"),
+            &json!({ "title": "Characters", "parent_id": null, "color": null }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    (book_id, c1, c2, r.id())
+}
+
+#[tokio::test]
+async fn a_chapter_added_on_a_device_reaches_git() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, c1, c2, _) = structured_book(&mut app).await;
+
+    device_changes(&mut app, &book_id, |input| {
+        input.chapters.push(("c-new".into(), "Three".into()));
+    })
+    .await;
+
+    assert!(
+        !git_structure(&app, &book_id)
+            .await
+            .chapters
+            .iter()
+            .any(|(id, _)| id == "c-new"),
+        "the device's change should not have reached git on its own"
+    );
+
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
+    assert_eq!(
+        git_structure(&app, &book_id).await.chapters,
+        vec![
+            (c1, "One".into()),
+            (c2, "Two".into()),
+            ("c-new".to_string(), "Three".to_string())
+        ],
+        "the chapter must exist in git, in the order the device put it"
+    );
+}
+
+#[tokio::test]
+async fn a_rename_a_reorder_and_a_deletion_all_reach_git() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, c1, c2, _) = structured_book(&mut app).await;
+    let c3 = app.create_chapter(&book_id, "Three").await;
+
+    let (r1, r2) = (c1.clone(), c2.clone());
+    device_changes(&mut app, &book_id, move |input| {
+        input.chapters.retain(|(id, _)| id != &r1);
+        input.chapters.reverse();
+        for (id, title) in input.chapters.iter_mut() {
+            if id == &r2 {
+                *title = "Two, revised".into();
+            }
+        }
+    })
+    .await;
+
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
+    assert_eq!(
+        git_structure(&app, &book_id).await.chapters,
+        vec![(c3, "Three".into()), (c2, "Two, revised".into())],
+        "a deletion is carried through too — git keeps every past version of the file, \
+         so mirroring one is no more destructive than deleting it in the browser"
+    );
+}
+
+#[tokio::test]
+async fn a_notes_tree_rearranged_on_a_device_reaches_git() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, _, _, n1) = structured_book(&mut app).await;
+
+    let parent = n1.clone();
+    device_changes(&mut app, &book_id, move |input| {
+        input.notes.push(("n-new".into(), "Alice".into(), Some("teal".into())));
+        input.children.insert(parent.clone(), vec!["n-new".into()]);
+        input.collapsed.push(parent);
+    })
+    .await;
+
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
+    let git = git_structure(&app, &book_id).await;
+    assert_eq!(git.note_titles.get("n-new").map(String::as_str), Some("Alice"));
+    assert_eq!(git.note_colors.get("n-new").map(String::as_str), Some("teal"));
+    assert_eq!(git.children.get(&n1), Some(&vec!["n-new".to_string()]));
+    assert!(git.collapsed.contains(&n1));
+}
+
+#[tokio::test]
+async fn book_metadata_changed_on_a_device_reaches_git() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, _, _, _) = structured_book(&mut app).await;
+
+    device_changes(&mut app, &book_id, |input| {
+        input.title = "Mirror Structure, Revised".into();
+        input.description = "written on the other device".into();
+    })
+    .await;
+
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
+    let git = git_structure(&app, &book_id).await;
+    assert_eq!(git.title, "Mirror Structure, Revised");
+    assert_eq!(git.description, "written on the other device");
+}
+
+#[tokio::test]
+async fn a_canonical_structure_that_lost_everything_is_refused() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, c1, c2, _) = structured_book(&mut app).await;
+
+    device_changes(&mut app, &book_id, |input| {
+        input.chapters.clear();
+    })
+    .await;
+
+    // Far more likely a half-written document than an author who deleted every chapter
+    // — and they can do that through the UI, which needs no help from this pass.
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 0);
+    assert_eq!(
+        git_structure(&app, &book_id).await.chapters,
+        vec![(c1, "One".into()), (c2, "Two".into())],
+        "the manuscript must still be there"
+    );
+}
+
+#[tokio::test]
+async fn a_structure_sync_that_changes_nothing_leaves_no_commit() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, _, _, _) = structured_book(&mut app).await;
+
+    let before = app.state().books.list_commits(&book_id, 50, 0).await.expect("history").len();
+    let mut device = Device { doc: AutoCommit::new() };
+    device.sync(&mut app, &book_id).await;
+    mirror::flush(app.state(), NOW, NOW).await;
+
+    let after = app.state().books.list_commits(&book_id, 50, 0).await.expect("history").len();
+    assert_eq!(before, after, "a pull must not write anything back");
+}
