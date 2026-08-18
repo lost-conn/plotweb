@@ -56,7 +56,8 @@ pub use body::{
     Shadow,
 };
 pub use book::{
-    compare_book_structure, project_book_structure, roundtrip_book_structure, BookStructureInput,
+    apply_book_structure, compare_book_structure, materialize_book_structure,
+    project_book_structure, roundtrip_book_structure, BookStructure, BookStructureInput,
 };
 pub use user::{project_user_index, roundtrip_user_index, UserIndexInput};
 
