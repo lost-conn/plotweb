@@ -10,8 +10,18 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# Build the frontend if the dist is missing (otherwise reuse it — it's slow).
-if [[ ! -f plotweb-web/dist/index.html ]]; then
+# Build the frontend if the dist is missing OR any source is newer than it.
+#
+# Reusing the dist unconditionally (which this did) is worse than slow: a frontend
+# change is invisible to the whole suite, so specs written to catch a client bug pass
+# against the client that still has it. That is not a hypothetical — it hid the fix for
+# the double-writer bug for two runs, and would have hidden the bug itself.
+NEWER=""
+if [[ -f plotweb-web/dist/index.html ]]; then
+  NEWER="$(find plotweb-web/src plotweb-web/index.html plotweb-web/Cargo.toml \
+    crates -newer plotweb-web/dist/index.html -print -quit 2>/dev/null || true)"
+fi
+if [[ ! -f plotweb-web/dist/index.html || -n "$NEWER" ]]; then
   echo "[e2e] building frontend (trunk build)…"
   (cd plotweb-web && trunk build)
 fi

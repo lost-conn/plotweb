@@ -13,6 +13,12 @@ use common::TestApp;
 use plotweb_crdt::BookStructure;
 use serde_json::json;
 
+fn doc_json(text: &str) -> String {
+    format!(
+        r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{text}"}}]}}]}}"#
+    )
+}
+
 /// A device speaking the real sync protocol for a structure document.
 struct Device {
     doc: AutoCommit,
@@ -294,8 +300,9 @@ async fn canonical_ahead(
     let mut input = plotweb_server::structure::read_structure_input(&app.state().books, book_id)
         .await
         .expect("structure in git");
-    edit(&mut input);
-    plotweb_server::sync::apply_structure(app.crdt_dir(), book_id, &input).expect("apply");
+    let removable = removed_by(&mut input, edit);
+    plotweb_server::sync::apply_structure(app.crdt_dir(), book_id, &input, &removable)
+        .expect("apply");
 }
 
 #[tokio::test]
@@ -577,7 +584,7 @@ async fn two_devices_editing_at_once_still_converge() {
                 .expect("structure");
         input.title = title.into();
         let bytes =
-            plotweb_crdt::apply_book_structure(&device.doc.save(), &input).expect("edit");
+            plotweb_crdt::apply_book_structure(&device.doc.save(), &input, &[]).expect("edit");
         device.doc = AutoCommit::load(&bytes).expect("load");
     }
 
@@ -592,4 +599,162 @@ async fn two_devices_editing_at_once_still_converge() {
         "one chapter, not two — the histories are related and merge rather than concatenate"
     );
     assert!(seen.title == "From A" || seen.title == "From B");
+}
+
+
+#[tokio::test]
+async fn a_rest_write_does_not_delete_a_chapter_git_has_not_mirrored_yet() {
+    // The write path applies a structure read back out of git. Git lags the canonical
+    // document by up to the mirror's debounce, so a chapter created on a device and not
+    // yet mirrored is absent from that read — and applying it verbatim would delete the
+    // chapter from the canonical copy. A rename in one browser would destroy a chapter
+    // added in another.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+
+    // A device adds a chapter and syncs it. Git knows nothing about it yet.
+    canonical_ahead(&app, &book_id, |input| {
+        input.chapters.push(("c-from-device".into(), "Two".into()));
+    })
+    .await;
+    assert!(
+        !from_git(&app, &book_id)
+            .await
+            .chapters
+            .iter()
+            .any(|(id, _)| id == "c-from-device"),
+        "precondition: git has not seen it"
+    );
+
+    // Now an ordinary rename over REST, which re-reads the structure from git.
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{c1}"),
+            &json!({ "title": "One, renamed" }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let stored = canonical(&app, &book_id).expect("a canonical structure");
+    assert_eq!(
+        stored.chapters,
+        vec![
+            (c1, "One, renamed".to_string()),
+            ("c-from-device".to_string(), "Two".to_string())
+        ],
+        "the device's chapter must survive a REST write to a different chapter"
+    );
+    // Git is still behind, which is fine and expected — the mirror is what closes that,
+    // on its own schedule. What matters is that the REST write did not treat git's
+    // silence as a deletion.
+    assert!(
+        !from_git(&app, &book_id)
+            .await
+            .chapters
+            .iter()
+            .any(|(id, _)| id == "c-from-device")
+    );
+    // (That the mirror does close it is `tests/mirror.rs`'s job; this helper writes the
+    // canonical copy directly rather than through the sync route, so nothing is queued.)
+}
+
+#[tokio::test]
+async fn a_rest_delete_still_deletes() {
+    // The counterpart the fix must not break: making git current before reading it is
+    // what lets a genuine deletion still be told apart from a not-yet-mirrored addition.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Structure Book").await;
+    app.cut_over(&book_id).await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+    let c2 = app.create_chapter(&book_id, "Two").await;
+
+    let r = app.delete(&format!("/api/books/{book_id}/chapters/{c1}")).await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let stored = canonical(&app, &book_id).expect("a canonical structure");
+    assert_eq!(stored.chapters, vec![(c2, "Two".into())]);
+}
+
+/// Apply `edit`, returning the ids it removed — the same thing a real caller has to
+/// state explicitly, since absence from git alone is not evidence of deletion (see
+/// `plotweb_crdt::apply_book_structure`).
+fn removed_by(
+    input: &mut plotweb_crdt::BookStructureInput,
+    edit: impl FnOnce(&mut plotweb_crdt::BookStructureInput),
+) -> Vec<String> {
+    let ids = |i: &plotweb_crdt::BookStructureInput| -> Vec<String> {
+        i.chapters
+            .iter()
+            .map(|(id, _)| id.clone())
+            .chain(i.notes.iter().map(|(id, _, _)| id.clone()))
+            .collect()
+    };
+    let before = ids(input);
+    edit(input);
+    let after = ids(input);
+    before.into_iter().filter(|id| !after.contains(id)).collect()
+}
+
+#[tokio::test]
+async fn a_restore_reaches_the_canonical_documents() {
+    // Restore rewrites git. Under cutover nobody reads git, so unless the restore is
+    // carried across it looks like the button does nothing — and the next sync would
+    // mirror the canonical content back over the restored files.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Restore Book").await;
+    app.cut_over(&book_id).await;
+    let c1 = app.create_chapter(&book_id, "One").await;
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{c1}"),
+            &json!({ "title": "One", "content": doc_json("the version worth keeping") }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    let history = app.get(&format!("/api/books/{book_id}/history")).await;
+    assert_eq!(history.status, StatusCode::OK);
+    let good = history.json.as_array().expect("commits")[0]["oid"]
+        .as_str()
+        .expect("a hash")
+        .to_string();
+
+    // Write over it, and add a chapter that the restore should revert away from.
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{c1}"),
+            &json!({ "content": doc_json("a change to be undone") }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    let c2 = app.create_chapter(&book_id, "Two").await;
+
+    let r = app
+        .post(&format!("/api/books/{book_id}/history/{good}/restore"), &json!({}))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+
+    // The read path is the canonical copy, so this is the assertion that matters.
+    let r = app
+        .get(&format!("/api/books/{book_id}/chapters/{c1}"))
+        .await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(
+        r.json["content"].as_str().unwrap().contains("the version worth keeping"),
+        "the restored body must be what a cut-over read serves: {}",
+        r.json["content"]
+    );
+
+    let stored = canonical(&app, &book_id).expect("a canonical structure");
+    assert_eq!(
+        stored.chapters,
+        vec![(c1, "One".into())],
+        "and the chapter added after that commit is reverted away from too"
+    );
+    let _ = c2;
 }

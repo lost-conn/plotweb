@@ -184,10 +184,16 @@ pub async fn cutover_structure(
 /// dozen chances to describe a move as a delete-and-insert, and a wrong delta on a
 /// structure document loses a chapter rather than a character.
 ///
+/// The exception is deletion, which a route must state explicitly in `removable`. What
+/// is read from git is not a complete picture — git lags the canonical document by up to
+/// the mirror's debounce, so a chapter created on a device is simply missing from it.
+/// Without an explicit list, a rename in one browser would delete a chapter added in
+/// another, which is exactly as bad as it sounds.
+///
 /// Cost is a book read per structure change. Those are rare — creating, renaming,
 /// reordering — and the frequent path, an autosave of a chapter body, does not come
 /// through here.
-pub async fn apply_cutover_structure(state: &AppState, book_id: &str) {
+pub async fn apply_cutover_structure(state: &AppState, book_id: &str, removable: &[String]) {
     if !state.cutover.is_cut_over(book_id) {
         return;
     }
@@ -195,21 +201,90 @@ pub async fn apply_cutover_structure(state: &AppState, book_id: &str) {
         eprintln!("[cutover] book:{book_id}: no readable structure in git, nothing applied");
         return;
     };
+    apply_cutover_structure_with(state, book_id, &input, removable).await;
+}
 
+/// The applying half, for a caller that has already read the structure it wants written.
+async fn apply_cutover_structure_with(
+    state: &AppState,
+    book_id: &str,
+    input: &plotweb_crdt::BookStructureInput,
+    removable: &[String],
+) {
     let doc_id = format!("book:{book_id}");
     let lock = state.doc_locks.for_doc(&doc_id);
     let _guard = lock.lock().await;
 
     let crdt_dir = state.crdt_dir.clone();
     let book = book_id.to_string();
-    let applied =
-        tokio::task::spawn_blocking(move || crate::sync::apply_structure(&crdt_dir, &book, &input))
-            .await;
+    let input = input.clone();
+    let removable = removable.to_vec();
+    let applied = tokio::task::spawn_blocking(move || {
+        crate::sync::apply_structure(&crdt_dir, &book, &input, &removable)
+    })
+    .await;
 
     match applied {
         Ok(Ok(_)) => {}
         Ok(Err(e)) => eprintln!("[cutover] {doc_id}: could not apply the structure change: {e}"),
         Err(e) => eprintln!("[cutover] {doc_id}: structure apply worker panicked: {e}"),
+    }
+}
+
+/// Carry a version-history restore into the canonical documents of a cut-over book.
+///
+/// Without this, Restore is decorative: `restore_to_commit` rewrites git and nothing
+/// else, while reads come from the canonical copy — so the book would look unchanged,
+/// and the next sync would mirror the canonical content straight back over the restored
+/// files. An author would conclude the feature was broken, and they would be right.
+///
+/// This is the one caller that may treat git as the *complete* picture, because a
+/// restore has just rewritten the whole manuscript from a commit: a chapter the
+/// canonical copy has and the restored tree does not is a chapter the author is
+/// deliberately reverting away from. Everywhere else that inference is unsafe — see
+/// [`apply_cutover_structure`].
+///
+/// Notes are untouched: `restore_to_commit` operates on the manuscript repo only.
+pub async fn apply_cutover_restore(state: &AppState, book_id: &str) {
+    if !state.cutover.is_cut_over(book_id) {
+        return;
+    }
+    let Some(input) = crate::structure::read_structure_input(&state.books, book_id).await else {
+        eprintln!("[cutover] book:{book_id}: no readable structure after restore");
+        return;
+    };
+
+    // Anything the canonical copy still lists and the restored tree does not.
+    let restored: Vec<&String> = input.chapters.iter().map(|(id, _)| id).collect();
+    let doc_id = format!("book:{book_id}");
+    let removable: Vec<String> = match crate::sync::canonical_snapshot(&state.crdt_dir, &doc_id) {
+        Ok(Some(bytes)) => plotweb_crdt::materialize_book_structure(&bytes)
+            .map(|s| {
+                s.chapters
+                    .into_iter()
+                    .map(|(id, _)| id)
+                    .filter(|id| !restored.contains(&id))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+
+    apply_cutover_structure_with(state, book_id, &input, &removable).await;
+
+    // Then every restored body, through the same path an ordinary save takes — so a
+    // device holding one of these documents receives the revert as an edit rather than
+    // being orphaned by it.
+    for chapter in state.books.list_chapters(book_id).await.unwrap_or_default() {
+        apply_cutover_body(
+            state,
+            book_id,
+            &format!("chapter:{}", chapter.id),
+            "chapter",
+            &chapter.content,
+            plotweb_crdt::BodyKind::Chapter,
+        )
+        .await;
     }
 }
 

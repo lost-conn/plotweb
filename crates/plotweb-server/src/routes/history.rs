@@ -139,7 +139,12 @@ pub async fn restore(
     }
 
     match state.books.restore_to_commit(&book_id, &commit).await {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
+        Ok(()) => {
+            // Cut over: a restore that only rewrites git is invisible, because reads
+            // come from the canonical documents. See `apply_cutover_restore`.
+            super::apply_cutover_restore(&state, &book_id).await;
+            (StatusCode::OK, Json(json!({ "ok": true })))
+        }
         Err(e) => {
             eprintln!("Failed to restore book: {}", e);
             (

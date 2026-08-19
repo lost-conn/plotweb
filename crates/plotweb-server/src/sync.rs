@@ -762,12 +762,17 @@ pub fn apply_body_content(
 /// works out what actually differs, so every structure-changing route — create, rename,
 /// reorder, delete, move, retitle — is one call with no per-route diffing to get wrong.
 ///
+/// The one thing a route *must* state is what it deleted (`removable`), because `input`
+/// comes from git and git lags the canonical copy — see
+/// [`plotweb_crdt::apply_book_structure`].
+///
 /// Returns whether anything changed. Ownership is carried through untouched: applying a
 /// REST write is not a client taking the document.
 pub fn apply_structure(
     crdt_dir: &Path,
     book_id: &str,
     input: &plotweb_crdt::BookStructureInput,
+    removable: &[String],
 ) -> Result<bool, SyncError> {
     let doc_id = format!("book:{book_id}");
     let store = FsStore::open(PathBuf::from(crdt_dir))
@@ -792,7 +797,8 @@ pub fn apply_structure(
     };
 
     let updated =
-        plotweb_crdt::apply_book_structure(&existing, input).map_err(SyncError::Automerge)?;
+        plotweb_crdt::apply_book_structure(&existing, input, removable)
+            .map_err(SyncError::Automerge)?;
     if updated == existing {
         return Ok(false);
     }
