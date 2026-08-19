@@ -66,11 +66,23 @@ use crate::store::AppStore;
 /// drain loop that publishes the newest pending snapshot until none remain. Newer
 /// edits during a publish just replace the pending bytes (coalescing), so the last
 /// write always reflects the final state — never an older snapshot landing last.
+///
+/// The publish itself is a real IndexedDB round trip (on web), so it does not land
+/// in the same tick as the edit that queued it. A caller that flips something
+/// observable — a DOM-visible `AppStore` signal — right after queuing a persist is
+/// racing an immediate page reload: the reload's [`enter`] loads whatever
+/// generation is durable *at that instant*, and because the local doc wins the
+/// projection, a write that lost the race is not just delayed but silently
+/// reverted (see [`on_settled`]). [`Persister::when_settled`] is how a caller
+/// closes that window: it defers running something until the queue this edit just
+/// joined has actually drained.
 #[derive(Clone)]
 struct Persister {
     store: DocStore,
     pending: Rc<RefCell<Option<Vec<u8>>>>,
     busy: Rc<Cell<bool>>,
+    /// Callbacks waiting for the drain loop to empty `pending` and go idle.
+    waiters: Rc<RefCell<Vec<Box<dyn FnOnce()>>>>,
 }
 
 impl Persister {
@@ -79,11 +91,25 @@ impl Persister {
             store,
             pending: Rc::new(RefCell::new(None)),
             busy: Rc::new(Cell::new(false)),
+            waiters: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
     fn persist(&self, bytes: Vec<u8>) {
         *self.pending.borrow_mut() = Some(bytes);
+        self.drain();
+    }
+
+    /// Run `f` once every publish queued up to this call has been attempted (landed
+    /// or given up after an error) and the drain loop has gone idle.
+    fn when_settled(&self, f: impl FnOnce() + 'static) {
+        self.waiters.borrow_mut().push(Box::new(f));
+        self.drain();
+    }
+
+    /// Ensure a drain loop is running; a no-op if one already is (it will pick up
+    /// whatever `persist`/`when_settled` just queued on its next iteration).
+    fn drain(&self) {
         if self.busy.get() {
             return;
         }
@@ -91,6 +117,7 @@ impl Persister {
         let store = self.store.clone();
         let pending = self.pending.clone();
         let busy = self.busy.clone();
+        let waiters = self.waiters.clone();
         spawn(async move {
             loop {
                 let next = pending.borrow_mut().take();
@@ -104,6 +131,9 @@ impl Persister {
                 }
             }
             busy.set(false);
+            for f in waiters.borrow_mut().drain(..) {
+                f();
+            }
         });
     }
 }
@@ -217,6 +247,33 @@ fn with_book(book_id: &str, f: impl FnOnce(&mut AutoCommit)) {
     });
     // Local change → push it soon (debounced; no-op unless sync is enabled).
     crate::sync::nudge(book_id, true);
+}
+
+/// Run `f` once the open book's most recently queued local-doc write has settled,
+/// or immediately if no matching book is open to wait on.
+///
+/// The reload race this closes: `sync_chapters` / `sync_notes` / `note_meta` queue
+/// their publish and return before it lands (it's a real IndexedDB round trip on
+/// web), so a caller that flips a DOM-visible `AppStore` signal right after them —
+/// the optimistic swap — is racing an immediate page reload. Lose that race and the
+/// reload's [`enter`] loads the *previous* generation; because the local doc wins
+/// the projection (by design, so a genuine offline edit survives a stale REST
+/// fetch), the edit is not merely delayed but silently reverted, even though the
+/// REST call for the same edit reliably lands first. Routing the visible flip
+/// through here instead of firing it inline means nothing observable happens until
+/// the edit is durable on this device, so nothing can trigger a reload inside the
+/// window where it could still be lost.
+pub fn on_settled(book_id: &str, f: impl FnOnce() + 'static) {
+    let persister = BOOK.with(|b| {
+        b.borrow()
+            .as_ref()
+            .filter(|s| s.book_id == book_id)
+            .map(|s| s.persister.clone())
+    });
+    match persister {
+        Some(p) => p.when_settled(f),
+        None => f(),
+    }
 }
 
 // ── Public entry point: seed-from-REST-or-load-local, then project ───────────

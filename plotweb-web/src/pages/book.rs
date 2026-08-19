@@ -3313,20 +3313,33 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
     let move_chapter = move |chapter_id: String, direction: i32| {
         move || {
-            store.chapters.update(|chapters| {
-                let pos = chapters.iter().position(|c| c.id == chapter_id);
-                if let Some(idx) = pos {
-                    let new_idx = idx as i32 + direction;
-                    if new_idx >= 0 && (new_idx as usize) < chapters.len() {
-                        chapters.swap(idx, new_idx as usize);
-                    }
-                }
-            });
-            let ids: Vec<String> = store.chapters.get().iter().map(|c| c.id.clone()).collect();
+            let mut chapters = store.chapters.get();
+            let Some(idx) = chapters.iter().position(|c| c.id == chapter_id) else {
+                return;
+            };
+            let new_idx = idx as i32 + direction;
+            if new_idx < 0 || (new_idx as usize) >= chapters.len() {
+                return;
+            }
+            chapters.swap(idx, new_idx as usize);
+
             let bid = bid_signal.get();
-            crate::local_book::sync_chapters(&bid, &store.chapters.get());
-            let req = ReorderChaptersRequest { chapter_ids: ids };
-            api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid), &req, move |_result| {});
+            crate::local_book::sync_chapters(&bid, &chapters);
+
+            // Hold the DOM-visible swap (and the REST PUT) until the local-doc
+            // write above has actually landed. Flipping `store.chapters` first
+            // would let an immediate reload race that write — it's a real
+            // IndexedDB round trip, not same-tick — and losing that race means
+            // the reload's local-doc-wins projection silently reverts this
+            // reorder even though the REST call below reliably lands. See
+            // `local_book::on_settled`.
+            let ids: Vec<String> = chapters.iter().map(|c| c.id.clone()).collect();
+            let bid_put = bid.clone();
+            crate::local_book::on_settled(&bid, move || {
+                store.chapters.set(chapters);
+                let req = ReorderChaptersRequest { chapter_ids: ids };
+                api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid_put), &req, move |_result| {});
+            });
         }
     };
 
@@ -3342,8 +3355,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         if active_pane.get() == BookPane::Editor(cid.clone()) {
                             active_pane.set(BookPane::Chapters);
                         }
-                        store.chapters.update(|ch| ch.retain(|c| c.id != cid));
-                        crate::local_book::sync_chapters(&bid_sync, &store.chapters.get());
+                        let mut chapters = store.chapters.get();
+                        chapters.retain(|c| c.id != cid);
+                        crate::local_book::sync_chapters(&bid_sync, &chapters);
+                        // Same reload race as `move_chapter`: don't flip the
+                        // DOM-visible list until the local-doc write above lands.
+                        crate::local_book::on_settled(&bid_sync, move || {
+                            store.chapters.set(chapters);
+                        });
                     }
                 },
             );
