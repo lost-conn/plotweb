@@ -3335,8 +3335,22 @@ pub fn book_page(book_id: String) -> NodeHandle {
             // `local_book::on_settled`.
             let ids: Vec<String> = chapters.iter().map(|c| c.id.clone()).collect();
             let bid_put = bid.clone();
+            let moved = chapter_id.clone();
             crate::local_book::on_settled(&bid, move || {
-                store.chapters.set(chapters);
+                // Re-apply the swap to whatever the list holds *now* rather than
+                // writing back the copy captured before the wait. A projection can
+                // land during that window — a sync integration re-projecting the
+                // book doc — and putting a pre-wait snapshot over it would revert
+                // it, which is the failure this whole change exists to stop.
+                store.chapters.update(|chapters| {
+                    let Some(idx) = chapters.iter().position(|c| c.id == moved) else {
+                        return;
+                    };
+                    let new_idx = idx as i32 + direction;
+                    if new_idx >= 0 && (new_idx as usize) < chapters.len() {
+                        chapters.swap(idx, new_idx as usize);
+                    }
+                });
                 let req = ReorderChaptersRequest { chapter_ids: ids };
                 api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid_put), &req, move |_result| {});
             });
@@ -3355,13 +3369,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         if active_pane.get() == BookPane::Editor(cid.clone()) {
                             active_pane.set(BookPane::Chapters);
                         }
+                        let cid_visible = cid.clone();
                         let mut chapters = store.chapters.get();
                         chapters.retain(|c| c.id != cid);
                         crate::local_book::sync_chapters(&bid_sync, &chapters);
                         // Same reload race as `move_chapter`: don't flip the
                         // DOM-visible list until the local-doc write above lands.
                         crate::local_book::on_settled(&bid_sync, move || {
-                            store.chapters.set(chapters);
+                            // Removal by id, for the same reason as `move_chapter`:
+                            // a pre-wait snapshot would clobber anything that landed
+                            // during the wait.
+                            store.chapters.update(|ch| ch.retain(|c| c.id != cid_visible));
                         });
                     }
                 },
