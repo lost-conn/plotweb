@@ -347,10 +347,10 @@ async fn device_changes(
     let mut input = plotweb_server::structure::read_structure_input(&app.state().books, book_id)
         .await
         .expect("structure in git");
-    edit(&mut input);
+    let removable = removed_by(&mut input, edit);
 
-    let changed =
-        plotweb_crdt::apply_book_structure(&device.doc.save(), &input).expect("device edit");
+    let changed = plotweb_crdt::apply_book_structure(&device.doc.save(), &input, &removable)
+        .expect("device edit");
     device.doc = AutoCommit::load(&changed).expect("reload");
     device.sync(app, book_id).await;
 }
@@ -512,4 +512,24 @@ async fn a_structure_sync_that_changes_nothing_leaves_no_commit() {
 
     let after = app.state().books.list_commits(&book_id, 50, 0).await.expect("history").len();
     assert_eq!(before, after, "a pull must not write anything back");
+}
+
+/// Apply `edit`, returning the ids it removed — the same thing a real caller has to
+/// state explicitly, since absence from git alone is not evidence of deletion (see
+/// `plotweb_crdt::apply_book_structure`).
+fn removed_by(
+    input: &mut plotweb_crdt::BookStructureInput,
+    edit: impl FnOnce(&mut plotweb_crdt::BookStructureInput),
+) -> Vec<String> {
+    let ids = |i: &plotweb_crdt::BookStructureInput| -> Vec<String> {
+        i.chapters
+            .iter()
+            .map(|(id, _)| id.clone())
+            .chain(i.notes.iter().map(|(id, _, _)| id.clone()))
+            .collect()
+    };
+    let before = ids(input);
+    edit(input);
+    let after = ids(input);
+    before.into_iter().filter(|id| !after.contains(id)).collect()
 }

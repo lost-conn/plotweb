@@ -2198,6 +2198,10 @@ fn do_switch_chapter_inner(
         }
         _ => None,
     };
+    // Sync owns a synced body; leaving it must not write it either. This is the same
+    // rule as the autosave's, and it has to be repeated here because this path builds
+    // its own PUT rather than going through `save_content`.
+    let leaving_id = leaving_id.filter(|id| !crate::sync::body_is_syncing(&format!("chapter:{id}")));
     if let Some(current_id) = leaving_id {
         let bid = bid.to_string();
         // Read the durable save shape straight from the editor model (synchronous,
@@ -3078,6 +3082,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // set for the life of the page and the next switch re-saves content nobody
         // touched — which is the very write this guard exists to prevent.
         chapter_dirty.set(false);
+        // Sync owns this document's content — do not also PUT it. See
+        // `sync::body_is_syncing`: two writers on one body is how deleted text comes
+        // back. Nothing is lost by returning here; the edit is in the local store and
+        // sync is already carrying it.
+        if crate::sync::body_is_syncing(&format!("chapter:{chapter_id_to_save}")) {
+            save_status.set("saved");
+            return;
+        }
         // Serialize the durable save shape (DocNode JSON) straight from the model.
         let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) else {
             return;
@@ -3741,9 +3753,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
             crate::local_book::note_meta(&bid, &nid, Some(&title_val), color_val.as_deref());
 
             note_save_status.set("saving");
+            // Title and colour are structure and still go over REST; the body does not,
+            // when sync is carrying it. Same rule as the chapter save above — but a
+            // note's PUT carries all three, so it is the field that drops out rather
+            // than the whole request.
+            let content =
+                (!crate::sync::body_is_syncing(&format!("note:{nid}"))).then_some(content);
             let req = UpdateNoteRequest {
                 title: Some(title_val),
-                content: Some(content),
+                content,
                 color: color_val,
             };
             api::put::<_, serde_json::Value>(

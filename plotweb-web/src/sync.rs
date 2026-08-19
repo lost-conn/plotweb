@@ -268,6 +268,30 @@ pub fn register_body(doc_id: &str, book_id: &str) {
     );
 }
 
+/// Whether this body document is actively syncing, and so must **not** also be saved
+/// over REST.
+///
+/// The co-existence rule from `docs/sync-engine-design.md`, finally enforced: a client
+/// must never be both writers of the same document. Sync carries incremental edits; a
+/// REST save carries a whole snapshot of the editor model taken at some earlier moment.
+/// Under cutover the server applies that snapshot *into* the canonical document as a
+/// diff — so if sync has already carried a deletion across, the snapshot's diff says
+/// "put it back", and the text reappears under the author's cursor mid-sentence.
+///
+/// Dropping the REST write drops a duplicate, not a save: the edit is already in the
+/// local store (which is durable) and already on its way up as a change. A document
+/// parked for sign-in is *not* syncing — REST is the only writer then, and must stay on.
+pub fn body_is_syncing(doc_id: &str) -> bool {
+    if !enabled() {
+        return false;
+    }
+    ENGINE.with(|e| {
+        e.borrow()
+            .get(doc_id)
+            .is_some_and(|entry| !matches!(entry.phase, Phase::Unauthed))
+    })
+}
+
 fn register(doc: Doc, store: AppStore) {
     if !enabled() {
         return;

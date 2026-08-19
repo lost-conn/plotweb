@@ -162,14 +162,27 @@ pub fn materialize_book_structure(canonical: &[u8]) -> Result<BookStructure, Str
 /// Only what actually differs is written, so a save that renames one chapter is one
 /// small change rather than a rewrite of the whole structure — which matters when two
 /// devices are editing different parts of the same book at once.
+///
+/// # Why removals are explicit
+///
+/// `input` is read out of git, and git lags the canonical document: a chapter created on
+/// a device is absent from git until the mirror commits it. Treating "absent from
+/// `input`" as "deleted" would therefore make an unrelated rename destroy that chapter
+/// — the two cases are indistinguishable from git alone.
+///
+/// So a chapter or note the canonical copy has and `input` does not is **kept**, in the
+/// position it already occupies, unless its id appears in `removable`. Callers name what
+/// they actually deleted; nothing else can be lost by a write that meant to do something
+/// else.
 pub fn apply_book_structure(
     canonical: &[u8],
     input: &BookStructureInput,
+    removable: &[String],
 ) -> Result<Vec<u8>, String> {
     let mut doc =
         AutoCommit::load(canonical).map_err(|e| format!("book document did not load: {e}"))?;
     let current = read_book_structure(&doc);
-    let want = input.structure();
+    let want = keeping_unmirrored(&current, input.structure(), removable);
     if current == want {
         return Ok(canonical.to_vec());
     }
@@ -249,6 +262,55 @@ pub fn apply_book_structure(
     );
 
     Ok(doc.save())
+}
+
+/// Put back anything the canonical copy has that `want` does not mention and the caller
+/// did not say it removed — see [`apply_book_structure`]'s note on why absence from git
+/// is not evidence of deletion.
+///
+/// A kept chapter goes back at the index it already had, so a device's new chapter three
+/// stays chapter three rather than being shuffled to the end by an unrelated rename.
+fn keeping_unmirrored(
+    current: &BookStructure,
+    mut want: BookStructure,
+    removable: &[String],
+) -> BookStructure {
+    let removing = |id: &String| removable.iter().any(|r| r == id);
+
+    for (i, (id, title)) in current.chapters.iter().enumerate() {
+        if removing(id) || want.chapters.iter().any(|(wid, _)| wid == id) {
+            continue;
+        }
+        let at = i.min(want.chapters.len());
+        want.chapters.insert(at, (id.clone(), title.clone()));
+    }
+
+    for (id, title) in &current.note_titles {
+        if removing(id) || want.note_titles.contains_key(id) {
+            continue;
+        }
+        want.note_titles.insert(id.clone(), title.clone());
+        if let Some(color) = current.note_colors.get(id) {
+            want.note_colors.insert(id.clone(), color.clone());
+        }
+        // Its place in the tree comes back with it; a note present but unreachable
+        // would be invisible in the sidebar, which is indistinguishable from lost.
+        if current.root_order.contains(id) && !want.root_order.contains(id) {
+            let at = current
+                .root_order
+                .iter()
+                .position(|r| r == id)
+                .unwrap_or(want.root_order.len())
+                .min(want.root_order.len());
+            want.root_order.insert(at, id.clone());
+        }
+        for (parent, kids) in &current.children {
+            if kids.contains(id) && !want.children.get(parent).is_some_and(|k| k.contains(id)) {
+                want.children.entry(parent.clone()).or_default().push(id.clone());
+            }
+        }
+    }
+    want
 }
 
 /// Bring a list to `want` with as few edits as possible.
@@ -595,7 +657,7 @@ mod tests {
     fn applying_an_unchanged_structure_writes_nothing() {
         let input = sample();
         let bytes = project_book_structure(&input).expect("project");
-        let again = apply_book_structure(&bytes, &input).expect("apply");
+        let again = apply_book_structure(&bytes, &input, &[]).expect("apply");
         assert_eq!(
             again, bytes,
             "an idle save must not add a change — every one of those is a sync round \
@@ -610,7 +672,7 @@ mod tests {
         let mut renamed = input.clone();
         renamed.chapters[1].1 = "The Squall".into();
 
-        let applied = apply_book_structure(&bytes, &renamed).expect("apply");
+        let applied = apply_book_structure(&bytes, &renamed, &[]).expect("apply");
         assert_eq!(merged_with(&bytes, &applied), renamed.structure());
     }
 
@@ -621,7 +683,7 @@ mod tests {
         let mut reordered = input.clone();
         reordered.chapters.reverse();
 
-        let applied = apply_book_structure(&bytes, &reordered).expect("apply");
+        let applied = apply_book_structure(&bytes, &reordered, &[]).expect("apply");
         let merged = merged_with(&bytes, &applied);
         assert_eq!(merged.chapters, reordered.structure().chapters);
         assert_eq!(
@@ -639,7 +701,8 @@ mod tests {
         changed.chapters.remove(0);
         changed.chapters.push(("c3".into(), "Aftermath".into()));
 
-        let applied = apply_book_structure(&bytes, &changed).expect("apply");
+        let applied =
+            apply_book_structure(&bytes, &changed, &["c1".to_string()]).expect("apply");
         let merged = merged_with(&bytes, &applied);
         assert_eq!(
             merged.chapters,
@@ -663,7 +726,7 @@ mod tests {
         changed.notes[2].1 = "Settings".into();
         changed.notes[1].2 = None;
 
-        let applied = apply_book_structure(&bytes, &changed).expect("apply");
+        let applied = apply_book_structure(&bytes, &changed, &[]).expect("apply");
         let merged = merged_with(&bytes, &applied);
         assert_eq!(merged, changed.structure());
         assert!(
@@ -685,7 +748,7 @@ mod tests {
         changed.description = "a better description".into();
         changed.cover_ref = None;
 
-        let applied = apply_book_structure(&bytes, &changed).expect("apply");
+        let applied = apply_book_structure(&bytes, &changed, &[]).expect("apply");
         assert_eq!(merged_with(&bytes, &applied), changed.structure());
     }
 
@@ -704,7 +767,7 @@ mod tests {
 
         let mut reordered = input.clone();
         reordered.chapters.reverse();
-        let applied = apply_book_structure(&bytes, &reordered).expect("apply");
+        let applied = apply_book_structure(&bytes, &reordered, &[]).expect("apply");
 
         let mut merged = AutoCommit::load(&applied).expect("load");
         let mut theirs = AutoCommit::load(&device_bytes).expect("load");
@@ -730,7 +793,7 @@ mod tests {
         bare.put(&meta, "title", "The Book").unwrap();
         let bytes = bare.save();
 
-        let applied = apply_book_structure(&bytes, &sample()).expect("apply");
+        let applied = apply_book_structure(&bytes, &sample(), &[]).expect("apply");
         assert_eq!(
             materialize_book_structure(&applied).expect("materialize"),
             sample().structure()

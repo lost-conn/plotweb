@@ -336,33 +336,51 @@ fn write_notes(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note], tree: &N
 
     // children Map<note_id, List> — only parents that actually have children
     let children = ensure_obj(doc, notes_obj, "children", ObjType::Map);
-    clear_map(doc, &children);
+    let parents: Vec<String> = tree
+        .children
+        .iter()
+        .filter(|(_, kids)| !kids.is_empty())
+        .map(|(p, _)| p.clone())
+        .collect();
+    retain_keys(doc, &children, &parents);
     for (parent, kids) in &tree.children {
         if kids.is_empty() {
             continue;
         }
-        let list = doc.put_object(&children, parent.as_str(), ObjType::List).unwrap();
-        for (i, k) in kids.iter().enumerate() {
-            let _ = doc.insert(&list, i, k.as_str());
-        }
+        let list = ensure_obj(doc, &children, parent.as_str(), ObjType::List);
+        set_list(doc, &list, kids);
     }
 
     // collapsed Map<note_id, bool>
     let collapsed = ensure_obj(doc, notes_obj, "collapsed", ObjType::Map);
-    clear_map(doc, &collapsed);
+    retain_keys(doc, &collapsed, &tree.collapsed);
     for id in &tree.collapsed {
-        let _ = doc.put(&collapsed, id.as_str(), true);
+        if !doc
+            .get(&collapsed, id.as_str())
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| v.to_bool())
+            .unwrap_or(false)
+        {
+            let _ = doc.put(&collapsed, id.as_str(), true);
+        }
     }
 
     // titles + colors Maps
+    let ids: Vec<String> = notes.iter().map(|n| n.id.clone()).collect();
+    let coloured: Vec<String> = notes
+        .iter()
+        .filter(|n| n.color.is_some())
+        .map(|n| n.id.clone())
+        .collect();
     let titles = ensure_obj(doc, notes_obj, "titles", ObjType::Map);
     let colors = ensure_obj(doc, notes_obj, "colors", ObjType::Map);
-    clear_map(doc, &titles);
-    clear_map(doc, &colors);
+    retain_keys(doc, &titles, &ids);
+    retain_keys(doc, &colors, &coloured);
     for n in notes {
-        let _ = doc.put(&titles, n.id.as_str(), n.title.as_str());
+        put_if_changed(doc, &titles, n.id.as_str(), n.title.as_str());
         if let Some(c) = &n.color {
-            let _ = doc.put(&colors, n.id.as_str(), c.as_str());
+            put_if_changed(doc, &colors, n.id.as_str(), c.as_str());
         }
     }
 }
@@ -372,17 +390,14 @@ fn write_notes(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note], tree: &N
 /// Sync chapter **order** (the `chapters` List) and **titles** (the `chapter_titles`
 /// Map) from the current chapter list. Covers create / delete / reorder / rename.
 pub fn sync_chapters(book_id: &str, chapters: &[Chapter]) {
+    let ids: Vec<String> = chapters.iter().map(|c| c.id.clone()).collect();
     with_book(book_id, |doc| {
         let chs = ensure_obj(doc, &ROOT, "chapters", ObjType::List);
-        set_list(
-            doc,
-            &chs,
-            &chapters.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
-        );
+        set_list(doc, &chs, &ids);
         let titles = ensure_obj(doc, &ROOT, "chapter_titles", ObjType::Map);
-        clear_map(doc, &titles);
+        retain_keys(doc, &titles, &ids);
         for c in chapters {
-            let _ = doc.put(&titles, c.id.as_str(), c.title.as_str());
+            put_if_changed(doc, &titles, c.id.as_str(), c.title.as_str());
         }
     });
 }
@@ -639,20 +654,71 @@ fn read_map_strings(doc: &AutoCommit, obj: &ObjId) -> HashMap<String, String> {
 }
 
 /// Overwrite a `List` with `items` (clear all, then insert in order).
+/// Bring a `List` to `items` with as few edits as possible.
+///
+/// It used to empty the list and re-insert, which is a change touching every element.
+/// Two devices doing that concurrently merge into a list holding *both* copies — every
+/// chapter twice — and even alone it makes an unrelated rename conflict with a reorder
+/// arriving by sync. Removing what left and moving only what moved keeps the change as
+/// small as the edit that caused it. Mirror of `plotweb_crdt::book::reconcile_list`.
 fn set_list(doc: &mut AutoCommit, obj: &ObjId, items: &[String]) {
-    while doc.length(obj) > 0 {
-        let _ = doc.delete(obj, 0);
+    let mut have = read_list(doc, obj);
+    for i in (0..have.len()).rev() {
+        if !items.contains(&have[i]) {
+            let _ = doc.delete(obj, i);
+            have.remove(i);
+        }
     }
-    for (i, s) in items.iter().enumerate() {
-        let _ = doc.insert(obj, i, s.as_str());
+    for (i, id) in items.iter().enumerate() {
+        if have.get(i) == Some(id) {
+            continue;
+        }
+        if let Some(pos) = have.iter().position(|h| h == id) {
+            let _ = doc.delete(obj, pos);
+            have.remove(pos);
+        }
+        let _ = doc.insert(obj, i, id.as_str());
+        have.insert(i, id.clone());
     }
 }
 
-/// Delete every key of a `Map`.
-fn clear_map(doc: &mut AutoCommit, obj: &ObjId) {
+fn read_list(doc: &AutoCommit, obj: &ObjId) -> Vec<String> {
+    let len = doc.length(obj);
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        if let Ok(Some((v, _))) = doc.get(obj, i)
+            && let Some(str_val) = v.to_str()
+        {
+            out.push(str_val.to_string());
+        }
+    }
+    out
+}
+
+/// Delete the keys of a `Map` that `keep` does not mention.
+///
+/// The counterpart of the above, and it takes `keep` for the same reason: clearing the
+/// map and rewriting it re-put every key, so a title arriving by sync was overwritten
+/// by whatever this device last read over REST.
+fn retain_keys(doc: &mut AutoCommit, obj: &ObjId, keep: &[String]) {
     let keys: Vec<String> = doc.keys(obj).collect();
     for k in keys {
-        let _ = doc.delete(obj, k.as_str());
+        if !keep.contains(&k) {
+            let _ = doc.delete(obj, k.as_str());
+        }
+    }
+}
+
+/// Put `value` only if it differs from what is stored — so an unchanged title is not a
+/// change at all, and cannot lose a race with one arriving by sync.
+fn put_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
+    let current = doc
+        .get(obj, key)
+        .ok()
+        .flatten()
+        .and_then(|(v, _)| v.to_str().map(|s| s.to_string()));
+    if current.as_deref() != Some(value) {
+        let _ = doc.put(obj, key, value);
     }
 }
 
