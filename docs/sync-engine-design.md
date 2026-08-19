@@ -517,7 +517,17 @@ is wanted; it composes with git rather than replacing it.
 
 **The rule that makes (1) safe:** a client must never both save over REST *and* sync the
 same document, or the same edit lands twice — once as its own change, once as the
-server's. At cutover a syncing client stops REST-writing the bodies it syncs. That rule
+server's.
+
+**Whose decision it is.** Neither side knows enough alone. The client knows whether it is
+syncing a given document; the server knows whether the book has been cut over. Suppress
+on the client's half alone and every book that is *not* cut over loses the write that
+reaches git — the edit lands in the canonical store, is never mirrored (mirroring is
+cut-over only), and vanishes on the next read. Decide on the server's half alone and a
+client with sync switched off has its writes dropped, because `synced_at` never clears.
+So the client **declares** (`sync_owned` on the update request) and the server **decides**,
+evaluating cutover at request time. At cutover a syncing client stops REST-writing the
+bodies it syncs. That rule
 lives with the flag, which is why (1) ships as a tested primitive and is deliberately not
 wired to a route yet.
 

@@ -2172,6 +2172,7 @@ fn do_switch_chapter_inner(
             let req = UpdateChapterRequest {
                 title: Some(title),
                 content: None,
+                sync_owned: false,
             };
             api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/chapters/{}", bid, leaving_cid),
@@ -2198,10 +2199,6 @@ fn do_switch_chapter_inner(
         }
         _ => None,
     };
-    // Sync owns a synced body; leaving it must not write it either. This is the same
-    // rule as the autosave's, and it has to be repeated here because this path builds
-    // its own PUT rather than going through `save_content`.
-    let leaving_id = leaving_id.filter(|id| !crate::sync::body_is_syncing(&format!("chapter:{id}")));
     if let Some(current_id) = leaving_id {
         let bid = bid.to_string();
         // Read the durable save shape straight from the editor model (synchronous,
@@ -2209,7 +2206,13 @@ fn do_switch_chapter_inner(
         if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
             chapter_dirty.set(false);
             save_status.set("saving");
-            let req = UpdateChapterRequest { title: None, content: Some(content) };
+            // Same declaration as the autosave's — this path builds its own PUT
+            // rather than going through `save_content`.
+            let req = UpdateChapterRequest {
+                title: None,
+                content: Some(content),
+                sync_owned: crate::sync::body_is_syncing(&format!("chapter:{current_id}")),
+            };
             api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/chapters/{}", bid, current_id),
                 &req,
@@ -3082,23 +3085,22 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // set for the life of the page and the next switch re-saves content nobody
         // touched — which is the very write this guard exists to prevent.
         chapter_dirty.set(false);
-        // Sync owns this document's content — do not also PUT it. See
-        // `sync::body_is_syncing`: two writers on one body is how deleted text comes
-        // back. Nothing is lost by returning here; the edit is in the local store and
-        // sync is already carrying it.
-        if crate::sync::body_is_syncing(&format!("chapter:{chapter_id_to_save}")) {
-            save_status.set("saved");
-            return;
-        }
         // Serialize the durable save shape (DocNode JSON) straight from the model.
         let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) else {
             return;
         };
         let bid = bid_signal.get();
         save_status.set("saving");
+        // Declare that sync is carrying this body rather than withholding the write.
+        // Two writers on one body is how deleted text comes back — but *which* writer
+        // should stand down depends on whether the book is cut over, and only the
+        // server knows that. Withholding it here regardless is how an edit reaches the
+        // canonical store, never reaches git, and vanishes from a book whose reads
+        // still come from git.
         let req = UpdateChapterRequest {
             title: None,
             content: Some(content),
+            sync_owned: crate::sync::body_is_syncing(&format!("chapter:{chapter_id_to_save}")),
         };
         api::put::<_, serde_json::Value>(
             &format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
@@ -3245,6 +3247,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         let req = UpdateChapterRequest {
             title: Some(title.clone()),
             content: None,
+            sync_owned: false,
         };
         api::put::<_, serde_json::Value>(
             &format!("/api/books/{}/chapters/{}", bid, cid),
@@ -3293,6 +3296,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             let req = UpdateChapterRequest {
                 title: Some(title.clone()),
                 content: None,
+                sync_owned: false,
             };
             api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/chapters/{}", captured_bid, cid),
@@ -3667,7 +3671,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
             let bid = bid_signal.get();
             if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
                 save_status.set("saving");
-                let req = UpdateChapterRequest { title: None, content: Some(content) };
+                let req = UpdateChapterRequest {
+                    title: None,
+                    content: Some(content),
+                    sync_owned: crate::sync::body_is_syncing(&format!("chapter:{current_id}")),
+                };
                 api::put::<_, serde_json::Value>(
                     &format!("/api/books/{}/chapters/{}", bid, current_id),
                     &req,
@@ -3790,16 +3798,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
             crate::local_book::note_meta(&bid, &nid, Some(&title_val), color_val.as_deref());
 
             note_save_status.set("saving");
-            // Title and colour are structure and still go over REST; the body does not,
-            // when sync is carrying it. Same rule as the chapter save above — but a
-            // note's PUT carries all three, so it is the field that drops out rather
-            // than the whole request.
-            let content =
-                (!crate::sync::body_is_syncing(&format!("note:{nid}"))).then_some(content);
             let req = UpdateNoteRequest {
                 title: Some(title_val),
-                content,
+                content: Some(content),
                 color: color_val,
+                // Covers the body only; title and colour are structure, and sync does
+                // not carry them.
+                sync_owned: crate::sync::body_is_syncing(&format!("note:{nid}")),
             };
             api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/notes/{}", bid, nid),

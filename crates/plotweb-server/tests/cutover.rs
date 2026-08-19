@@ -204,3 +204,108 @@ async fn a_missing_canonical_copy_degrades_to_git_rather_than_failing() {
         "serving slightly older content is recoverable; serving nothing looks like data loss"
     );
 }
+
+/// A `sync_owned` write says "sync is carrying this body". It is a declaration, and it
+/// only counts where the canonical document is the source of truth.
+mod sync_owned {
+    use super::*;
+
+    #[tokio::test]
+    async fn is_honoured_for_a_cut_over_book() {
+        let mut app = TestApp::new().await;
+        app.register("author", "password123").await;
+        let book_id = app.create_book("Cutover Book").await;
+        let chapter_id = app.create_chapter(&book_id, "One").await;
+        app.cut_over(&book_id).await;
+        let r = app
+            .put(
+                &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+                &json!({ "content": doc_json("what both copies hold") }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+
+        // Now a save from a client that also syncs. Its content is a stale duplicate of
+        // what sync already carried, so neither copy may take it.
+        let r = app
+            .put(
+                &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+                &json!({ "content": doc_json("a stale snapshot"), "sync_owned": true }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+
+        let git = app
+            .state()
+            .books
+            .get_chapter(&book_id, &chapter_id)
+            .await
+            .expect("chapter")
+            .content;
+        assert!(
+            git.contains("what both copies hold"),
+            "the stale snapshot must not reach git: {git}"
+        );
+        let r = app
+            .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
+            .await;
+        assert_eq!(
+            r.status,
+            StatusCode::OK,
+            "and the copies must still agree — a write to one of them alone locks the \
+             document on the next read"
+        );
+        assert!(r.json["content"].as_str().unwrap().contains("what both copies hold"));
+    }
+
+    #[tokio::test]
+    async fn is_ignored_for_a_book_that_is_not_cut_over() {
+        // The regression this exists for. Deciding client-side alone dropped the write
+        // for every book that had *not* been cut over — where git is still the source
+        // of truth and this is the only write that reaches it. The edit landed in the
+        // canonical store, never reached git, and vanished on the next read.
+        let mut app = TestApp::new().await;
+        app.register("author", "password123").await;
+        let book_id = app.create_book("Ordinary Book").await;
+        let chapter_id = app.create_chapter(&book_id, "One").await;
+
+        let r = app
+            .put(
+                &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+                &json!({ "content": doc_json("typed with sync on"), "sync_owned": true }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+
+        let r = app
+            .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
+            .await;
+        assert!(
+            r.json["content"].as_str().unwrap().contains("typed with sync on"),
+            "git is the truth here, so the write must land: {}",
+            r.json["content"]
+        );
+    }
+
+    #[tokio::test]
+    async fn never_covers_a_title_or_a_note_colour() {
+        // The flag is about the body. Structure is not carried by sync and must still
+        // be written, cut over or not.
+        let mut app = TestApp::new().await;
+        app.register("author", "password123").await;
+        let book_id = app.create_book("Cutover Book").await;
+        let chapter_id = app.create_chapter(&book_id, "One").await;
+        app.cut_over(&book_id).await;
+
+        let r = app
+            .put(
+                &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+                &json!({ "title": "One, renamed", "sync_owned": true }),
+            )
+            .await;
+        assert_eq!(r.status, StatusCode::OK);
+
+        let list = app.get(&format!("/api/books/{book_id}/chapters")).await;
+        assert_eq!(list.json.as_array().unwrap()[0]["title"], "One, renamed");
+    }
+}
