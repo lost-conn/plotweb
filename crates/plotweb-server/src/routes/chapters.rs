@@ -190,6 +190,23 @@ pub async fn update(
         );
     }
 
+    // `sync_owned` only means anything for a cut-over book. There, the canonical
+    // document is the source of truth and sync is already carrying this body's edits,
+    // so `content` is a stale duplicate: applying it re-inserts text the client has
+    // since deleted (the reappearing-sentence bug), and writing it to git would make
+    // the two copies disagree and lock the document on the next read.
+    //
+    // Anywhere else git *is* the truth and this write is the only one that reaches it.
+    // Honouring the flag without the cutover check is how an edit lands in the
+    // canonical store, is never written to git, and then vanishes on the next read —
+    // which is exactly what happened when this was decided client-side alone.
+    let sync_owns_body = req.sync_owned && state.cutover.is_cut_over(&book_id);
+    let req = UpdateChapterRequest {
+        title: req.title,
+        content: if sync_owns_body { None } else { req.content },
+        sync_owned: req.sync_owned,
+    };
+
     if let Err(e) = state.books.update_chapter(&book_id, &chapter_id, &req).await {
         eprintln!("Failed to update chapter: {}", e);
         return (
@@ -201,6 +218,8 @@ pub async fn update(
     // Cut over: the write also lands *in* the canonical document, as an edit. Git has
     // just taken the same content, which is what keeps it a live mirror — and what
     // makes the flag reversible to current content rather than to cutover-day content.
+    // `req.content` is already `None` when sync owns this body, so the canonical
+    // document is left to sync — which is the whole point.
     if let Some(content) = req.content.as_deref() {
         super::apply_cutover_body(
             &state,

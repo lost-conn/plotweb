@@ -123,6 +123,17 @@ pub struct CreateChapterRequest {
 pub struct UpdateChapterRequest {
     pub title: Option<String>,
     pub content: Option<String>,
+    /// The client saying "sync is carrying this body's edits, so treat my `content`
+    /// as a duplicate rather than the truth".
+    ///
+    /// It is a *declaration*, not an instruction: the server ignores it unless the
+    /// book is cut over, because only then is the canonical document the source of
+    /// truth. Both halves are needed and neither side knows both — the client knows
+    /// whether it is syncing this document, the server knows whether the book has
+    /// been cut over. Deciding with only one half is how a REST write gets dropped
+    /// for a book whose reads still come from git, and the edit vanishes.
+    #[serde(default)]
+    pub sync_owned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,6 +349,10 @@ pub struct UpdateNoteRequest {
     pub title: Option<String>,
     pub content: Option<String>,
     pub color: Option<String>,
+    /// See [`UpdateChapterRequest::sync_owned`]. Title and colour are structure and
+    /// are never covered by it — sync does not carry them.
+    #[serde(default)]
+    pub sync_owned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -219,6 +219,11 @@ pub async fn update(
         );
     }
 
+    // See `chapters::update`: the declaration only counts for a cut-over book. Title
+    // and colour are structure and are never covered by it.
+    let sync_owns_body = req.sync_owned && state.cutover.is_cut_over(&book_id);
+    let content = if sync_owns_body { None } else { req.content.clone() };
+
     // For color, if it's present in the request we pass Some(value), otherwise None (don't update)
     let color = req.color.as_ref().map(|c| Some(c.as_str()));
 
@@ -228,7 +233,7 @@ pub async fn update(
             &book_id,
             &note_id,
             req.title.as_deref(),
-            req.content.as_deref(),
+            content.as_deref(),
             color,
         )
         .await
@@ -240,7 +245,7 @@ pub async fn update(
         );
     }
 
-    if let Some(content) = req.content.as_deref() {
+    if let Some(content) = content.as_deref() {
         super::apply_cutover_body(
             &state,
             &book_id,
