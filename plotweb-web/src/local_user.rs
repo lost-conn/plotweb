@@ -236,12 +236,41 @@ pub fn enter_user(user_id: String, books: Vec<Book>, store: AppStore) {
             });
         });
 
+        // Fold in anything the server knows and this document does not — a book made
+        // on another device, or before this device had a document at all. Without it
+        // the local doc is authoritative about a world it can only ever have learned
+        // about from itself: a second device stays frozen at whatever it last did,
+        // and a book created elsewhere never appears on it again.
+        //
+        // Additive only. A book the doc has and the server does not is *kept*, because
+        // from here the two cases are indistinguishable — deleted elsewhere, or created
+        // here while offline and not yet pushed — and only one of them is safe to guess
+        // wrong. A stale entry is a dead card; a dropped one is a lost book.
+        fold_in_server_books(&user_id, &books);
+
         // Project the (now-authoritative) local doc into the render signal.
         project_books(store.clone());
 
         // The doc exists now, so it can be synced. No-op unless sync is enabled.
         crate::sync::register_user(&user_id, store);
     });
+}
+
+/// Add every server book the local document has never heard of.
+///
+/// Idempotent: a book already in the document is left exactly as it is, so this cannot
+/// overwrite a title changed here but not yet pushed.
+fn fold_in_server_books(user_id: &str, books: &[Book]) {
+    let known: std::collections::HashSet<String> = with_user_doc(user_id, |doc| {
+        get_obj(doc, &ROOT, "books")
+            .map(|o| doc.keys(&o).collect())
+            .unwrap_or_default()
+    })
+    .unwrap_or_default();
+
+    for book in books.iter().filter(|b| !known.contains(&b.id)) {
+        add_book(user_id, book);
+    }
 }
 
 /// Build a fresh `user:` doc from the REST book list and publish its first snapshot.
@@ -363,6 +392,13 @@ pub fn project_books(store: AppStore) {
                 });
             }
         }
+        // Server books the document has not caught up with. `project_chapters` has
+        // always done this for chapters; the omission here is why a book created on
+        // another device never appeared on one that had loaded before.
+        for book in by_id.into_values() {
+            out.push(book);
+        }
+        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(a.id.cmp(&b.id)));
         store.books.set(out);
     });
 }
