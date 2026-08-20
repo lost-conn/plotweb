@@ -478,16 +478,23 @@ is wanted; it composes with git rather than replacing it.
 3. **Read path behind the flag** — ✅ for bodies (`routes::cutover_body`) and for
    structure (`routes::cutover_structure`).
 
-   *Bodies* have three outcomes, and the distinction between the last two is the lesson
-   of the first cutover: **absent** canonical copy falls back to git (slightly older
-   content is recoverable; an error or empty body looks like data loss), while a copy
-   that **disagrees** is refused with `409`. There is no safe side to serve when the two
-   differ — hand over git's and an edit overwrites the canonical, hand over the
-   canonical's and an edit overwrites git, which is precisely how a note lost a
-   paragraph on day one. Refusing means nobody authors from an ambiguous base, and the
-   shadow report already names the document so it can be reconciled deliberately.
+   *Bodies*: an **absent** or unreadable canonical copy falls back to git (slightly
+   older content is recoverable; an error or empty body looks like data loss), and a
+   readable one is served, with any disagreement logged for the shadow report.
 
-   *Structure* deliberately does **not** lock on disagreement. The asymmetry is real in
+   This last part was originally a `409` refusal, on the reasoning that no side was safe
+   to serve — hand over git's and an edit overwrites the canonical, hand over the
+   canonical's and an edit overwrites git, which is how a note lost a paragraph on day
+   one. **That was written before (2) existed.** With sync landing an edit in the
+   canonical document immediately and the mirror committing it up to thirty seconds
+   later, canonical-ahead-of-git is the ordinary state of a book someone is writing in,
+   not a symptom. Refusing there took the chapter away from the author mid-sentence and
+   handed it back when a timer fired — reported from the first real two-device session
+   as *"loading the chapter again seems to randomly work or not"*. Under cutover the
+   canonical document is the source of truth by definition; serving the mirror instead,
+   or serving nothing, answers a question the flag has already settled.
+
+   *Structure* reached this conclusion first and never locked at all. The asymmetry is real in
    both directions: under cutover the canonical copy is the intended shape, and git
    retains every past version of `book.json`, so serving the canonical one loses nothing
    unrecoverable — whereas refusing would take the whole book offline (every chapter,

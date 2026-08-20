@@ -126,9 +126,9 @@ unrecognised is treated as a dry run; a typo must not rewrite prose. Turn it off
 
 **Cutting a book over** (phase E, `PLOTWEB_CUTOVER_BOOKS=<book-id>[,<book-id>]` + restart):
 that book's chapter/note bodies are read from the canonical store and REST writes land in
-both it and git. A body whose two copies **disagree** is refused with `409` rather than
-served from either side (there is no safe base to author from); an **absent** canonical
-copy falls back to git. Reversible by unsetting and restarting; git has been mirroring, so
+both it and git. An **absent** or unreadable canonical copy falls back to git; a readable
+one is served even if git disagrees, because under sync git is routinely up to the
+mirror's debounce behind and refusing there just takes the chapter away mid-sentence. Reversible by unsetting and restarting; git has been mirroring, so
 a rollback returns to current content. Cut over a book of ours first, never a user's.
 
 **Sync writes mirror into git automatically, for cut-over books only.** A sync push moves

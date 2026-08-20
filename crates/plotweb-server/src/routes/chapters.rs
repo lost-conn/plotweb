@@ -88,8 +88,7 @@ pub async fn get(
             // Cut-over books read their body from the canonical document; git still
             // holds everything else about the chapter (title, order, timestamps) and
             // remains the mirror. A missing or unreadable canonical copy degrades to
-            // git; two copies that *disagree* are refused outright, so nobody edits
-            // from an ambiguous base (see routes::cutover_body).
+            // git (see routes::cutover_body).
             let content = match super::cutover_body(
                 &state,
                 &book_id,
@@ -99,16 +98,6 @@ pub async fn get(
             ) {
                 super::CutoverRead::Git => ch.content,
                 super::CutoverRead::Canonical(content) => content,
-                super::CutoverRead::Locked(detail) => {
-                    return (
-                        StatusCode::CONFLICT,
-                        Json(json!({
-                            "error": "this chapter's two copies disagree and it is locked \
-                                      until they are reconciled",
-                            "detail": detail,
-                        })),
-                    );
-                }
             };
             let chapter = Chapter {
                 id: ch.id,

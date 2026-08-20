@@ -104,7 +104,7 @@ pub async fn get(
     match state.books.get_note(&book_id, &note_id).await {
         Ok(n) => {
             // Cut over: the body comes from the canonical document, with git as the
-            // fallback and a refusal when the two disagree (see routes::cutover_body).
+            // fallback when there is no canonical copy (see routes::cutover_body).
             let content = match super::cutover_body(
                 &state,
                 &book_id,
@@ -114,16 +114,6 @@ pub async fn get(
             ) {
                 super::CutoverRead::Git => n.content,
                 super::CutoverRead::Canonical(content) => content,
-                super::CutoverRead::Locked(detail) => {
-                    return (
-                        StatusCode::CONFLICT,
-                        Json(json!({
-                            "error": "this note's two copies disagree and it is locked until \
-                                      they are reconciled",
-                            "detail": detail,
-                        })),
-                    );
-                }
             };
             let note = Note {
                 id: n.id,
