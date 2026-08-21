@@ -37,8 +37,6 @@ pub enum CutoverRead {
     Git,
     /// Serve the canonical document's content.
     Canonical(String),
-    /// The two copies disagree. Refuse the read.
-    Locked(String),
 }
 
 /// Decide how to serve a body for a cut-over book.
@@ -47,12 +45,28 @@ pub enum CutoverRead {
 /// slightly older content is recoverable, while an error or an empty body looks to an
 /// author exactly like losing a chapter.
 ///
-/// **Disagreement is different from absence, and gets refused.** There is no safe side
-/// to serve when the two copies differ: hand over git's and an edit overwrites whatever
-/// the canonical copy held; hand over the canonical's and an edit overwrites git — which
-/// is how a note lost a paragraph the first day this flag was on. Refusing means nobody
-/// authors from an ambiguous base, and the shadow report already names the document so
-/// it can be reconciled deliberately.
+/// # Why disagreement is no longer refused
+///
+/// This used to answer `409` when the two copies differed, on the reasoning that there
+/// was no safe side to serve — hand over git's and an edit overwrites the canonical
+/// copy, hand over the canonical's and an edit overwrites git, which is how a note lost
+/// a paragraph on the first day the flag was on.
+///
+/// That reasoning was written before anything mirrored sync writes into git, when a
+/// difference between the two meant something had gone wrong. It no longer does.
+/// Sync lands an edit in the canonical document immediately and the mirror commits it
+/// up to thirty seconds later, so **canonical-ahead-of-git is the ordinary state of a
+/// book someone is writing in**. Refusing the read there does not protect the author
+/// from an ambiguous base; it takes the chapter away from them mid-sentence and hands
+/// it back once a timer fires, which is how it was described in production: "loading
+/// the chapter again seems to randomly work or not".
+///
+/// Under cutover the canonical document *is* the source of truth — that is what the
+/// flag means — and git is explicitly its mirror. Serving the mirror in preference,
+/// or serving nothing at all, answers a question the flag has already settled. So the
+/// canonical copy is served whenever it is readable, and a disagreement is logged for
+/// the shadow report rather than shown to the author. This is the same conclusion
+/// structure reads reached in `cutover_structure`; bodies should never have differed.
 pub fn cutover_body(
     state: &AppState,
     book_id: &str,
@@ -75,20 +89,18 @@ pub fn cutover_body(
         }
     };
 
-    match plotweb_crdt::compare_body(git_content, &bytes, kind) {
-        plotweb_crdt::Shadow::Match => match plotweb_crdt::materialize_body(&bytes) {
-            Ok(content) => CutoverRead::Canonical(content),
-            Err(e) => {
-                eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {e}");
-                CutoverRead::Git
-            }
-        },
-        plotweb_crdt::Shadow::Diverged { detail } => {
-            eprintln!("[cutover] {doc_id}: LOCKED — copies disagree: {detail}");
-            CutoverRead::Locked(detail)
-        }
-        plotweb_crdt::Shadow::Unreadable { reason } => {
-            eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {reason}");
+    // Logged, not refused: while a book is being written in, this is the mirror simply
+    // not having committed yet, and it clears itself within the debounce.
+    if let plotweb_crdt::Shadow::Diverged { detail } =
+        plotweb_crdt::compare_body(git_content, &bytes, kind)
+    {
+        eprintln!("[cutover] {doc_id}: serving the canonical copy; git is behind: {detail}");
+    }
+
+    match plotweb_crdt::materialize_body(&bytes) {
+        Ok(content) => CutoverRead::Canonical(content),
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: canonical unreadable, serving git: {e}");
             CutoverRead::Git
         }
     }

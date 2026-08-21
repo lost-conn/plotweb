@@ -95,8 +95,9 @@ async fn a_sync_write_to_a_cut_over_book_is_carried_into_git() {
         .await;
     assert_eq!(status, StatusCode::OK);
 
-    // Before the mirror runs the two copies disagree, and a cut-over read is refused
-    // rather than served — which is the state this whole pass exists to end.
+    // Before the mirror runs, git is behind — but the author is served the canonical
+    // copy regardless, because that is what cutover means. Git catching up is this
+    // pass's job, not something the reader should ever wait on.
     assert!(
         git_content(&app, &book_id, &chapter_id)
             .await
@@ -106,7 +107,11 @@ async fn a_sync_write_to_a_cut_over_book_is_carried_into_git() {
     let r = app
         .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
         .await;
-    assert_eq!(r.status, StatusCode::CONFLICT);
+    assert_eq!(r.status, StatusCode::OK);
+    assert!(
+        r.json["content"].as_str().unwrap().contains("as the device changed it"),
+        "the reader sees the device's edit immediately, not once the mirror commits"
+    );
 
     assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
 
@@ -118,11 +123,7 @@ async fn a_sync_write_to_a_cut_over_book_is_carried_into_git() {
     let r = app
         .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
         .await;
-    assert_eq!(
-        r.status,
-        StatusCode::OK,
-        "with the copies in agreement again the document reads normally"
-    );
+    assert_eq!(r.status, StatusCode::OK, "and still reads normally afterwards");
 }
 
 #[tokio::test]

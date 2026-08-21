@@ -89,32 +89,32 @@ async fn a_cut_over_book_reads_from_the_canonical_document() {
 }
 
 #[tokio::test]
-async fn a_document_whose_copies_disagree_is_locked_rather_than_served() {
+async fn a_document_whose_copies_disagree_serves_the_canonical_one() {
     let mut app = TestApp::new().await;
     app.register("author", "password123").await;
     let (book_id, chapter_id) = book_with_divergent_copies(&mut app).await;
     app.cut_over(&book_id).await;
 
-    // There is no safe side to serve: git's copy would let an edit overwrite the
-    // canonical one, and the canonical's would let an edit overwrite git — which is
-    // how a note lost a paragraph the first day this flag was on.
+    // This used to answer 409 on the reasoning that neither side was safe to serve.
+    // That was written before anything mirrored sync writes into git — when the two
+    // differing meant something had gone wrong. It no longer does: sync lands an edit
+    // in the canonical copy at once and the mirror commits it up to thirty seconds
+    // later, so git being behind is the ordinary state of a book someone is writing in.
+    // Refusing there took the chapter away mid-sentence and gave it back when a timer
+    // fired, which in production read as "loading the chapter randomly works or not".
     let r = app
         .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
         .await;
-    assert_eq!(
-        r.status,
-        StatusCode::CONFLICT,
-        "a diverged document must be refused, not silently resolved: {}",
-        r.json
-    );
+    assert_eq!(r.status, StatusCode::OK, "the read must not be refused: {}", r.json);
     assert!(
-        r.json["detail"].as_str().is_some(),
-        "the refusal says what differs: {}",
-        r.json
+        r.json["content"].as_str().unwrap().contains("what the CRDT says"),
+        "cutover means the canonical document is the source of truth — serving git's \
+         copy answers a question the flag has already settled: {}",
+        r.json["content"]
     );
 
-    // Reconciling unlocks it, without anyone having had the chance to author from the
-    // wrong base in between.
+    // And a reconcile still decides which copy wins, for the case where the difference
+    // is a real one rather than the mirror lagging.
     plotweb_server::reconcile::run_all(
         app.book_dir().to_str().unwrap(),
         app.crdt_dir().to_str().unwrap(),
@@ -127,7 +127,7 @@ async fn a_document_whose_copies_disagree_is_locked_rather_than_served() {
     let r = app
         .get(&format!("/api/books/{book_id}/chapters/{chapter_id}"))
         .await;
-    assert_eq!(r.status, StatusCode::OK, "reconciling unlocks the document");
+    assert_eq!(r.status, StatusCode::OK);
     assert!(
         r.json["content"].as_str().unwrap().contains("what git says"),
         "and it serves the copy the reconcile chose: {}",
