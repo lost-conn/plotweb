@@ -685,7 +685,13 @@ fn ensure_obj(doc: &mut AutoCommit, parent: &ObjId, prop: &str, ty: ObjType) -> 
     doc.put_object(parent, prop, ty).unwrap()
 }
 
+/// Every id in a `List`, with repeats collapsed — see [`dedupe`]. Every projection and
+/// every comparison goes through this, so a duplicated entry can never reach the UI.
 fn read_list_strings(doc: &AutoCommit, obj: &ObjId) -> Vec<String> {
+    dedupe(read_list_strings_raw(doc, obj))
+}
+
+fn read_list_strings_raw(doc: &AutoCommit, obj: &ObjId) -> Vec<String> {
     let len = doc.length(obj);
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
@@ -719,6 +725,9 @@ fn read_map_strings(doc: &AutoCommit, obj: &ObjId) -> HashMap<String, String> {
 /// arriving by sync. Removing what left and moving only what moved keeps the change as
 /// small as the edit that caused it. Mirror of `plotweb_crdt::book::reconcile_list`.
 fn set_list(doc: &mut AutoCommit, obj: &ObjId, items: &[String]) {
+    // `items` is deduped by the caller's data model; `have` may not be, if a merge
+    // already put a duplicate here. Walking the target below removes the extra copy,
+    // so writing the list is also what repairs it.
     let mut have = read_list(doc, obj);
     for i in (0..have.len()).rev() {
         if !items.contains(&have[i]) {
@@ -737,8 +746,30 @@ fn set_list(doc: &mut AutoCommit, obj: &ObjId, items: &[String]) {
         let _ = doc.insert(obj, i, id.as_str());
         have.insert(i, id.clone());
     }
+    // Anything past the target is a leftover duplicate — the loop above positions each
+    // wanted id once and stops. Without this the repeat simply stays, and writing the
+    // list would never repair a document a merge had already doubled up.
+    while have.len() > items.len() {
+        let _ = doc.delete(obj, have.len() - 1);
+        have.pop();
+    }
 }
 
+/// Drop repeated ids, keeping the first occurrence.
+///
+/// A chapter cannot be in two places at once, so a repeat in an order list carries no
+/// meaning — but Automerge will happily hold one. Two writers inserting the same id is
+/// enough: the browser's dual-write into this document and the server's apply of the
+/// same REST change into the canonical one are concurrent insertions of equal values,
+/// and a merge keeps both. Collapsing on read *and* on write means neither a stale
+/// document nor a future second writer can show an author their chapter twice.
+fn dedupe(ids: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter().filter(|id| seen.insert(id.clone())).collect()
+}
+
+/// Raw contents, duplicates included — [`set_list`] needs to see a duplicate in order
+/// to delete it.
 fn read_list(doc: &AutoCommit, obj: &ObjId) -> Vec<String> {
     let len = doc.length(obj);
     let mut out = Vec::with_capacity(len);

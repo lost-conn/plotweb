@@ -93,6 +93,8 @@ async fn main() {
     // confirm a cutover took effect is to read a chapter and infer it.
     if state_cutover.is_empty() {
         println!("[cutover] no books cut over (PLOTWEB_CUTOVER_BOOKS unset)");
+    } else if state_cutover.is_all() {
+        println!("[cutover] EVERY book reads from the canonical store (PLOTWEB_CUTOVER_BOOKS=*)");
     } else {
         for book_id in state_cutover.book_ids() {
             println!("[cutover] book {book_id} reads from the canonical store");

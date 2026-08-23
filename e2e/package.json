@@ -6,7 +6,8 @@
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "report": "playwright show-report"
+    "report": "playwright show-report",
+    "test:cutover": "PLOTWEB_E2E_CUTOVER=* playwright test cutover-sync"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0"
