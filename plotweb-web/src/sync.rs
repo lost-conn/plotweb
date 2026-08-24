@@ -190,6 +190,12 @@ struct Entry {
     again: bool,
     /// A poll/backoff timer is already armed (so we don't stack timers).
     armed: bool,
+    /// The delay that armed timer was set for, and its handle — so a request for a
+    /// *sooner* wake-up can replace it rather than being dropped. Without this a nudge
+    /// is silently discarded whenever a poll is already pending, which is always: every
+    /// cycle ends by arming the next poll.
+    armed_delay_ms: u32,
+    timer: Option<rinch_core::TimeoutHandle>,
 }
 
 thread_local! {
@@ -307,6 +313,8 @@ fn register(doc: Doc, store: AppStore) {
                 failures: 0,
                 again: false,
                 armed: false,
+                armed_delay_ms: 0,
+                timer: None,
             },
         );
     });
@@ -314,6 +322,21 @@ fn register(doc: Doc, store: AppStore) {
 }
 
 /// A local change landed — push it soon (debounced, so a burst of edits is one push).
+/// A body's local edit landed — push it soon, rather than waiting for the poll.
+///
+/// Without this a chapter edit sat in the browser for up to [`POLL_INTERVAL_MS`] (20s)
+/// before the server heard about it, while the editor said "Saved" the whole time. That
+/// is true — it was saved locally — but under cutover the canonical copy is the only
+/// one anybody else reads, so for twenty seconds the text existed on exactly one
+/// device. It also made every race around switching chapters twenty seconds wide
+/// instead of one and a half.
+pub fn nudge_body(doc_id: &str) {
+    if !enabled() {
+        return;
+    }
+    arm_timer(doc_id, NUDGE_DEBOUNCE_MS);
+}
+
 pub fn nudge(label_owner: &str, is_book: bool) {
     if !enabled() {
         return;
@@ -822,30 +845,56 @@ fn backoff(failures: u32) -> u32 {
 /// Arm a one-shot timer to start a cycle, unless one is already pending. Uses
 /// rinch's cross-platform timer (`window.setTimeout` on web, the shared timer thread
 /// natively), so this works in both shells.
+/// Arm a wake-up for `label` in `delay_ms`, unless one is already coming sooner.
+///
+/// A sooner request *replaces* a later one. That is the whole point of a nudge: every
+/// cycle ends by arming the next poll, so without replacement an entry is permanently
+/// armed for 20s and a 1.5s nudge is dropped every time — which is exactly what
+/// happened to bodies, leaving a chapter edit on one device for up to twenty seconds
+/// while the editor said "Saved".
+///
+/// Comparing the requested delays rather than the remaining time is deliberately
+/// approximate: a pending poll might have less than 1.5s left, and this would still
+/// replace it. Erring toward waking sooner costs one extra exchange; erring the other
+/// way is what the bug was.
 fn arm_timer(label: &str, delay_ms: u32) {
-    let already = ENGINE.with(|e| {
+    let stale = ENGINE.with(|e| {
         let mut map = e.borrow_mut();
-        match map.get_mut(label) {
-            Some(entry) if !entry.armed => {
-                entry.armed = true;
-                false
-            }
-            Some(_) => true,
-            None => true,
+        let Some(entry) = map.get_mut(label) else {
+            return None;
+        };
+        if entry.armed && delay_ms >= entry.armed_delay_ms {
+            return None;
+        }
+        let previous = entry.timer.take();
+        entry.armed = true;
+        entry.armed_delay_ms = delay_ms;
+        Some(previous)
+    });
+    let Some(previous) = stale else {
+        return;
+    };
+    if let Some(handle) = previous {
+        rinch_core::clear_timeout(handle);
+    }
+
+    let owned = label.to_string();
+    let handle = rinch_core::reactive::unowned(|| {
+        rinch_core::set_timeout(delay_ms, move || {
+            ENGINE.with(|e| {
+                if let Some(entry) = e.borrow_mut().get_mut(&owned) {
+                    entry.armed = false;
+                    entry.timer = None;
+                }
+            });
+            start_cycle(&owned);
+        })
+    });
+    ENGINE.with(|e| {
+        if let Some(entry) = e.borrow_mut().get_mut(label) {
+            entry.timer = Some(handle);
         }
     });
-    if already {
-        return;
-    }
-    let label = label.to_string();
-    rinch_core::reactive::unowned(|| rinch_core::set_timeout(delay_ms, move || {
-        ENGINE.with(|e| {
-            if let Some(entry) = e.borrow_mut().get_mut(&label) {
-                entry.armed = false;
-            }
-        });
-        start_cycle(&label);
-    }));
 }
 
 fn doc_of(label: &str) -> Option<Doc> {
