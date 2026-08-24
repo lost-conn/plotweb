@@ -1,5 +1,5 @@
 import { test, expect, Browser, Page } from "@playwright/test";
-import { addChapter, createBook, registerNewUser } from "./helpers";
+import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } from "./helpers";
 
 /**
  * A cut-over book, with sync on — the configuration production runs.
@@ -121,4 +121,105 @@ test("deleting and re-adding chapters does not leave duplicates", async ({
   expect(await sidebar(page)).toEqual(["One", "Two"]);
   await expect(rowsTitled(page, "One")).toHaveCount(1);
   await expect(rowsTitled(page, "Two")).toHaveCount(1);
+});
+
+test("an edit to a chapter body survives a reload", async ({ browser, baseURL }) => {
+  // Reported after the duplication was fixed: "they're still losing my changes".
+  //
+  // This is the configuration where the two halves meet. The client declares
+  // `sync_owned`, so the server deliberately drops the REST body write and leaves the
+  // canonical document to sync. The read then comes from that canonical document. If
+  // sync does not actually land the edit there, the write has been suppressed in favour
+  // of a writer that never wrote — and the text is gone on the next load.
+  test.setTimeout(120_000);
+
+  const page = await openDevice(browser, baseURL!);
+  await registerNewUser(page);
+  await createBook(page, "Body Persist Novel");
+  await addChapter(page, "Chapter One");
+  await openChapter(page, "Chapter One");
+
+  await typeInEditor(page, "This sentence has to be here after a reload.");
+  await page.waitForTimeout(8000);
+
+  await page.reload();
+  await openChapter(page, "Chapter One");
+  await expect(page.locator("#editor-main")).toContainText(
+    "This sentence has to be here after a reload.",
+  );
+});
+
+test("a second edit to the same chapter also survives", async ({ browser, baseURL }) => {
+  // Once a body is registered with the sync engine the REST write stops, so the second
+  // edit exercises a different path from the first — the first may still have been
+  // written over REST before registration completed.
+  test.setTimeout(120_000);
+
+  const page = await openDevice(browser, baseURL!);
+  await registerNewUser(page);
+  await createBook(page, "Second Edit Novel");
+  await addChapter(page, "Chapter One");
+  await openChapter(page, "Chapter One");
+
+  await typeInEditor(page, "First sentence.");
+  await page.waitForTimeout(8000);
+  await typeInEditor(page, " Second sentence, typed once sync owns this body.");
+  await page.waitForTimeout(8000);
+
+  await page.reload();
+  await openChapter(page, "Chapter One");
+  await expect(page.locator("#editor-main")).toContainText("First sentence.");
+  await expect(page.locator("#editor-main")).toContainText(
+    "Second sentence, typed once sync owns this body.",
+  );
+});
+
+test("switching between chapters does not empty them", async ({ browser, baseURL }) => {
+  // Reported: text vanishes on switching chapters, only sometimes, and "unsaved" flashes
+  // up as the chapter loads before it goes. That status comes from
+  // `schedule_chapter_autosave`, so the *load* is being recorded as an edit — and with
+  // sync owning the body that edit goes straight into the CRDT and up to the canonical
+  // copy. What gets recorded is the editor's state before the content lands, so the
+  // document is overwritten with nothing. Word count 0, "saved" perfectly truthful.
+  //
+  // The existing crosstalk spec covers this shape with cutover off, where the damage is
+  // two chapters mixing. Under cutover it is destruction, not confusion.
+  test.setTimeout(180_000);
+
+  const page = await openDevice(browser, baseURL!);
+  await registerNewUser(page);
+  await createBook(page, "Switching Novel");
+  await addChapter(page, "One");
+  await addChapter(page, "Two");
+  await addChapter(page, "Three");
+
+  const text: Record<string, string> = {
+    One: "Prose belonging to chapter one alone.",
+    Two: "Prose belonging to chapter two alone.",
+    Three: "Prose belonging to chapter three alone.",
+  };
+
+  for (const [title, prose] of Object.entries(text)) {
+    await openChapter(page, title);
+    await typeInEditor(page, prose);
+    await page.waitForTimeout(4000);
+  }
+
+  // Switch around, sometimes pausing and sometimes not — the report says it happens
+  // "only sometimes", which points at a race rather than a rule.
+  const order = ["One", "Three", "Two", "One", "Two", "Three", "One", "Three", "Two"];
+  for (const [i, title] of order.entries()) {
+    await openChapter(page, title);
+    await page.waitForTimeout(i % 2 === 0 ? 300 : 2500);
+  }
+  await page.waitForTimeout(8000);
+
+  await page.reload();
+  for (const [title, prose] of Object.entries(text)) {
+    await openChapter(page, title);
+    await expect(
+      page.locator("#editor-main"),
+      `chapter ${title} must still hold its own prose`,
+    ).toContainText(prose, { timeout: 15_000 });
+  }
 });

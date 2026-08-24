@@ -545,23 +545,26 @@ fn establish_body_provenance(label: String, doc: Doc) {
     let claim_url = format!("{}/adopt", doc.url());
     crate::api::post_bytes(&claim_url, snapshot, move |result| match result {
         Ok(body) => {
-            let adopted = serde_json::from_slice::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v["adopted"].as_bool())
-                .unwrap_or(false);
-            if adopted {
-                // Ours is canonical now; the histories match by construction.
-                let (label, doc_id) = (label.clone(), doc_id.clone());
-                crate::local_store::spawn(async move {
-                    if let Err(e) = crate::local_store::mark_body_shares_server_history(&doc_id).await
-                    {
-                        log::warn!("sync {doc_id}: {e}");
-                    }
-                    start_cycle(&label);
-                });
-            } else {
-                take_server_body(label, doc, doc_id);
-            }
+            // Two outcomes, one action. Adopted means ours *is* the canonical copy and
+            // the histories match by construction. Refused means a client already owns
+            // it — and the adopt endpoint's own answer to that is "use the sync protocol
+            // instead", because an exchange merges: anything typed here since the last
+            // push survives it.
+            //
+            // Refusal used to replace our copy with the server's, which threw those
+            // edits away. Every attach re-ran provenance, so switching chapters and
+            // coming back before a push had landed silently lost whatever had been
+            // typed — reported as text vanishing on switching, "even after it says
+            // saved". Replacing is only right when the two share no history at all, and
+            // that is not something to guess: the server detects it from the documents
+            // themselves and answers 409, handled in `exchange_body`.
+            let (label, doc_id) = (label.clone(), doc_id.clone());
+            crate::local_store::spawn(async move {
+                if let Err(e) = crate::local_store::mark_body_shares_server_history(&doc_id).await {
+                    log::warn!("sync {doc_id}: {e}");
+                }
+                start_cycle(&label);
+            });
         }
         Err(e) if e.status == 401 => park_unauthed(&label),
         Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),
