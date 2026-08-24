@@ -168,6 +168,11 @@ pub struct DocStore {
 }
 
 impl DocStore {
+    /// The document this store is for (`chapter:…` / `note:…` / `book:…`).
+    pub fn doc_id(&self) -> &str {
+        &self.doc_id
+    }
+
     /// Open a per-document store over the shared backend.
     pub async fn open(doc_id: &str) -> StorageResult<Self> {
         Ok(Self {
@@ -319,6 +324,9 @@ impl OutboundSink {
             Some(generation) => self.persist(generation, delta),
             None => self.pending.borrow_mut().push(delta),
         }
+        // Tell the sync engine there is something to send. Structure and the user index
+        // have always done this; bodies did not, so a chapter edit waited out the poll.
+        crate::sync::nudge_body(&self.store.doc_id());
     }
 
     /// Publish the generation and flush any buffered deltas to it in order.

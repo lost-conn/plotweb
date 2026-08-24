@@ -14,6 +14,15 @@ import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } fr
  * arc has lived, and none of them were reachable from the default suite.
  */
 
+// These need a server started with `PLOTWEB_CUTOVER_BOOKS=*`; run them with
+// `npm run test:cutover`. Running them against the default server would exercise the
+// git-authoritative paths and quietly prove nothing about cutover.
+test.skip(
+  !process.env.PLOTWEB_E2E_CUTOVER,
+  "requires a cut-over server — run `npm run test:cutover`",
+);
+
+
 async function openDevice(browser: Browser, baseURL: string): Promise<Page> {
   const context = await browser.newContext();
   await context.addInitScript(() => {
