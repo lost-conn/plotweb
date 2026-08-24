@@ -25,6 +25,8 @@ use std::collections::HashSet;
 #[derive(Clone, Debug, Default)]
 pub struct Cutover {
     books: HashSet<String>,
+    /// Every book, from a `*` entry.
+    all: bool,
 }
 
 impl Cutover {
@@ -35,11 +37,16 @@ impl Cutover {
     }
 
     pub fn parse(list: &str) -> Self {
+        let entries: Vec<&str> = list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
         Cutover {
-            books: list
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
+            // `*` means every book. It exists so the end state of the migration can be
+            // expressed without listing every id — and, before that, so the e2e suite
+            // can exercise cutover at all: a test creates its book at runtime, so there
+            // is no id to put in the list at boot.
+            all: entries.contains(&"*"),
+            books: entries
+                .into_iter()
+                .filter(|s| *s != "*")
                 .map(str::to_string)
                 .collect(),
         }
@@ -47,15 +54,20 @@ impl Cutover {
 
     /// Whether this book reads from the canonical document.
     pub fn is_cut_over(&self, book_id: &str) -> bool {
-        self.books.contains(book_id)
+        self.all || self.books.contains(book_id)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.books.is_empty()
+        !self.all && self.books.is_empty()
     }
 
     pub fn book_ids(&self) -> impl Iterator<Item = &String> {
         self.books.iter()
+    }
+
+    /// Whether every book is cut over, rather than a named set.
+    pub fn is_all(&self) -> bool {
+        self.all
     }
 }
 
@@ -79,5 +91,33 @@ mod tests {
             !c.is_cut_over("book-"),
             "matching must be exact — a prefix is a different book"
         );
+    }
+}
+
+#[cfg(test)]
+mod wildcard_tests {
+    use super::*;
+
+    #[test]
+    fn a_star_cuts_every_book_over() {
+        let c = Cutover::parse("*");
+        assert!(c.is_cut_over("any-book"));
+        assert!(c.is_cut_over("another"));
+        assert!(!c.is_empty());
+        assert!(c.is_all());
+    }
+
+    #[test]
+    fn a_star_beside_ids_still_means_everything() {
+        let c = Cutover::parse("book-a, *");
+        assert!(c.is_cut_over("book-b"), "the star wins; listing ids beside it is harmless");
+    }
+
+    #[test]
+    fn an_ordinary_list_is_unaffected() {
+        let c = Cutover::parse("book-a,book-b");
+        assert!(c.is_cut_over("book-a"));
+        assert!(!c.is_cut_over("book-c"));
+        assert!(!c.is_all());
     }
 }

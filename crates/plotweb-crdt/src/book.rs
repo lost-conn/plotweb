@@ -183,7 +183,11 @@ pub fn apply_book_structure(
         AutoCommit::load(canonical).map_err(|e| format!("book document did not load: {e}"))?;
     let current = read_book_structure(&doc);
     let want = keeping_unmirrored(&current, input.structure(), removable);
-    if current == want {
+    // `current` is deduped, so a document holding a repeated id looks identical to a
+    // clean one here — and returning early would leave the repeat in place forever.
+    // Checking the raw lists is what makes writing the structure *repair* the document
+    // rather than merely stop showing the damage.
+    if current == want && !holds_a_repeated_id(&doc) {
         return Ok(canonical.to_vec());
     }
 
@@ -264,6 +268,34 @@ pub fn apply_book_structure(
     Ok(doc.save())
 }
 
+/// Whether any list in the document names the same id twice — see
+/// [`read_list_strings`] for how that happens.
+fn holds_a_repeated_id(doc: &AutoCommit) -> bool {
+    let repeated = |obj: &ObjId| {
+        let raw = read_list_strings_raw(doc, obj);
+        let mut seen = BTreeSet::new();
+        raw.iter().any(|id| !seen.insert(id.clone()))
+    };
+
+    if get_obj(doc, &ROOT, "chapters").is_some_and(|o| repeated(&o)) {
+        return true;
+    }
+    let Some(notes) = get_obj(doc, &ROOT, "notes") else {
+        return false;
+    };
+    if get_obj(doc, &notes, "root_order").is_some_and(|o| repeated(&o)) {
+        return true;
+    }
+    if let Some(children) = get_obj(doc, &notes, "children") {
+        for key in doc.keys(&children) {
+            if get_obj(doc, &children, key.as_str()).is_some_and(|o| repeated(&o)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Put back anything the canonical copy has that `want` does not mention and the caller
 /// did not say it removed — see [`apply_book_structure`]'s note on why absence from git
 /// is not evidence of deletion.
@@ -320,7 +352,8 @@ fn keeping_unmirrored(
 /// what left and moving only what actually moved keeps a rename or a single reorder
 /// small enough to merge cleanly with an edit elsewhere in the same list.
 fn reconcile_list(doc: &mut AutoCommit, obj: &ObjId, want: &[String]) {
-    let mut have = read_list_strings(doc, obj);
+    // Raw, duplicates included: this is the write that repairs them.
+    let mut have = read_list_strings_raw(doc, obj);
     let wanted: BTreeSet<&String> = want.iter().collect();
 
     for i in (0..have.len()).rev() {
@@ -339,6 +372,13 @@ fn reconcile_list(doc: &mut AutoCommit, obj: &ObjId, want: &[String]) {
         }
         let _ = doc.insert(obj, i, id.as_str());
         have.insert(i, id.clone());
+    }
+    // Anything past the target is a leftover duplicate — the loop above positions each
+    // wanted id once and stops. Without this the repeat simply stays, and writing the
+    // list would never repair a document a merge had already doubled up.
+    while have.len() > want.len() {
+        let _ = doc.delete(obj, have.len() - 1);
+        have.pop();
     }
 }
 
@@ -579,7 +619,26 @@ fn get_str(doc: &AutoCommit, parent: &ObjId, prop: &str) -> Option<String> {
         .and_then(|(v, _)| v.to_str().map(|s| s.to_string()))
 }
 
+/// Every id in a `List`, with repeats collapsed.
+///
+/// A chapter cannot be in two places at once, so a repeat carries no meaning — but
+/// Automerge will hold one happily. Two writers inserting the same id is enough: a
+/// browser's dual-write into its local document and the server's apply of the same REST
+/// change into the canonical one are concurrent insertions of equal values, and the
+/// merge keeps both. Collapsing on read means a document that already has one cannot
+/// show it to anybody; `reconcile_list` removes it on the next write.
 fn read_list_strings(doc: &AutoCommit, obj: &ObjId) -> Vec<String> {
+    read_list_strings_raw(doc, obj)
+        .into_iter()
+        .fold(Vec::new(), |mut acc, s| {
+            if !acc.contains(&s) {
+                acc.push(s);
+            }
+            acc
+        })
+}
+
+fn read_list_strings_raw(doc: &AutoCommit, obj: &ObjId) -> Vec<String> {
     let len = doc.length(obj);
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
@@ -797,6 +856,51 @@ mod tests {
         assert_eq!(
             materialize_book_structure(&applied).expect("materialize"),
             sample().structure()
+        );
+    }
+
+    #[test]
+    fn a_doubled_chapter_list_reads_as_one_of_each() {
+        // What two writers inserting the same id produces. A merge keeps both copies,
+        // and the author sees every chapter twice — reported from production, with the
+        // second copy rendering empty because the projection had already consumed the
+        // id.
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let mut doc = AutoCommit::load(&bytes).expect("load");
+        let chs = get_obj(&doc, &ROOT, "chapters").expect("chapters");
+        doc.insert(&chs, 2, "c1").expect("duplicate insert");
+        doc.insert(&chs, 3, "c2").expect("duplicate insert");
+        let doubled = doc.save();
+
+        assert_eq!(
+            materialize_book_structure(&doubled).expect("materialize").chapters,
+            input.structure().chapters,
+            "a doubled list must never reach a reader"
+        );
+    }
+
+    #[test]
+    fn writing_the_structure_repairs_a_doubled_list() {
+        // Collapsing on read keeps it out of sight; this is what takes it out of the
+        // document, so the damage does not outlive the bug that caused it.
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let mut doc = AutoCommit::load(&bytes).expect("load");
+        let chs = get_obj(&doc, &ROOT, "chapters").expect("chapters");
+        doc.insert(&chs, 2, "c1").expect("duplicate insert");
+        let doubled = doc.save();
+
+        let repaired = apply_book_structure(&doubled, &input, &[]).expect("apply");
+        let raw = {
+            let reloaded = AutoCommit::load(&repaired).expect("load");
+            let obj = get_obj(&reloaded, &ROOT, "chapters").expect("chapters");
+            read_list_strings_raw(&reloaded, &obj)
+        };
+        assert_eq!(
+            raw,
+            vec!["c1".to_string(), "c2".to_string()],
+            "the duplicate must be gone from the document, not just hidden"
         );
     }
 

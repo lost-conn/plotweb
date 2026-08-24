@@ -37,3 +37,23 @@ E2E_REUSE_SERVER=1 npx playwright test
 
 Selectors live in `tests/helpers.ts`. The frontend's inputs have no associated
 `<label for>`, so locators target placeholders and button text.
+
+## Cutover + sync
+
+Every spec runs against a server with cutover **off**, because a test creates its book
+at runtime and there is no id to name in `PLOTWEB_CUTOVER_BOOKS` at boot. The cutover
+paths are reached with a wildcard instead:
+
+```
+cd e2e && npm run test:cutover      # PLOTWEB_E2E_CUTOVER=* playwright test cutover-sync
+```
+
+Worth the separate invocation: cut over **and** syncing is where every production bug in
+the offline-first arc has lived — reappearing deleted text, chapters locked behind a 409,
+duplicated sidebar rows — and none of them were reachable from the default suite. Reach
+for this one before shipping anything that touches `cutover_*`, `mirror`, or
+`local_book`.
+
+The run-test-server script also puts `PLOTWEB_CRDT_DIR` inside the throwaway state dir,
+so canonical documents don't leak between runs; without that a "fresh device" test would
+inherit the previous run's sync history.

@@ -37,6 +37,16 @@ export DATABASE_URL="sqlite:${E2E_STATE}/plotweb.db"
 export DATA_DIR="${E2E_STATE}/books"
 export RHYPEDB_DATA_DIR="${E2E_STATE}/rhypedb"
 export DIST_DIR="${REPO_ROOT}/plotweb-web/dist"
+# The canonical CRDT store belongs in the throwaway state too. Left unset it defaults
+# to `data/crdt` under the repo, so runs would inherit each other's canonical documents
+# — which for sync tests is the difference between a fresh device and one that has
+# synced before.
+export PLOTWEB_CRDT_DIR="${E2E_STATE}/crdt"
+
+# Cutover is off unless a spec asks for it: `PLOTWEB_E2E_CUTOVER=*` cuts every book
+# over. A test creates its book at runtime, so there is no id to name at boot — the
+# wildcard is the only way to exercise the cut-over paths from e2e at all.
+export PLOTWEB_CUTOVER_BOOKS="${PLOTWEB_E2E_CUTOVER:-}"
 
 echo "[e2e] starting server on :3000 (state: ${E2E_STATE})"
 exec cargo run -q -p plotweb-server
