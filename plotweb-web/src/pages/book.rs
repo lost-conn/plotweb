@@ -2991,6 +2991,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
             Err(_) => None,
         };
         api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid), move |ch_result| {
+            // Whether this was a real answer or a failure. A failed fetch used to
+            // become an empty list, and that empty list then *seeded the local
+            // `book:` document* — which is authoritative, so the book was left
+            // genuinely empty until something happened to refill it. The store can
+            // take an empty list harmlessly; the document cannot.
+            let loaded = ch_result.is_ok();
             let chapters = ch_result.unwrap_or_default();
             store.chapters.set(chapters.clone());
 
@@ -3014,7 +3020,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 };
                 store.notes.set(notes.clone());
                 store.note_tree.set(Some(tree.clone()));
-                if let Some(book) = book_opt {
+                if let Some(book) = book_opt
+                    && loaded
+                {
                     crate::local_book::enter(bid_book, book, chapters, notes, tree, store);
                 }
             });

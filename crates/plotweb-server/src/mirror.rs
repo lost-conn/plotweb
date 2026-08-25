@@ -24,6 +24,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use plotweb_common::{UpdateBookRequest, UpdateChapterRequest};
+use plotweb_git::error::GitStoreError;
 use plotweb_crdt::{BodyKind, BookStructure};
 
 use crate::AppState;
@@ -221,6 +222,15 @@ async fn mirror_body(
 
     match result {
         Ok(()) => true,
+        // The document was deleted while an update for it was still in flight — a
+        // device pushing a body it had not yet learned was gone. Expected under §D7,
+        // where removal from the parent index is the deletion and the orphaned body
+        // outlives it server-side. Reporting it as a failure would train whoever reads
+        // these logs to ignore them.
+        Err(GitStoreError::ChapterNotFound(_)) | Err(GitStoreError::NoteNotFound(_)) => {
+            println!("[mirror] {doc_id}: deleted before this update landed; nothing to mirror");
+            false
+        }
         Err(e) => {
             eprintln!("[mirror] {doc_id}: git write failed: {e}");
             false
