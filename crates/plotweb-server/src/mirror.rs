@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use plotweb_common::{UpdateBookRequest, UpdateChapterRequest};
 use plotweb_git::error::GitStoreError;
+use plotweb_git::BookStore;
 use plotweb_crdt::{BodyKind, BookStructure};
 
 use crate::AppState;
@@ -151,7 +152,9 @@ pub async fn flush(state: &AppState, idle: Duration, max_wait: Duration) -> usiz
 
         let mirrored = match target {
             Target::Body(kind) => mirror_body(state, &book_id, &doc_id, &bytes, kind).await,
-            Target::Structure => mirror_structure(state, &book_id, &bytes).await,
+            // `false`: the mirror never empties a manuscript on its own. Reconcile is
+            // where that decision is made deliberately.
+            Target::Structure => mirror_structure(&state.books, &book_id, &bytes, false).await,
         };
         if mirrored {
             written += 1;
@@ -246,7 +249,17 @@ async fn mirror_body(
 /// delete removes the file but keeps every past version of it, so mirroring one is no
 /// more destructive than the author deleting the chapter in the browser, which does
 /// exactly this.
-async fn mirror_structure(state: &AppState, book_id: &str, bytes: &[u8]) -> bool {
+///
+/// `allow_emptying` is what separates the background pass from a decision. The pass
+/// passes `false` and refuses a canonical structure that has lost every chapter or note
+/// while git still has them — likelier a half-written document than an emptied book.
+/// [`crate::reconcile`] passes `true`, because there a human named the direction.
+pub(crate) async fn mirror_structure(
+    books: &BookStore,
+    book_id: &str,
+    bytes: &[u8],
+    allow_emptying: bool,
+) -> bool {
     let want = match plotweb_crdt::materialize_book_structure(bytes) {
         Ok(structure) => structure,
         Err(e) => {
@@ -254,7 +267,7 @@ async fn mirror_structure(state: &AppState, book_id: &str, bytes: &[u8]) -> bool
             return false;
         }
     };
-    let Some(input) = crate::structure::read_structure_input(&state.books, book_id).await else {
+    let Some(input) = crate::structure::read_structure_input(books, book_id).await else {
         eprintln!("[mirror] book:{book_id}: no readable structure in git, nothing written");
         return false;
     };
@@ -267,8 +280,9 @@ async fn mirror_structure(state: &AppState, book_id: &str, bytes: &[u8]) -> bool
     // half-written document than an author who deleted every chapter in their book —
     // and they can do that through the UI, which needs no help from this pass. Refusing
     // costs a stale mirror and a line in the log; not refusing empties a manuscript.
-    if want.chapters.is_empty() && !have.chapters.is_empty()
-        || want.note_titles.is_empty() && !have.note_titles.is_empty()
+    if !allow_emptying
+        && (want.chapters.is_empty() && !have.chapters.is_empty()
+            || want.note_titles.is_empty() && !have.note_titles.is_empty())
     {
         eprintln!(
             "[mirror] book:{book_id}: canonical structure is empty but git is not — \
@@ -295,19 +309,19 @@ async fn mirror_structure(state: &AppState, book_id: &str, bytes: &[u8]) -> bool
                 .flatten(),
             cover_image: (have.cover_ref != want.cover_ref).then(|| want.cover_ref.clone()),
         };
-        match state.books.update_book(book_id, &update).await {
+        match books.update_book(book_id, &update).await {
             Ok(()) => wrote = true,
             Err(e) => eprintln!("[mirror] book:{book_id}: metadata write failed: {e}"),
         }
     }
 
-    wrote |= mirror_chapters(state, book_id, &have, &want).await;
-    wrote |= mirror_notes(state, book_id, &have, &want).await;
+    wrote |= mirror_chapters(books, book_id, &have, &want).await;
+    wrote |= mirror_notes(books, book_id, &have, &want).await;
     wrote
 }
 
 async fn mirror_chapters(
-    state: &AppState,
+    books: &BookStore,
     book_id: &str,
     have: &BookStructure,
     want: &BookStructure,
@@ -321,7 +335,7 @@ async fn mirror_chapters(
             None => {
                 // A chapter created on a device. Its body arrives as its own document,
                 // and is mirrored by its own pass; this only has to make the file exist.
-                match state.books.create_chapter(book_id, id, title, &now).await {
+                match books.create_chapter(book_id, id, title, &now).await {
                     Ok(_) => wrote = true,
                     Err(e) => eprintln!("[mirror] book:{book_id}: create {id} failed: {e}"),
                 }
@@ -332,7 +346,7 @@ async fn mirror_chapters(
                     content: None,
                     sync_owned: false,
                 };
-                match state.books.update_chapter(book_id, id, &update).await {
+                match books.update_chapter(book_id, id, &update).await {
                     Ok(()) => wrote = true,
                     Err(e) => eprintln!("[mirror] book:{book_id}: rename {id} failed: {e}"),
                 }
@@ -343,7 +357,7 @@ async fn mirror_chapters(
 
     let wanted: Vec<&String> = want.chapters.iter().map(|(id, _)| id).collect();
     for id in have_ids.iter().filter(|id| !wanted.contains(id)) {
-        match state.books.delete_chapter(book_id, id).await {
+        match books.delete_chapter(book_id, id).await {
             Ok(()) => wrote = true,
             Err(e) => eprintln!("[mirror] book:{book_id}: delete {id} failed: {e}"),
         }
@@ -353,7 +367,7 @@ async fn mirror_chapters(
     let want_order: Vec<String> = want.chapters.iter().map(|(id, _)| id.clone()).collect();
     let have_order: Vec<String> = have.chapters.iter().map(|(id, _)| id.clone()).collect();
     if want_order != have_order {
-        match state.books.reorder_chapters(book_id, &want_order).await {
+        match books.reorder_chapters(book_id, &want_order).await {
             Ok(()) => wrote = true,
             Err(e) => eprintln!("[mirror] book:{book_id}: reorder failed: {e}"),
         }
@@ -362,7 +376,7 @@ async fn mirror_chapters(
 }
 
 async fn mirror_notes(
-    state: &AppState,
+    books: &BookStore,
     book_id: &str,
     have: &BookStructure,
     want: &BookStructure,
@@ -376,8 +390,7 @@ async fn mirror_notes(
             None => {
                 // Parentage comes from the tree write below, so every note is created at
                 // the root and moved into place in one go rather than note by note.
-                match state
-                    .books
+                match books
                     .create_note(book_id, id, title, None, color, &now)
                     .await
                 {
@@ -389,8 +402,7 @@ async fn mirror_notes(
                 let retitle = have_title != title;
                 let recolor = have.note_colors.get(id) != want.note_colors.get(id);
                 if retitle || recolor {
-                    let result = state
-                        .books
+                    let result = books
                         .update_note(
                             book_id,
                             id,
@@ -412,7 +424,7 @@ async fn mirror_notes(
 
     for id in have.note_titles.keys() {
         if !want.note_titles.contains_key(id) {
-            match state.books.delete_note(book_id, id).await {
+            match books.delete_note(book_id, id).await {
                 Ok(()) => wrote = true,
                 Err(e) => eprintln!("[mirror] book:{book_id}: delete note {id} failed: {e}"),
             }
@@ -428,7 +440,7 @@ async fn mirror_notes(
             children: want.children.clone().into_iter().collect(),
             collapsed: want.collapsed.iter().cloned().collect(),
         };
-        match state.books.update_note_tree(book_id, &tree).await {
+        match books.update_note_tree(book_id, &tree).await {
             Ok(()) => wrote = true,
             Err(e) => eprintln!("[mirror] book:{book_id}: tree write failed: {e}"),
         }

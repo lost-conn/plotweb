@@ -150,6 +150,13 @@ re-projects git and clears ownership (so the backfill maintains that document ag
 `--prefer crdt` materializes the stored document into git through the ordinary write path.
 Always dry-run first: it rewrites someone's prose.
 
+Structure (`book:`) documents are covered by both directions, not just bodies. `--prefer
+git` re-projects `book.json` and clears ownership; `--prefer crdt` replays the stored
+structure into git through the mirror's own writes — and, unlike the background mirror, it
+*is* allowed to empty a book, because someone chose that at the command line. Before this,
+a diverged structure document was reported and skipped with advice ("clear ownership and
+re-run the backfill") that no command implemented, which meant it had no supported repair.
+
 **Run the migration tooling locally** (subcommands; server can be stopped or not — lock-free):
 ```
 DATABASE_URL=sqlite:$S/plotweb.db DATA_DIR=$S/books RHYPEDB_DATA_DIR=$S/rhypedb \

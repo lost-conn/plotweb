@@ -19,6 +19,14 @@
 //! Both are per-document and both support a dry run, because "which copy wins" is a
 //! judgement about someone's writing, not a mechanical merge.
 //!
+//! Both directions cover **structure** (`book:`) as well as bodies. A structure document
+//! used to be skipped here with a note to "clear ownership and re-run the backfill" — a
+//! remedy no command implemented, which left a diverged `book:` document with no
+//! supported repair at all. Preferring git re-projects the structure and clears
+//! ownership (the backfill maintains it again); preferring the CRDT materializes the
+//! stored structure into git through the mirror's own write path, which is the deliberate
+//! act that pass defers to when it refuses to empty a manuscript by itself.
+//!
 //! # The part that is not automatic
 //!
 //! Resolving in git's favour leaves any client still holding the old document with a
@@ -30,7 +38,10 @@
 
 use std::path::{Path, PathBuf};
 
-use plotweb_crdt::{materialize_body, project_body, BodyKind};
+use plotweb_crdt::{
+    materialize_body, materialize_book_structure, project_body, project_book_structure, BodyKind,
+    BookStructure,
+};
 use plotweb_git::BookStore;
 use plotweb_common::UpdateChapterRequest;
 
@@ -146,6 +157,144 @@ pub async fn reconcile_body(
     }
 }
 
+/// Reconcile one `book:` structure document.
+///
+/// The structure counterpart of [`reconcile_body`], and the reason this module can now
+/// answer for every document the shadow pass reports.
+///
+/// `Prefer::Git` re-projects `book.json` (chapter order, titles, notes tree, metadata)
+/// and clears ownership, so the document is provisional again and the backfill maintains
+/// it. `Prefer::Crdt` replays the stored structure into git through
+/// [`crate::mirror::mirror_structure`] — the same writes the mirror makes, so git ends up
+/// with a book indistinguishable from one edited through REST.
+///
+/// The mirror refuses to empty a manuscript it is only shadowing; here the emptying is
+/// permitted, because someone chose it. That is what its "reconcile this deliberately"
+/// message has always pointed at.
+pub async fn reconcile_structure(
+    books: &BookStore,
+    crdt_dir: &Path,
+    book_id: &str,
+    prefer: Prefer,
+    dry_run: bool,
+) -> Result<String, String> {
+    let doc_id = format!("book:{book_id}");
+
+    match prefer {
+        Prefer::Git => {
+            let input = crate::structure::read_structure_input(books, book_id)
+                .await
+                .ok_or_else(|| "no readable structure in git".to_string())?;
+            let bytes = project_book_structure(&input)?;
+            if dry_run {
+                return Ok(format!(
+                    "would replace the canonical structure from git ({} chapters, {} notes) \
+                     and clear its ownership",
+                    input.chapters.len(),
+                    input.notes.len()
+                ));
+            }
+            crate::sync::replace_canonical_from_git(crdt_dir, &doc_id, "book", &bytes)
+                .map_err(|e| format!("canonical write failed: {e}"))?;
+            Ok("canonical structure replaced from git; ownership cleared so the next \
+                client claims it afresh"
+                .to_string())
+        }
+        Prefer::Crdt => {
+            let canonical = crate::sync::canonical_snapshot(&PathBuf::from(crdt_dir), &doc_id)
+                .map_err(|e| format!("store read failed: {e}"))?
+                .ok_or_else(|| "no canonical structure to write back".to_string())?;
+            let want = materialize_book_structure(&canonical)?;
+            let input = crate::structure::read_structure_input(books, book_id)
+                .await
+                .ok_or_else(|| "no readable structure in git".to_string())?;
+            let have = input.structure();
+            if have == want {
+                return Ok("git already matches the stored structure".to_string());
+            }
+            if dry_run {
+                return Ok(format!(
+                    "would write the stored structure into git ({})",
+                    describe_structure_change(&have, &want)
+                ));
+            }
+            if crate::mirror::mirror_structure(books, book_id, &canonical, true).await {
+                Ok(format!(
+                    "stored structure written into git ({})",
+                    describe_structure_change(&have, &want)
+                ))
+            } else {
+                Err("the structure write reported nothing written — see the log".to_string())
+            }
+        }
+    }
+}
+
+/// A one-line account of what preferring the CRDT would do to git, for the report.
+///
+/// Counts rather than a diff: the report is read to decide whether to run the thing for
+/// real, and "3 chapters removed" is the number that decision turns on.
+fn describe_structure_change(have: &BookStructure, want: &BookStructure) -> String {
+    let have_ids: Vec<&String> = have.chapters.iter().map(|(id, _)| id).collect();
+    let want_ids: Vec<&String> = want.chapters.iter().map(|(id, _)| id).collect();
+
+    let added = want_ids.iter().filter(|id| !have_ids.contains(id)).count();
+    let removed = have_ids.iter().filter(|id| !want_ids.contains(id)).count();
+    let renamed = want
+        .chapters
+        .iter()
+        .filter(|(id, title)| {
+            have.chapters
+                .iter()
+                .any(|(hid, htitle)| hid == id && htitle != title)
+        })
+        .count();
+    let reordered = added == 0 && removed == 0 && have_ids != want_ids;
+
+    let notes_added = want
+        .note_titles
+        .keys()
+        .filter(|id| !have.note_titles.contains_key(*id))
+        .count();
+    let notes_removed = have
+        .note_titles
+        .keys()
+        .filter(|id| !want.note_titles.contains_key(*id))
+        .count();
+    let meta = have.title != want.title
+        || have.description != want.description
+        || have.font_settings_json != want.font_settings_json
+        || have.cover_ref != want.cover_ref;
+
+    let mut parts = Vec::new();
+    if added > 0 {
+        parts.push(format!("{added} chapters added"));
+    }
+    if removed > 0 {
+        parts.push(format!("{removed} chapters removed"));
+    }
+    if renamed > 0 {
+        parts.push(format!("{renamed} renamed"));
+    }
+    if reordered {
+        parts.push("reordered".to_string());
+    }
+    if notes_added > 0 {
+        parts.push(format!("{notes_added} notes added"));
+    }
+    if notes_removed > 0 {
+        parts.push(format!("{notes_removed} notes removed"));
+    }
+    if meta {
+        parts.push("metadata".to_string());
+    }
+    if parts.is_empty() {
+        "no visible difference".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
 fn kind_name(kind: BodyKind) -> &'static str {
     match kind {
         BodyKind::Chapter => "chapter",
@@ -176,14 +325,13 @@ pub async fn run_all(
             continue;
         };
         if doc_id.starts_with("book:") {
-            // A `book:` structure is rebuilt by the backfill once ownership is cleared;
-            // resolving it in the CRDT's favour would mean writing chapter order and
-            // titles back through several REST-shaped calls, which is a bigger decision
-            // than this tool should make on its own.
-            summary.skipped.push((
-                doc_id.clone(),
-                "structure document — clear ownership and re-run the backfill".to_string(),
-            ));
+            match reconcile_structure(&books, Path::new(crdt_dir), &book_id, prefer, dry_run).await
+            {
+                Ok(action) => summary
+                    .resolved
+                    .push((doc_id.clone(), format!("{action} [was: {detail}]"))),
+                Err(e) => summary.errors.push((doc_id.clone(), e)),
+            }
             continue;
         }
         match reconcile_body(&books, Path::new(crdt_dir), &book_id, doc_id, prefer, dry_run).await {

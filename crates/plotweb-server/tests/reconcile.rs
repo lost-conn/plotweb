@@ -283,3 +283,196 @@ async fn the_boot_hook_resolves_when_given_a_direction() {
     .expect("shadow");
     assert!(after.is_clean(), "resolved on boot: {after:?}");
 }
+
+// ── Structure documents (`book:`) ────────────────────────────────────────────
+//
+// These used to be skipped with a note to "clear ownership and re-run the backfill" —
+// a remedy nothing implemented. A diverged structure document is the shape of "something
+// went wrong and we cannot fix it", so both directions are exercised here the way the
+// body cases are.
+
+/// A book whose `book:` document a client owns and which disagrees with git: on the
+/// device the chapter carries a different title.
+async fn diverged_structure(app: &mut TestApp) -> (String, String) {
+    let book_id = app.create_book("Structure Reconcile").await;
+    let chapter_id = app.create_chapter(&book_id, "One").await;
+
+    let mut input = plotweb_server::structure::read_structure_input(&app.state().books, &book_id)
+        .await
+        .expect("structure in git");
+    input.chapters = vec![(chapter_id.clone(), "Renamed on a device".to_string())];
+    let bytes = plotweb_crdt::project_book_structure(&input).expect("project");
+
+    let (status, _) = app
+        .post_bytes(
+            &format!("/api/books/{book_id}/sync/book:{book_id}/adopt"),
+            &bytes,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    (book_id, chapter_id)
+}
+
+#[tokio::test]
+async fn a_structure_document_is_no_longer_skipped() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, _) = diverged_structure(&mut app).await;
+
+    let summary = run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        Prefer::Crdt,
+        true,
+    )
+    .await
+    .expect("dry run");
+
+    assert!(
+        summary.skipped.is_empty(),
+        "a structure document has a supported repair now: {summary:?}"
+    );
+    assert_eq!(summary.resolved.len(), 1, "{summary:?}");
+    let (doc_id, action) = &summary.resolved[0];
+    assert_eq!(doc_id, &format!("book:{book_id}"));
+    assert!(
+        action.contains("would write") && action.contains("renamed"),
+        "the dry run says what it would do: {action}"
+    );
+
+    // And it did nothing: git still has the original title...
+    let r = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    assert_eq!(r.json[0]["title"].as_str().unwrap(), "One");
+    // ...and the divergence is untouched.
+    let after = plotweb_server::shadow::run_shadow_pass(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("shadow");
+    assert_eq!(after.diverged.len(), 1, "a dry run resolves nothing: {after:?}");
+}
+
+#[tokio::test]
+async fn preferring_git_replaces_the_canonical_structure_and_releases_ownership() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, _) = diverged_structure(&mut app).await;
+
+    let summary = run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        Prefer::Git,
+        false,
+    )
+    .await
+    .expect("reconcile");
+    assert_eq!(summary.resolved.len(), 1, "{summary:?}");
+    assert!(summary.errors.is_empty(), "{summary:?}");
+
+    // Git keeps its title, and the canonical copy now says the same thing.
+    let r = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    assert_eq!(r.json[0]["title"].as_str().unwrap(), "One");
+    let after = plotweb_server::shadow::run_shadow_pass(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("shadow");
+    assert!(
+        after.diverged.is_empty() && after.stale.is_empty(),
+        "the two copies now agree: {after:?}"
+    );
+
+    // Ownership released — which is the half the old advice named and nothing did. The
+    // backfill maintains the document again.
+    let backfill = plotweb_server::backfill::run_content_backfill(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("backfill");
+    assert_eq!(
+        backfill.skipped_synced, 0,
+        "no document should still be client-owned: {backfill:?}"
+    );
+}
+
+#[tokio::test]
+async fn preferring_the_crdt_writes_the_stored_structure_into_git() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, _) = diverged_structure(&mut app).await;
+
+    let summary = run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        Prefer::Crdt,
+        false,
+    )
+    .await
+    .expect("reconcile");
+    assert_eq!(summary.resolved.len(), 1, "{summary:?}");
+    assert!(summary.errors.is_empty(), "{summary:?}");
+
+    // Git took the device's title, through the ordinary read path.
+    let r = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    assert_eq!(
+        r.json[0]["title"].as_str().unwrap(),
+        "Renamed on a device",
+        "git took the stored structure: {:?}",
+        r.json
+    );
+
+    let after = plotweb_server::shadow::run_shadow_pass(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+    )
+    .await
+    .expect("shadow");
+    assert!(after.is_clean(), "and the two copies agree: {after:?}");
+}
+
+#[tokio::test]
+async fn preferring_the_crdt_can_empty_a_book_the_mirror_alone_refuses_to() {
+    // The mirror will not empty a manuscript on a background pass — a canonical
+    // structure with no chapters is far more likely to be half-written than an author
+    // deleting their whole book. Its log says to "reconcile this deliberately", and this
+    // is that: chosen by a human, at the command line, with a dry run available first.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Emptied Book").await;
+    let _ = app.create_chapter(&book_id, "One").await;
+
+    let mut input = plotweb_server::structure::read_structure_input(&app.state().books, &book_id)
+        .await
+        .expect("structure in git");
+    input.chapters = Vec::new();
+    let bytes = plotweb_crdt::project_book_structure(&input).expect("project");
+    let (status, _) = app
+        .post_bytes(
+            &format!("/api/books/{book_id}/sync/book:{book_id}/adopt"),
+            &bytes,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let summary = run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        Prefer::Crdt,
+        false,
+    )
+    .await
+    .expect("reconcile");
+    assert_eq!(summary.resolved.len(), 1, "{summary:?}");
+    assert!(summary.errors.is_empty(), "{summary:?}");
+
+    let r = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    assert_eq!(
+        r.json.as_array().map(|a| a.len()),
+        Some(0),
+        "the deletion the author chose reached git: {:?}",
+        r.json
+    );
+}
