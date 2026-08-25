@@ -144,6 +144,15 @@ struct BookState {
     book_id: String,
     doc: AutoCommit,
     persister: Persister,
+    /// The chapter list as **REST** last gave it — the seed on entry, plus the local
+    /// creates, imports and deletions since.
+    ///
+    /// The projection reads this and never writes it. It used to read `store.chapters`,
+    /// which is its own output: a chapter the document had dropped was re-added from the
+    /// previous projection's list, so a deletion made on another device never landed
+    /// (§D9 — a whole-state write whose source had moved on, here a signal rather than a
+    /// CRDT).
+    rest: Vec<Chapter>,
 }
 
 thread_local! {
@@ -229,6 +238,25 @@ pub fn set_font_settings(book_id: &str, font_settings: &plotweb_common::FontSett
             return;
         };
         let _ = doc.put(&meta, "font_settings", json);
+    });
+}
+
+/// Edit the REST chapter snapshot the projection reads.
+///
+/// Every local change to *which chapters exist* — create, import, delete — belongs here
+/// beside its REST call, for the same reason the server's `apply_book_structure` takes a
+/// `removable` list: absence is not evidence of deletion, so the caller that knows names
+/// what it did. Renames and reorders don't: title and order come from the document.
+///
+/// No-op unless that book is open.
+pub fn rest_chapters(book_id: &str, f: impl FnOnce(&mut Vec<Chapter>)) {
+    BOOK.with(|b| {
+        let mut slot = b.borrow_mut();
+        let Some(state) = slot.as_mut() else { return };
+        if state.book_id != book_id {
+            return;
+        }
+        f(&mut state.rest);
     });
 }
 
@@ -330,6 +358,7 @@ pub fn enter(
                 book_id: book_id.clone(),
                 doc,
                 persister,
+                rest: chapters,
             });
         });
 
@@ -510,7 +539,7 @@ pub fn project_chapters(store: AppStore) {
             .map(|o| read_map_strings(doc, &o))
             .unwrap_or_default();
 
-        let rest = store.chapters.get();
+        let rest = &state.rest;
         let mut by_id: HashMap<String, Chapter> =
             rest.iter().map(|c| (c.id.clone(), c.clone())).collect();
 
@@ -541,8 +570,10 @@ pub fn project_chapters(store: AppStore) {
                 }),
             }
         }
-        // Server chapters not (yet) in the doc order: keep them, in REST order.
-        for c in &rest {
+        // Server chapters not (yet) in the doc order: keep them, in REST order. A
+        // chapter the document *dropped* is not among them — `rest` is what the server
+        // last said exists, not what this projection last painted.
+        for c in rest {
             if by_id.contains_key(&c.id) {
                 out.push(c.clone());
             }

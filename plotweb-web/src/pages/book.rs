@@ -3196,6 +3196,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
             &req,
             move |result| {
                 if let Ok(chapter) = result {
+                    // The snapshot the projection reads, beside the REST call that
+                    // changed which chapters exist. See `local_book::rest_chapters`.
+                    crate::local_book::rest_chapters(&bid_sync, |ch| ch.push(chapter.clone()));
                     store.chapters.update(|ch| ch.push(chapter));
                     crate::local_book::sync_chapters(&bid_sync, &store.chapters.get());
                 }
@@ -3384,6 +3387,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         let cid_visible = cid.clone();
                         let mut chapters = store.chapters.get();
                         chapters.retain(|c| c.id != cid);
+                        // Before the document write, so no projection in between can
+                        // find the chapter still listed here and put it back.
+                        crate::local_book::rest_chapters(&bid_sync, |ch| {
+                            ch.retain(|c| c.id != cid)
+                        });
                         crate::local_book::sync_chapters(&bid_sync, &chapters);
                         // Same reload race as `move_chapter`: don't flip the
                         // DOM-visible list until the local-doc write above lands.
@@ -4814,6 +4822,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 show_restore_confirm.set(None);
                                 let bid_book = bid.clone();
                                 let bid_ch = bid.clone();
+                                let bid_rest = bid.clone();
                                 let bid_hist = bid.clone();
                                 api::post::<_, serde_json::Value>(
                                     &format!("/api/books/{}/history/{}/restore", bid, oid),
@@ -4827,6 +4836,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                                 }
                                                 api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid_ch), move |ch_result| {
                                                     if let Ok(chapters) = ch_result {
+                                                        // A restore is a fresh REST answer about which
+                                                        // chapters exist, so the projection's snapshot
+                                                        // takes it too — otherwise the next projection
+                                                        // paints the pre-restore list back.
+                                                        crate::local_book::rest_chapters(&bid_rest, |ch| {
+                                                            *ch = chapters.clone()
+                                                        });
                                                         store.chapters.set(chapters);
                                                     }
                                                     // Refresh history
@@ -5351,6 +5367,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                         &file,
                                     ).await {
                                         Ok(new_chapters) => {
+                                            crate::local_book::rest_chapters(&bid, |ch| {
+                                                ch.extend(new_chapters.clone())
+                                            });
                                             store.chapters.update(|ch| ch.extend(new_chapters));
                                             show_import_modal.set(false);
                                             import_preview.set(Vec::new());

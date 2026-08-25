@@ -124,26 +124,19 @@ test("an edit made offline reaches the server on reconnect", async ({ browser, b
   expect(await bodyText(a.page)).toContain("Written while online.");
 });
 
-// KNOWN FAILING — left in place and marked, not weakened. The scenario is right.
+// Regression guard for the deletion that never reached the other device.
 //
-// A's delete works and the rest of the book survives it; B goes on showing the deleted
-// chapter, and not because it is slow (forty seconds is no better than twelve).
+// Two bugs, one symptom. B's `book:` document was emptied by a load that answered a
+// failed chapter fetch with an empty list (fixed separately); and `project_chapters`
+// covered for it, because its "keep the server chapters" pass read `store.chapters` —
+// its own previous output — so a chapter the document had dropped was painted straight
+// back. The projection now reads the REST snapshot in `BookState`, which it never
+// writes.
 //
-// What B's structure document actually does, logged from a run:
-//
-//     [B] project_chapters doc_order=2 store=2     fine
-//     [B] project_chapters doc_order=2 store=2     fine
-//     [B] project_chapters doc_order=0 store=2     emptied
-//
-// A sync event empties B's `book:` document, and `project_chapters`'s "keep the server
-// chapters" pass then repaints the sidebar from the store — so the book looks intact and
-// a deletion never lands. The two are one bug: the document is being emptied, and the
-// projection is covering for it.
-//
-// Removing the cover-up alone is not the fix — it turns a stale sidebar into a blank one,
-// which is how it regressed `body-sync`'s sweep spec. The emptying has to be understood
-// first.
-test.fixme("deleting a chapter on one device while the other edits it", async ({ browser, baseURL }) => {
+// Removing the cover-up without giving the pass a source of its own is not the fix: it
+// turns a stale sidebar into a blank one, which is how it regressed `body-sync`'s sweep
+// spec when it was tried on its own.
+test("deleting a chapter on one device while the other edits it", async ({ browser, baseURL }) => {
   // §D7: removal from the parent index is the deletion. What matters here is that it
   // does not take the rest of the book with it, and that the deletion is not undone by
   // the other device's in-flight edit.
