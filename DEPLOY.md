@@ -147,7 +147,7 @@ source.
   which our `default-features = false` build requires; rhypedb `master` may not
   have it yet). Once that merges to `master`, repin all three `rhypedb-*` deps in
   the root `Cargo.toml` (and the matching note in `Cargo.toml` / `Dockerfile`).
-- **rinch** is pinned to `rev = 1f93dae…` in `plotweb-web/Cargo.toml`, kept in
+- **rinch** is pinned to `rev = 1f16bed…` in `plotweb-web/Cargo.toml`, kept in
   sync with the `Dockerfile`'s `RINCH_COMMIT`. Repin both together as rinch's
   `main` advances.
 
