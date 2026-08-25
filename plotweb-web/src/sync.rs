@@ -567,7 +567,9 @@ fn establish_body_provenance(label: String, doc: Doc) {
 
     let claim_url = format!("{}/adopt", doc.url());
     crate::api::post_bytes(&claim_url, snapshot, move |result| match result {
-        Ok(body) => {
+        // The reply says whether ours was adopted; both answers lead to the same
+        // action, so it is not read. See below.
+        Ok(_) => {
             // Two outcomes, one action. Adopted means ours *is* the canonical copy and
             // the histories match by construction. Refused means a client already owns
             // it — and the adopt endpoint's own answer to that is "use the sync protocol

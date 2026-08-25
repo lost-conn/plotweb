@@ -67,7 +67,17 @@ pub async fn list(
             };
             (StatusCode::OK, Json(serde_json::to_value(chapters).unwrap()))
         }
-        Err(_) => (StatusCode::OK, Json(serde_json::to_value(Vec::<Chapter>::new()).unwrap())),
+        // Not an empty list. A failed read and a book with no chapters are different
+        // answers, and collapsing them lets the client seed an authoritative local
+        // document from a failure — after which the book really is empty until
+        // something happens to refill it.
+        Err(e) => {
+            eprintln!("Failed to list chapters for {book_id}: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "failed to list chapters" })),
+            )
+        }
     }
 }
 

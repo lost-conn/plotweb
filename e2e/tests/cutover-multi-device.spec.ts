@@ -124,20 +124,25 @@ test("an edit made offline reaches the server on reconnect", async ({ browser, b
   expect(await bodyText(a.page)).toContain("Written while online.");
 });
 
-// KNOWN FAILING — the deletion does not reach the other device. Left in place, and
-// marked, rather than deleted or quietly weakened: the scenario is correct and the gap
-// is real.
+// KNOWN FAILING — left in place and marked, not weakened. The scenario is right.
 //
-// A's delete works and the rest of the book survives it. B keeps showing the chapter,
-// and not because it is slow — forty seconds is no better than twelve. The server also
-// logs B still pushing body updates for it:
+// A's delete works and the rest of the book survives it; B goes on showing the deleted
+// chapter, and not because it is slow (forty seconds is no better than twelve).
 //
-//     [mirror] chapter:26f33a7b…: git write failed: chapter not found
+// What B's structure document actually does, logged from a run:
 //
-// Leading suspect, unconfirmed: B's `sync_chapters` writes a whole chapter list built
-// from `store.chapters`, and a stale list re-inserts the removal after it arrives — the
-// same stale-whole-state shape as #22, #24 and #27. Wants a session of its own rather
-// than a guess at the end of one.
+//     [B] project_chapters doc_order=2 store=2     fine
+//     [B] project_chapters doc_order=2 store=2     fine
+//     [B] project_chapters doc_order=0 store=2     emptied
+//
+// A sync event empties B's `book:` document, and `project_chapters`'s "keep the server
+// chapters" pass then repaints the sidebar from the store — so the book looks intact and
+// a deletion never lands. The two are one bug: the document is being emptied, and the
+// projection is covering for it.
+//
+// Removing the cover-up alone is not the fix — it turns a stale sidebar into a blank one,
+// which is how it regressed `body-sync`'s sweep spec. The emptying has to be understood
+// first.
 test.fixme("deleting a chapter on one device while the other edits it", async ({ browser, baseURL }) => {
   // §D7: removal from the parent index is the deletion. What matters here is that it
   // does not take the rest of the book with it, and that the deletion is not undone by
