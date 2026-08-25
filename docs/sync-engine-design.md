@@ -240,6 +240,66 @@ is what makes re-projection unsafe, not writing. A slice-1 test pins this
 holds the real history. This rule must be revisited before any doc is created
 Automerge-first post-cutover; then `seeded-local` no longer occurs.
 
+### D9 — Never apply a whole-state write derived from a possibly-stale source
+
+> **Written after the fact.** D1–D8 were decided before the code; this one is the shape
+> five production bugs turned out to share, recorded so the sixth is recognised on sight.
+
+A CRDT converges by exchanging *changes*. Every layer here also has a tempting shortcut:
+some place already holds "the whole current value" — the editor's model, git's files, a
+signal in the store — and writing that whole value looks equivalent to writing the change.
+It is not, and the difference only shows up when the value is a moment out of date.
+
+Applying whole state `V` onto a document that has moved to `V'` does not mean "no change".
+It means **"make it `V`"** — recorded as a change, merged, and propagated. If `V` was read
+before someone else's edit, that edit is now explicitly undone. The CRDT does exactly what
+it was told; the instruction was wrong.
+
+**The instances, all real:**
+
+| where | the stale source | what it destroyed |
+|---|---|---|
+| REST body autosave under cutover (#22) | the editor model, from a moment earlier | deleted sentences reappeared under the cursor |
+| `take_server_body` on a refused adoption (#28) | the server's copy, stale relative to local edits | everything typed since the last push, on every chapter switch |
+| `sync_chapters` rebuilding the list (#27) | `store.chapters` | every chapter listed twice |
+| `apply_cutover_structure` re-reading git (#22) | git, lagging the mirror's debounce | a rename would delete a chapter added on a device |
+| `project_chapters`' leftover pass (open) | the previous projection's own output | a deletion is repainted back and never lands |
+
+**The rule.** A write into a CRDT must be one of:
+
+1. a **change**, recorded against the state it was derived from (`record_local(before, after)`,
+   a yrs update, a sync exchange), or
+2. a whole-state write from a source that is **provably current at that instant** — meaning
+   the same lock, transaction or request that read it also writes it.
+
+Anything else needs the ambiguity resolved explicitly. `apply_book_structure`'s `removable`
+list is the worked example: absence from git cannot distinguish "deleted" from "not
+mirrored yet", so the caller states which it means rather than the code guessing.
+
+**The tell, when reading code.** Look for a value read at time A and written at time B with
+an `await`, a callback, a debounce or a network round trip between them — then ask what a
+*second* writer could have done in the gap. `store.chapters.get()` and
+`editor_content_json()` are the two that keep appearing.
+
+**Two corollaries earned the hard way:**
+
+- *An error must never be indistinguishable from a legitimate value.* `chapters::list`
+  answered a failed read with `200 []`, and the local-first layer seeded an authoritative
+  empty document from it. Same class: a wrong whole state, confidently applied.
+- *A read that hides the damage prevents the repair.* Deduping the chapter list on read
+  also hid duplicates from `apply_book_structure`'s unchanged-comparison, so the write that
+  would have removed them never ran. Collapse on read **and** repair on write, or the
+  document keeps the damage forever.
+- *Enforce a rule where the facts are, not where you first notice it needed.* Not the same
+  bug, but the same session and worth the space: the single-writer rule needs two facts —
+  is this client syncing (only the client knows) and is this book cut over (only the server
+  knows). Enforced on the client's half alone, it dropped the write for every book that was
+  not cut over (#24). The client declares, the server decides.
+
+**Tests of record:** `cutover-sync.spec.ts` and `cutover-multi-device.spec.ts`, both of
+which need `npm run test:cutover` — cut over *and* syncing is the configuration every one
+of these needed, and it was unreachable from the default suite until it was built.
+
 ---
 
 ## 4. What the client does

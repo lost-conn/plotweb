@@ -172,6 +172,11 @@ varies per launch — `query_selector` for real coordinates, don't hardcode. For
 `plotweb-web/Cargo.toml` takes an **uncommitted** `[patch."…/rinch"]` → `../../rinch` (see
 DEPLOY.md; committing it breaks the jkbase build).
 
+**Before changing anything that writes a CRDT, read §D9** of
+`docs/sync-engine-design.md` ("never apply a whole-state write derived from a
+possibly-stale source"). It is the shape five production bugs in this arc shared, and it
+is not obvious from any one of them.
+
 **Verification bar used throughout:** builds at **16 frontend warnings** (baseline), full
 `cargo test`, `e2e` (26 specs — see below), and for anything user-facing a **native MCP
 drive** proving local beats a divergent server.
