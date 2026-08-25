@@ -12,7 +12,7 @@ automerge = "0.5"
 # already a workspace dep (features serde + markdown); rinch-editor-collab is the
 # body-CRDT seam, pulled at the SAME pin as everything else in the tree.
 rinch-editor-core = { workspace = true }
-rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "1f16bed", default-features = false }
+rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "70913b4", default-features = false }
 plotweb-common = { workspace = true }
 serde_json = { workspace = true }
 

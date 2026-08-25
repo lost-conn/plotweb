@@ -155,9 +155,12 @@ source.
   which our `default-features = false` build requires; rhypedb `master` may not
   have it yet). Once that merges to `master`, repin all three `rhypedb-*` deps in
   the root `Cargo.toml` (and the matching note in `Cargo.toml` / `Dockerfile`).
-- **rinch** is pinned to `rev = 1f16bed…` in `plotweb-web/Cargo.toml`, kept in
+- **rinch** is pinned to `rev = 70913b4…` in `plotweb-web/Cargo.toml`, kept in
   sync with the `Dockerfile`'s `RINCH_COMMIT`. Repin both together as rinch's
-  `main` advances.
+  `main` advances. That rev is the head of rinch's
+  `fix/editor-mobile-soft-keyboard` (PR #249 — soft-keyboard typing in the
+  editor), **not** a commit on `main`: repin to the merge commit once it lands,
+  before the branch is squashed away.
 
 ## Verification status
 
