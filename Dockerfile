@@ -8,7 +8,7 @@ FROM rust:1.88-bookworm AS frontend
 
 # rinch origin/main. Body documents are yrs from #190 onward, structure documents stay
 # Automerge — see docs/sync-engine-design.md §8b for the split and what it costs.
-ARG RINCH_COMMIT=1f16bed
+ARG RINCH_COMMIT=70913b4
 ARG RINCH_REPO=https://github.com/joeleaver/rinch.git
 
 RUN apt-get update && apt-get install -y --no-install-recommends git \
