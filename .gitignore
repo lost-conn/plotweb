@@ -27,3 +27,8 @@ android/**/*.iml
 
 # Playwright artifacts from an e2e run launched inside the crate dir
 plotweb-web/test-results/
+
+# mold linker opt-in — generated per-clone by ./scripts/setup-mold.sh.
+# Deliberately NOT committed: jkbase builds in a sealed offline buildpack VM
+# with no mold, and a committed config would fail that deploy at link time.
+.cargo/config.toml

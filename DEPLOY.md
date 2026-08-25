@@ -111,6 +111,14 @@ A single persistent volume named `data` is mounted at `/data`:
 serves `GET /health` → `200 OK` (no auth, no session). interval `10s`, timeout
 `5s`.
 
+## Local linker (mold) — never reaches the build VM
+
+`./scripts/setup-mold.sh` writes a `.cargo/config.toml` that links the host
+Linux target through mold. That file is gitignored, so the buildpack VM never
+sees it: the VM has no mold, and a committed config would fail the deploy at
+link time. If you ever hand-write `.cargo/config.toml` for something else, keep
+it out of git for the same reason.
+
 ## Co-developing rhypedb / rinch locally (UNCOMMITTED patch)
 
 Because rhypedb and rinch are now git deps, a plain `cargo build` / `trunk build`

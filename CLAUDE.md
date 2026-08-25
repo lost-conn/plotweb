@@ -61,6 +61,10 @@ cargo test                     # all workspace tests (incl. server HTTP integrat
 cargo test -p plotweb-import   # import crate tests only (markdown chapter detection)
 cargo test -p plotweb-server   # server integration tests (tests/*.rs drive the real Axum app)
 
+# Faster local links (optional, Linux): route host-target links through mold.
+# Writes .cargo/config.toml, which is GITIGNORED — see "Linking" below.
+./scripts/setup-mold.sh        # enable;  --disable to remove
+
 # End-to-end (Playwright, browser): builds the SPA + server over a temp data dir
 cd e2e && npm install && npx playwright install chromium-headless-shell
 cd e2e && npx playwright test
@@ -77,6 +81,21 @@ The frontend targets **web and desktop from one codebase** — see
 shared page code). Linux desktop builds need the GTK dev stack
 (`libgtk-3-dev libfontconfig-dev`); the native app reaches the server via
 `PLOTWEB_SERVER` (default `http://127.0.0.1:3000`).
+
+## Linking (mold)
+
+Host Linux builds can link through **mold** instead of GNU ld — worth it here
+because the debug binaries are ~320 MB each and `cargo test` links ~20 of them.
+Run `./scripts/setup-mold.sh` once per clone (needs `mold` and `clang` on PATH).
+
+The generated `.cargo/config.toml` is **gitignored on purpose**. jkbase builds
+this repo in a sealed, offline buildpack VM that we cannot install packages
+into, so a committed config demanding mold would fail the deploy at link time
+with no way to fix it from here. mold stays a per-developer opt-in.
+
+Only `x86_64-unknown-linux-gnu` is configured; `wasm32` links with rust-lld and
+is deliberately untouched. `./scripts/setup-mold.sh --disable` reverts it, and
+the script refuses to overwrite a `.cargo/config.toml` it did not write.
 
 ## Driving the native app (rinch MCP)
 
