@@ -1,5 +1,5 @@
-/target/
-plotweb-web/target/
+/target
+plotweb-web/target
 plotweb-web/dist/
 *.db
 *.db-shm
@@ -27,6 +27,9 @@ android/**/*.iml
 
 # Playwright artifacts from an e2e run launched inside the crate dir
 plotweb-web/test-results/
+
+# Browser MCP scratch dumps (console logs + page snapshots) from a driven session
+.playwright-mcp/
 
 # mold linker opt-in — generated per-clone by ./scripts/setup-mold.sh.
 # Deliberately NOT committed: jkbase builds in a sealed offline buildpack VM
