@@ -48,16 +48,25 @@ pub async fn init_db_with(db_url: &str) -> SqlitePool {
 /// Only runs if the old `books` schema still has columns that were removed
 /// (e.g. `description`). Skips if already migrated to avoid DROP CASCADE
 /// destroying beta_reader_links and related tables.
-pub async fn run_migration_003(pool: &SqlitePool) {
-    // Check if the old schema still has the `description` column
-    let has_description = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM pragma_table_info('books') WHERE name = 'description'"
+/// Whether `books` still carries the pre-003 schema.
+///
+/// `description` is the witness: migration 003 slims the table down to an ownership
+/// index and drops it along with the content columns. Anything that reads the legacy
+/// shape has to ask first — on a database that has already been through 003 the query
+/// cannot even parse, and a migration that reports failure on every single boot is
+/// indistinguishable from one that has genuinely broken.
+pub async fn has_legacy_books_schema(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM pragma_table_info('books') WHERE name = 'description'",
     )
     .fetch_one(pool)
     .await
-    .unwrap_or(0);
+    .unwrap_or(0)
+        > 0
+}
 
-    if has_description > 0 {
+pub async fn run_migration_003(pool: &SqlitePool) {
+    if has_legacy_books_schema(pool).await {
         let migration_003 = include_str!("../../../migrations/003_git_migration.sql");
         sqlx::raw_sql(migration_003)
             .execute(pool)

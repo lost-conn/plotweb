@@ -74,10 +74,16 @@ pub async fn build_state(
     let pool = db::init_db_with(db_url).await;
     let books = Arc::new(BookStore::new(book_dir.clone()));
 
-    // One-time data migrations are no-ops on an empty/fresh store, but the
-    // SQLite→git pass needs the legacy tables to exist (they do, from 001).
-    if let Err(e) = plotweb_git::migrate::migrate_sqlite_to_git(&pool, &book_dir).await {
-        eprintln!("Warning: data migration failed: {e}");
+    // One-time data migrations. The SQLite→git pass reads the *pre-003* `books`
+    // schema, so it is only meaningful before 003 has slimmed that table down —
+    // afterwards its `SELECT … description … FROM books` cannot parse, and it
+    // reported `data migration failed: no such column: description` on every boot of
+    // every deployment that had already migrated. Nothing was wrong, which is the
+    // problem: a real failure of this pass looked exactly the same.
+    if db::has_legacy_books_schema(&pool).await {
+        if let Err(e) = plotweb_git::migrate::migrate_sqlite_to_git(&pool, &book_dir).await {
+            eprintln!("Warning: data migration failed: {e}");
+        }
     }
     if let Err(e) = plotweb_git::migrate::migrate_to_split_repos(&book_dir) {
         eprintln!("Warning: split repos migration failed: {e}");
