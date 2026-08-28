@@ -17,6 +17,7 @@ plotweb-common = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+rusty-leveldb = "4.0.1"
 # The apply tests inspect state vectors directly, to prove an applied edit leaves a
 # history peers can still merge. Same yrs line rinch-editor-collab pulls.
 yrs = "0.27"

@@ -48,5 +48,12 @@ export PLOTWEB_CRDT_DIR="${E2E_STATE}/crdt"
 # wildcard is the only way to exercise the cut-over paths from e2e at all.
 export PLOTWEB_CUTOVER_BOOKS="${PLOTWEB_E2E_CUTOVER:-}"
 
+# Publish the state directory so a spec can reach the stores behind the server.
+# A test that has to corrupt a canonical document — to prove the server survives one it
+# cannot read — has no other way to find it, and guessing `data/crdt` would quietly
+# operate on the developer's own store instead.
+echo "${E2E_STATE}" > "${REPO_ROOT}/e2e/.e2e-state"
+trap 'rm -rf "$E2E_STATE"; rm -f "${REPO_ROOT}/e2e/.e2e-state"' EXIT
+
 echo "[e2e] starting server on :3000 (state: ${E2E_STATE})"
 exec cargo run -q -p plotweb-server

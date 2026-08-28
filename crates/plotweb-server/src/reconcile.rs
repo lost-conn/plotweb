@@ -70,6 +70,10 @@ pub struct ReconcileSummary {
     pub considered: usize,
     /// `(doc_id, what changed)`.
     pub resolved: Vec<(String, String)>,
+    /// Documents that could not be read at all and were rebuilt from git. Separate
+    /// from `resolved` because no choice between two copies was made: there was only
+    /// ever one readable copy.
+    pub rebuilt: Vec<(String, String)>,
     pub skipped: Vec<(String, String)>,
     pub errors: Vec<(String, String)>,
 }
@@ -341,6 +345,46 @@ pub async fn run_all(
             Err(e) => summary.errors.push((doc_id.clone(), e)),
         }
     }
+
+    // Documents that could not be read as documents at all. The shadow pass has always
+    // reported these — "a blob from before a CRDT change" — and nothing has ever fixed
+    // them, so a projection change left every body permanently unreadable while reads
+    // fell back to git and writes were dropped in its favour.
+    //
+    // Direction is not a judgement here the way it is for a divergence: there is no
+    // readable stored copy to prefer, so git is the only side with content and these
+    // are rebuilt from it whatever `prefer` says. Recorded distinctly so the report
+    // never implies someone's CRDT edits were weighed and lost.
+    for (doc_id, reason) in &findings.unreadable {
+        summary.considered += 1;
+        let Some(book_id) = owning_book(&books, data_dir, doc_id).await else {
+            summary.skipped.push((
+                doc_id.clone(),
+                "could not determine the owning book".to_string(),
+            ));
+            continue;
+        };
+        let outcome = if doc_id.starts_with("book:") {
+            reconcile_structure(&books, Path::new(crdt_dir), &book_id, Prefer::Git, dry_run).await
+        } else {
+            reconcile_body(
+                &books,
+                Path::new(crdt_dir),
+                &book_id,
+                doc_id,
+                Prefer::Git,
+                dry_run,
+            )
+            .await
+        };
+        match outcome {
+            Ok(action) => summary.rebuilt.push((
+                doc_id.clone(),
+                format!("{action} [unreadable: {reason}]"),
+            )),
+            Err(e) => summary.errors.push((doc_id.clone(), e)),
+        }
+    }
     Ok(summary)
 }
 
@@ -405,11 +449,15 @@ pub async fn run(prefer: Prefer, dry_run: bool) {
             println!("PlotWeb reconcile{}", if dry_run { " (dry run)" } else { "" });
             println!("  documents considered : {}", summary.considered);
             println!("  resolved             : {}", summary.resolved.len());
+            println!("  rebuilt (unreadable) : {}", summary.rebuilt.len());
             println!("  skipped              : {}", summary.skipped.len());
             println!("  errors               : {}", summary.errors.len());
             println!();
             for (doc_id, action) in &summary.resolved {
                 println!("  {doc_id} — {action}");
+            }
+            for (doc_id, action) in &summary.rebuilt {
+                println!("  REBUILT {doc_id} — {action}");
             }
             for (doc_id, why) in &summary.skipped {
                 println!("  SKIPPED {doc_id} — {why}");
@@ -418,7 +466,10 @@ pub async fn run(prefer: Prefer, dry_run: bool) {
                 println!("  ERROR   {doc_id} — {e}");
             }
             if summary.considered == 0 {
-                println!("Nothing to do: no client-owned document disagrees with git.");
+                println!(
+                    "Nothing to do: no client-owned document disagrees with git, and none \
+                     is unreadable."
+                );
             }
         }
         Err(e) => eprintln!("reconcile: {e}"),
@@ -460,6 +511,9 @@ pub async fn run_on_boot(setting: &str, data_dir: String, crdt_dir: String) {
             println!("[boot-reconcile] considered {}", summary.considered);
             for (doc_id, action) in &summary.resolved {
                 println!("[boot-reconcile]   {doc_id} — {action}");
+            }
+            for (doc_id, action) in &summary.rebuilt {
+                println!("[boot-reconcile]   REBUILT {doc_id} — {action}");
             }
             for (doc_id, why) in &summary.skipped {
                 println!("[boot-reconcile]   SKIPPED {doc_id} — {why}");

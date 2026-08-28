@@ -106,6 +106,76 @@ pub fn cutover_body(
     }
 }
 
+/// The author-facing half of a degraded write.
+///
+/// Silence here is what made the original failure invisible: the save answered `200`
+/// and the editor said "Saved" while the content went nowhere. A warning is worth
+/// showing when the server had to overrule how the client believed this body was being
+/// carried, and — as a backstop that should never fire — when content arrived and
+/// reached nothing at all.
+pub(crate) fn save_warning(
+    overrode_claim: bool,
+    carries_content: bool,
+    is_durable: bool,
+) -> Option<String> {
+    // Deliberately keyed on durability rather than on the git write alone: a write the
+    // server withholds *because* a healthy sync engine is carrying it is accounted for,
+    // and saying otherwise would train authors to ignore the warning.
+    if carries_content && !is_durable {
+        return Some(
+            "This save reached the server but was not stored. Keep this tab open — \
+             your work is still on this device."
+                .to_string(),
+        );
+    }
+    if overrode_claim {
+        return Some(
+            "This document's synced copy can't be read by the server, so syncing is \
+             paused for it and the save went to the book's history instead. Your work \
+             is saved; other devices won't see it until the copy is rebuilt."
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// Whether the canonical copy of `doc_id` is one this build can actually read and
+/// write.
+///
+/// The question the *write* path has to ask before letting git stand down, and the
+/// same one [`cutover_body`] already asks on the read path. Keeping them apart is what
+/// let a document be simultaneously "too broken to read" (served from git) and
+/// "healthy enough that the REST write should be dropped" (`sync_owned` honoured) —
+/// so an edit reached neither store while the client was told it had been saved.
+///
+/// Deliberately a real load rather than a check of the manifest's `projection` tag:
+/// the tag is written by this server and says nothing about whether the *body*
+/// projection still matches what the editor's collab seam produces. That mismatch is
+/// exactly what happened when the CRDT moved from Automerge to yrs — every manifest
+/// still read `automerge-snapshot-v1` while no body would load.
+pub fn canonical_is_authoritative(state: &AppState, book_id: &str, doc_id: &str) -> bool {
+    if !state.cutover.is_cut_over(book_id) {
+        return false;
+    }
+    // The tag first: a document written in a projection this build does not speak is
+    // not authoritative no matter what its bytes turn out to be, and answering that
+    // costs one small read rather than a document load on every save.
+    match crate::sync::canonical_projection_is_current(&state.crdt_dir, doc_id) {
+        Ok(Some(false)) => return false,
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: could not read the manifest: {e}");
+            return false;
+        }
+        // `None` is a manifest-less blob from an early backfill: no claim to check, so
+        // fall through and let the load decide.
+        Ok(_) => {}
+    }
+    match crate::sync::canonical_snapshot(&state.crdt_dir, doc_id) {
+        Ok(Some(bytes)) => plotweb_crdt::materialize_body(&bytes).is_ok(),
+        _ => false,
+    }
+}
+
 /// Apply a REST write into the canonical document of a cut-over book.
 ///
 /// Serialized on the same per-document lock sync uses, so a save and an exchange cannot
@@ -119,9 +189,9 @@ pub async fn apply_cutover_body(
     doc_type: &str,
     content: &str,
     kind: plotweb_crdt::BodyKind,
-) {
+) -> bool {
     if !state.cutover.is_cut_over(book_id) {
-        return;
+        return false;
     }
     let lock = state.doc_locks.for_doc(doc_id);
     let _guard = lock.lock().await;
@@ -136,9 +206,15 @@ pub async fn apply_cutover_body(
     .await;
 
     match applied {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => eprintln!("[cutover] {doc_id}: could not apply the write: {e}"),
-        Err(e) => eprintln!("[cutover] {doc_id}: apply worker panicked: {e}"),
+        Ok(Ok(_)) => true,
+        Ok(Err(e)) => {
+            eprintln!("[cutover] {doc_id}: could not apply the write: {e}");
+            false
+        }
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: apply worker panicked: {e}");
+            false
+        }
     }
 }
 

@@ -60,8 +60,52 @@ use tokio::sync::Mutex;
 /// `PLOTWEB_CRDT_DIR` default).
 pub const DEFAULT_CRDT_DIR: &str = "data/crdt";
 
-/// The `projection` marker the backfill stamps into a manifest.
+/// The `projection` marker stamped into the manifest of a `book:` / `user:` document,
+/// which really is an Automerge snapshot.
 const PROJECTION_V1: &str = "automerge-snapshot-v1";
+
+/// The marker for a `chapter:` / `note:` body.
+///
+/// Bodies stopped being Automerge documents when the editor's collab seam moved to
+/// yrs, but every manifest went on claiming `automerge-snapshot-v1`. Nothing could
+/// then tell a body this build can open from one it cannot without trying the open —
+/// so a projection change looked exactly like a healthy store until authors' writing
+/// quietly stopped being saved. The tag names the format the bytes are actually in,
+/// and it must change whenever that format does.
+const BODY_PROJECTION_V1: &str = "rinch-editor-collab/yrs-1";
+
+/// The projection this build writes for `doc_id`.
+pub fn projection_for(doc_id: &str) -> &'static str {
+    if is_body_doc(doc_id) {
+        BODY_PROJECTION_V1
+    } else {
+        PROJECTION_V1
+    }
+}
+
+/// Whether a stored document was written in the projection this build speaks.
+///
+/// `false` for every body written before the yrs move — which is the point: it is the
+/// cheap, no-load way to find documents that need rebuilding, and the check a write
+/// path can afford on every save.
+pub fn projection_is_current(doc_id: &str, manifest: &DocManifest) -> bool {
+    // An empty tag is a manifest from before the field existed; treat it as foreign
+    // rather than assume it matches.
+    manifest.projection == projection_for(doc_id)
+}
+
+/// Whether the canonical copy of `doc_id` claims the projection this build writes.
+///
+/// `None` when there is no manifest to ask — no canonical copy, or one a backfill
+/// wrote without one.
+pub fn canonical_projection_is_current(
+    crdt_dir: &Path,
+    doc_id: &str,
+) -> Result<Option<bool>, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    Ok(read_manifest(&store, doc_id)?.map(|m| projection_is_current(doc_id, &m)))
+}
 
 /// Per-document serialization for the canonical store.
 ///
@@ -196,7 +240,7 @@ fn save_snapshot(
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| doc_type.to_string()),
         src_sha: prev.and_then(|m| m.src_sha.clone()),
-        projection: PROJECTION_V1.to_string(),
+        projection: projection_for(doc_id).to_string(),
         generation: Some(generation.clone()),
         heads,
         synced_at,
@@ -295,6 +339,32 @@ pub fn canonical_snapshot(crdt_dir: &Path, doc_id: &str) -> Result<Option<Vec<u8
     load_snapshot(&store, doc_id, manifest.as_ref())
 }
 
+/// Clear a document's ownership without touching its bytes, making it provisional
+/// again so the next client to sync *claims* it rather than merging into it.
+///
+/// The lighter half of [`replace_canonical_from_git`], for the case where the server
+/// has just discovered it cannot read this document at all. It cannot project a
+/// replacement from git in the middle of somebody's save, but it can stop the document
+/// claiming to be under a sync engine's care — which is what makes a REST write stand
+/// down. Leaving that claim in place is how both writers defer to each other and the
+/// edit reaches neither.
+pub fn disown_canonical(crdt_dir: &Path, doc_id: &str) -> Result<bool, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let Some(mut manifest) = read_manifest(&store, doc_id)? else {
+        return Ok(false);
+    };
+    if manifest.synced_at.is_none() {
+        return Ok(false);
+    }
+    manifest.synced_at = None;
+    let encoded =
+        serde_json::to_vec(&manifest).map_err(|e| SyncError::Store(format!("encode: {e}")))?;
+    block_on(store.put(&format!("{doc_id}/manifest"), &encoded))
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+    Ok(true)
+}
+
 /// Replace a canonical document with a fresh projection of git, and **clear its
 /// ownership** so it is provisional again.
 ///
@@ -330,7 +400,7 @@ pub fn replace_canonical_from_git(
         doc_id: doc_id.to_string(),
         doc_type: doc_type.to_string(),
         src_sha: prev.as_ref().and_then(|m| m.src_sha.clone()),
-        projection: PROJECTION_V1.to_string(),
+        projection: projection_for(doc_id).to_string(),
         generation: Some(generation.clone()),
         heads,
         // Deliberately None: the document is provisional again.

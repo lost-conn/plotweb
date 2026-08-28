@@ -8,7 +8,7 @@ use plotweb_common::{
     BetaFeedback, BetaReaderLink, Book, Chapter, CommitDiff, CommitInfo, CreateBetaLinkRequest,
     CreateBetaReplyRequest, CreateChapterRequest, CreateNoteRequest, FontSettings,
     ImportChapter, ImportPreviewChapter, ImportPreviewResponse, MoveNoteRequest,
-    Note, NoteTree, NotesResponse, ReorderChaptersRequest, UpdateBetaLinkRequest,
+    Note, NoteTree, NotesResponse, ReorderChaptersRequest, SaveReceipt, UpdateBetaLinkRequest,
     UpdateBookRequest, UpdateChapterRequest, UpdateNoteRequest, UpdateNoteTreeRequest,
 };
 
@@ -2109,8 +2109,40 @@ fn render_history_chapter_preview(
 
 /// Switch to editing a chapter. Saves current chapter if editing, clears timers, loads new chapter.
 /// All parameters are Copy or Clone so this can be called from rsx! closures without ownership issues.
+/// Apply a save response to the editor's status and the author-facing alert.
+///
+/// A `200` is not by itself success. The server answers with a [`SaveReceipt`] saying
+/// where the content actually went — git, the canonical document, or deliberately
+/// neither because a healthy sync engine is carrying it — and a write that reached
+/// none of those, or that only landed after the server overruled how this client
+/// believed the body was being carried, is precisely the case that used to read as
+/// "Saved" while two days of writing went nowhere.
+fn apply_save_receipt(
+    result: Result<SaveReceipt, api::ApiError>,
+    save_status: Signal<&'static str>,
+    save_alert: Signal<Option<String>>,
+) {
+    match result {
+        Ok(receipt) => {
+            save_status.set(if receipt.is_durable() { "saved" } else { "error" });
+            // The warning clears itself on the next clean save, so a condition that
+            // resolves stops nagging without the author dismissing anything.
+            save_alert.set(receipt.warning);
+        }
+        Err(e) => {
+            save_status.set("error");
+            save_alert.set(Some(format!(
+                "This save didn't reach the server ({}). Your work is still on this \
+                 device — keep this tab open.",
+                e.message
+            )));
+        }
+    }
+}
+
 fn do_switch_chapter(
     active_pane: Signal<BookPane>,
+    save_alert: Signal<Option<String>>,
     auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
     chapter_title_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
     save_status: Signal<&'static str>,
@@ -2123,7 +2155,7 @@ fn do_switch_chapter(
     bid: &str,
     new_chapter_id: &str,
 ) {
-    do_switch_chapter_inner(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle, chapter_title, store, bid, new_chapter_id, None);
+    do_switch_chapter_inner(active_pane, save_alert, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle, chapter_title, store, bid, new_chapter_id, None);
 }
 
 thread_local! {
@@ -2134,6 +2166,7 @@ thread_local! {
 
 fn do_switch_chapter_inner(
     active_pane: Signal<BookPane>,
+    save_alert: Signal<Option<String>>,
     auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
     chapter_title_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
     save_status: Signal<&'static str>,
@@ -2213,18 +2246,13 @@ fn do_switch_chapter_inner(
                 content: Some(content),
                 sync_owned: crate::sync::body_is_syncing(&format!("chapter:{current_id}")),
             };
-            api::put::<_, serde_json::Value>(
+            // The just-left chapter's save is reported like any other: an optimistic
+            // "saved" is set below for the chapter being opened, and a receipt that
+            // says this write went nowhere has to win over it.
+            api::put::<_, SaveReceipt>(
                 &format!("/api/books/{}/chapters/{}", bid, current_id),
                 &req,
-                move |result| {
-                    if result.is_ok() {
-                        save_status.set("saved");
-                    } else {
-                        // The just-left chapter failed to save — surface it instead of
-                        // the optimistic "saved" set below, so edits aren't lost silently.
-                        save_status.set("error");
-                    }
-                },
+                move |result| apply_save_receipt(result, save_status, save_alert),
             );
         }
     }
@@ -2837,6 +2865,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let chapters_collapsed = Signal::new(false);
     let chapter_title = Signal::new(String::new());
     let save_status = Signal::new("saved");
+    // The author-facing half of a save that didn't fully land: the status indicator is
+    // four words in a header, which is not enough to notice that writing is not being
+    // stored. Set from the server's receipt; cleared by the next clean save.
+    let save_alert: Signal<Option<String>> = Signal::new(None);
     let editor_word_count: Signal<u64> = Signal::new(0);
     // The chapter id whose content is currently loaded in the editor model. `None`
     // during the fetch window of a chapter switch — save-on-leave / autosave only
@@ -3110,18 +3142,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
             content: Some(content),
             sync_owned: crate::sync::body_is_syncing(&format!("chapter:{chapter_id_to_save}")),
         };
-        api::put::<_, serde_json::Value>(
+        api::put::<_, SaveReceipt>(
             &format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
             &req,
-            move |result| {
-                if result.is_ok() {
-                    save_status.set("saved");
-                } else {
-                    // Distinct from "unsaved" (pending edits): the save was attempted
-                    // and the server rejected it, so the edit is NOT persisted.
-                    save_status.set("error");
-                }
-            },
+            move |result| apply_save_receipt(result, save_status, save_alert),
         );
     };
 
@@ -3429,7 +3453,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Factory closures capture only Copy types (Signals) so they are Copy themselves.
     // This lets the rsx macro use them in multiple for-loops without move issues.
     let open_chapter = move |chapter_id: String| {
-        move || do_switch_chapter(active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle, chapter_title, store, &bid_signal.get(), &chapter_id)
+        move || do_switch_chapter(active_pane, save_alert, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle, chapter_title, store, &bid_signal.get(), &chapter_id)
     };
 
     // Navigate to a feedback item: switch to the chapter editor, open the feedback
@@ -3448,7 +3472,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             pending_feedback_scroll.set(Some((selected_text.clone(), context_block.clone())));
             show_feedback_sidebar.set(true);
             do_switch_chapter_inner(
-                active_pane, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle,
+                active_pane, save_alert, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle,
                 chapter_title, store, &bid_signal.get(), &chapter_id,
                 Some(pending_feedback_scroll),
             );
@@ -3692,16 +3716,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     content: Some(content),
                     sync_owned: crate::sync::body_is_syncing(&format!("chapter:{current_id}")),
                 };
-                api::put::<_, serde_json::Value>(
+                api::put::<_, SaveReceipt>(
                     &format!("/api/books/{}/chapters/{}", bid, current_id),
                     &req,
-                    move |result| {
-                        if result.is_ok() {
-                            save_status.set("saved");
-                        } else {
-                            save_status.set("error");
-                        }
-                    },
+                    move |result| apply_save_receipt(result, save_status, save_alert),
                 );
             }
         }
@@ -3822,12 +3840,18 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 // not carry them.
                 sync_owned: crate::sync::body_is_syncing(&format!("note:{nid}")),
             };
-            api::put::<_, serde_json::Value>(
+            api::put::<_, SaveReceipt>(
                 &format!("/api/books/{}/notes/{}", bid, nid),
                 &req,
                 move |result| {
                     match result {
-                        Ok(_) => note_save_status.set("saved"),
+                        // A note body takes the same server path as a chapter's, so
+                        // the same receipt decides whether this counts as saved.
+                        Ok(receipt) => {
+                            note_save_status
+                                .set(if receipt.is_durable() { "saved" } else { "error" });
+                            save_alert.set(receipt.warning);
+                        }
                         Err(_) => note_save_status.set("error"),
                     }
                 },
@@ -4318,6 +4342,40 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             }
                         }
 
+                        // A save that didn't land says so here rather than only in the
+                        // four-word status indicator above. `if` (not a reactive text
+                        // node) so the whole block swaps in and out.
+                        if save_alert.get().is_some() {
+                            div {
+                                style: "padding: 8px 16px 0;",
+                                Alert {
+                                    color: "orange",
+                                    title: "Your writing isn't reaching the server",
+                                    {move || save_alert.get().unwrap_or_default()}
+                                    Space { h: "xs" }
+                                    div {
+                                        style: "display: flex; gap: 8px;",
+                                        Button {
+                                            variant: "light",
+                                            size: "xs",
+                                            onclick: move || {
+                                                if let BookPane::Editor(ref cid) = active_pane.get() {
+                                                    save_content(cid.clone());
+                                                }
+                                            },
+                                            "Retry save"
+                                        }
+                                        Button {
+                                            variant: "subtle",
+                                            size: "xs",
+                                            onclick: move || save_alert.set(None),
+                                            "Dismiss"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         {editor_utils::editor_toolbar(__scope, chapter_handle.get(), book_id.clone(), schedule_chapter_autosave)}
 
                         div {
@@ -4676,6 +4734,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                         "saved" => "Saved".to_string(),
                                         _ => "Unsaved".to_string(),
                                     }}
+                                }
+                            }
+                        }
+
+                        if save_alert.get().is_some() {
+                            div {
+                                style: "padding: 8px 16px 0;",
+                                Alert {
+                                    color: "orange",
+                                    title: "This note isn't reaching the server",
+                                    {move || save_alert.get().unwrap_or_default()}
                                 }
                             }
                         }
