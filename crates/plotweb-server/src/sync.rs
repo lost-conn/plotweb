@@ -295,6 +295,32 @@ pub fn canonical_snapshot(crdt_dir: &Path, doc_id: &str) -> Result<Option<Vec<u8
     load_snapshot(&store, doc_id, manifest.as_ref())
 }
 
+/// Clear a document's ownership without touching its bytes, making it provisional
+/// again so the next client to sync *claims* it rather than merging into it.
+///
+/// The lighter half of [`replace_canonical_from_git`], for the case where the server
+/// has just discovered it cannot read this document at all. It cannot project a
+/// replacement from git in the middle of somebody's save, but it can stop the document
+/// claiming to be under a sync engine's care — which is what makes a REST write stand
+/// down. Leaving that claim in place is how both writers defer to each other and the
+/// edit reaches neither.
+pub fn disown_canonical(crdt_dir: &Path, doc_id: &str) -> Result<bool, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    let Some(mut manifest) = read_manifest(&store, doc_id)? else {
+        return Ok(false);
+    };
+    if manifest.synced_at.is_none() {
+        return Ok(false);
+    }
+    manifest.synced_at = None;
+    let encoded =
+        serde_json::to_vec(&manifest).map_err(|e| SyncError::Store(format!("encode: {e}")))?;
+    block_on(store.put(&format!("{doc_id}/manifest"), &encoded))
+        .map_err(|e| SyncError::Store(e.to_string()))?;
+    Ok(true)
+}
+
 /// Replace a canonical document with a fresh projection of git, and **clear its
 /// ownership** so it is provisional again.
 ///

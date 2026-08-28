@@ -209,10 +209,19 @@ pub async fn update(
         );
     }
 
-    // See `chapters::update`: the declaration only counts for a cut-over book. Title
-    // and colour are structure and are never covered by it.
-    let sync_owns_body = req.sync_owned && state.cutover.is_cut_over(&book_id);
+    // See `chapters::update`: the declaration only counts for a cut-over book, and only
+    // when the server can confirm the canonical document is one it can actually read —
+    // otherwise both writers stand down and the edit reaches neither. Title and colour
+    // are structure and are never covered by it.
+    let doc_id = format!("note:{note_id}");
+    let claimed_by_sync = req.sync_owned && state.cutover.is_cut_over(&book_id);
+    let sync_owns_body =
+        claimed_by_sync && super::canonical_is_authoritative(&state, &book_id, &doc_id);
+    let overrode_claim = claimed_by_sync && !sync_owns_body;
+
+    let carries_content = req.content.is_some();
     let content = if sync_owns_body { None } else { req.content.clone() };
+    let wrote_to_git = content.is_some() || req.title.is_some() || req.color.is_some();
 
     // For color, if it's present in the request we pass Some(value), otherwise None (don't update)
     let color = req.color.as_ref().map(|c| Some(c.as_str()));
@@ -235,24 +244,46 @@ pub async fn update(
         );
     }
 
-    if let Some(content) = content.as_deref() {
-        super::apply_cutover_body(
-            &state,
-            &book_id,
-            &format!("note:{note_id}"),
-            "note",
-            content,
-            plotweb_crdt::BodyKind::Note,
-        )
-        .await;
+    // The claim was overridden: clear it, so the next write doesn't stand down too.
+    if overrode_claim {
+        let crdt_dir = state.crdt_dir.clone();
+        let doc = doc_id.clone();
+        if let Ok(Err(e)) =
+            tokio::task::spawn_blocking(move || crate::sync::disown_canonical(&crdt_dir, &doc))
+                .await
+        {
+            eprintln!("[cutover] {doc_id}: could not clear a stale sync claim: {e}");
+        }
     }
+
+    let applied_to_canonical = match content.as_deref() {
+        Some(content) => {
+            super::apply_cutover_body(
+                &state,
+                &book_id,
+                &doc_id,
+                "note",
+                content,
+                plotweb_crdt::BodyKind::Note,
+            )
+            .await
+        }
+        None => false,
+    };
     // A note's title and colour live in the book structure, its body does not — so an
     // autosave of the body alone skips the book read.
     if req.title.is_some() || req.color.is_some() {
         super::apply_cutover_structure(&state, &book_id, &[]).await;
     }
 
-    (StatusCode::OK, Json(json!({ "ok": true })))
+    let mut receipt = SaveReceipt {
+        git: wrote_to_git,
+        canonical: applied_to_canonical,
+        deferred_to_sync: sync_owns_body,
+        warning: None,
+    };
+    receipt.warning = super::save_warning(overrode_claim, carries_content, receipt.is_durable());
+    (StatusCode::OK, Json(serde_json::to_value(receipt).unwrap()))
 }
 
 pub async fn delete(

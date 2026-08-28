@@ -189,6 +189,8 @@ pub async fn update(
         );
     }
 
+    let doc_id = format!("chapter:{chapter_id}");
+
     // `sync_owned` only means anything for a cut-over book. There, the canonical
     // document is the source of truth and sync is already carrying this body's edits,
     // so `content` is a stale duplicate: applying it re-inserts text the client has
@@ -199,12 +201,25 @@ pub async fn update(
     // Honouring the flag without the cutover check is how an edit lands in the
     // canonical store, is never written to git, and then vanishes on the next read —
     // which is exactly what happened when this was decided client-side alone.
-    let sync_owns_body = req.sync_owned && state.cutover.is_cut_over(&book_id);
+    //
+    // The third condition is the one this cost two days of silently dropped writes to
+    // learn: a declaration that *sync owns this body* is only true if the canonical
+    // document exists and this build can read it. Trusting the client's half alone
+    // leaves both writers deferring to each other — git stands down because sync has
+    // it, sync cannot deliver because the document will not load — and the edit
+    // survives nowhere but the author's browser.
+    let claimed_by_sync = req.sync_owned && state.cutover.is_cut_over(&book_id);
+    let sync_owns_body = claimed_by_sync
+        && super::canonical_is_authoritative(&state, &book_id, &doc_id);
+    let overrode_claim = claimed_by_sync && !sync_owns_body;
+
+    let carries_content = req.content.is_some();
     let req = UpdateChapterRequest {
         title: req.title,
         content: if sync_owns_body { None } else { req.content },
         sync_owned: req.sync_owned,
     };
+    let wrote_to_git = req.content.is_some() || req.title.is_some();
 
     if let Err(e) = state.books.update_chapter(&book_id, &chapter_id, &req).await {
         eprintln!("Failed to update chapter: {}", e);
@@ -214,22 +229,39 @@ pub async fn update(
         );
     }
 
+    // The claim was overridden, so stop the document advertising itself as a syncing
+    // client's responsibility. Until it is repaired, git is where this body lives; a
+    // stale claim would make the next write stand down all over again.
+    if overrode_claim {
+        let crdt_dir = state.crdt_dir.clone();
+        let doc = doc_id.clone();
+        if let Ok(Err(e)) =
+            tokio::task::spawn_blocking(move || crate::sync::disown_canonical(&crdt_dir, &doc))
+                .await
+        {
+            eprintln!("[cutover] {doc_id}: could not clear a stale sync claim: {e}");
+        }
+    }
+
     // Cut over: the write also lands *in* the canonical document, as an edit. Git has
     // just taken the same content, which is what keeps it a live mirror — and what
     // makes the flag reversible to current content rather than to cutover-day content.
     // `req.content` is already `None` when sync owns this body, so the canonical
     // document is left to sync — which is the whole point.
-    if let Some(content) = req.content.as_deref() {
-        super::apply_cutover_body(
-            &state,
-            &book_id,
-            &format!("chapter:{chapter_id}"),
-            "chapter",
-            content,
-            plotweb_crdt::BodyKind::Chapter,
-        )
-        .await;
-    }
+    let applied_to_canonical = match req.content.as_deref() {
+        Some(content) => {
+            super::apply_cutover_body(
+                &state,
+                &book_id,
+                &doc_id,
+                "chapter",
+                content,
+                plotweb_crdt::BodyKind::Chapter,
+            )
+            .await
+        }
+        None => false,
+    };
     // Only when a title came with the request. An autosave carries content alone, and
     // re-reading the whole book on every keystroke's worth of save would be a real cost
     // for a structure that did not move.
@@ -237,7 +269,14 @@ pub async fn update(
         super::apply_cutover_structure(&state, &book_id, &[]).await;
     }
 
-    (StatusCode::OK, Json(json!({ "ok": true })))
+    let mut receipt = SaveReceipt {
+        git: wrote_to_git,
+        canonical: applied_to_canonical,
+        deferred_to_sync: sync_owns_body,
+        warning: None,
+    };
+    receipt.warning = super::save_warning(overrode_claim, carries_content, receipt.is_durable());
+    (StatusCode::OK, Json(serde_json::to_value(receipt).unwrap()))
 }
 
 pub async fn delete(

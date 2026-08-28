@@ -119,6 +119,39 @@ pub struct CreateChapterRequest {
     pub title: String,
 }
 
+/// What a body write actually did, returned by the chapter/note update routes.
+///
+/// A save that reaches the server and persists nothing used to answer `200 {"ok":true}`
+/// — the client showed "Saved" while the content went nowhere, and it stayed invisible
+/// for two days. The write path can legitimately take several routes (git, the
+/// canonical document, or deliberately neither when the client's own sync engine is
+/// carrying the body), so the response says which one it took rather than asserting
+/// success.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SaveReceipt {
+    /// The content was written to the git store.
+    pub git: bool,
+    /// The content was applied to the canonical CRDT document.
+    pub canonical: bool,
+    /// The server deliberately left this content to the client's sync engine, having
+    /// confirmed the canonical document is one it can actually read and write.
+    pub deferred_to_sync: bool,
+    /// Author-facing explanation of a degraded or refused write. Present when the
+    /// server had to override the client's `sync_owned` declaration, and when nothing
+    /// was persisted at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+impl SaveReceipt {
+    /// Whether this request's content is accounted for: written somewhere durable, or
+    /// knowingly left to a sync engine that can deliver it.
+    pub fn is_durable(&self) -> bool {
+        self.git || self.canonical || self.deferred_to_sync
+    }
+}
+
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateChapterRequest {
     pub title: Option<String>,
