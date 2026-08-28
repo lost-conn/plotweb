@@ -157,6 +157,19 @@ pub fn canonical_is_authoritative(state: &AppState, book_id: &str, doc_id: &str)
     if !state.cutover.is_cut_over(book_id) {
         return false;
     }
+    // The tag first: a document written in a projection this build does not speak is
+    // not authoritative no matter what its bytes turn out to be, and answering that
+    // costs one small read rather than a document load on every save.
+    match crate::sync::canonical_projection_is_current(&state.crdt_dir, doc_id) {
+        Ok(Some(false)) => return false,
+        Err(e) => {
+            eprintln!("[cutover] {doc_id}: could not read the manifest: {e}");
+            return false;
+        }
+        // `None` is a manifest-less blob from an early backfill: no claim to check, so
+        // fall through and let the load decide.
+        Ok(_) => {}
+    }
     match crate::sync::canonical_snapshot(&state.crdt_dir, doc_id) {
         Ok(Some(bytes)) => plotweb_crdt::materialize_body(&bytes).is_ok(),
         _ => false,

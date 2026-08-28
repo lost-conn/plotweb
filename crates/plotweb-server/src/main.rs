@@ -149,6 +149,9 @@ async fn main() {
     if want_backfill || want_shadow || reconcile_setting.is_some() {
         let dd = data_dir.clone();
         let cd = crdt_dir.clone();
+        // What the shadow verdict means depends on whether the flag it talks about is
+        // already on.
+        let boot_cutover = plotweb_server::cutover::Cutover::from_env();
         tokio::spawn(async move {
             if want_backfill {
                 plotweb_server::backfill::run_boot_backfill(
@@ -166,7 +169,7 @@ async fn main() {
                 plotweb_server::reconcile::run_on_boot(setting, dd.clone(), cd.clone()).await;
             }
             if want_shadow {
-                plotweb_server::shadow::run_on_boot(dd, cd).await;
+                plotweb_server::shadow::run_on_boot(dd, cd, &boot_cutover).await;
             }
         });
     }

@@ -60,8 +60,52 @@ use tokio::sync::Mutex;
 /// `PLOTWEB_CRDT_DIR` default).
 pub const DEFAULT_CRDT_DIR: &str = "data/crdt";
 
-/// The `projection` marker the backfill stamps into a manifest.
+/// The `projection` marker stamped into the manifest of a `book:` / `user:` document,
+/// which really is an Automerge snapshot.
 const PROJECTION_V1: &str = "automerge-snapshot-v1";
+
+/// The marker for a `chapter:` / `note:` body.
+///
+/// Bodies stopped being Automerge documents when the editor's collab seam moved to
+/// yrs, but every manifest went on claiming `automerge-snapshot-v1`. Nothing could
+/// then tell a body this build can open from one it cannot without trying the open —
+/// so a projection change looked exactly like a healthy store until authors' writing
+/// quietly stopped being saved. The tag names the format the bytes are actually in,
+/// and it must change whenever that format does.
+const BODY_PROJECTION_V1: &str = "rinch-editor-collab/yrs-1";
+
+/// The projection this build writes for `doc_id`.
+pub fn projection_for(doc_id: &str) -> &'static str {
+    if is_body_doc(doc_id) {
+        BODY_PROJECTION_V1
+    } else {
+        PROJECTION_V1
+    }
+}
+
+/// Whether a stored document was written in the projection this build speaks.
+///
+/// `false` for every body written before the yrs move — which is the point: it is the
+/// cheap, no-load way to find documents that need rebuilding, and the check a write
+/// path can afford on every save.
+pub fn projection_is_current(doc_id: &str, manifest: &DocManifest) -> bool {
+    // An empty tag is a manifest from before the field existed; treat it as foreign
+    // rather than assume it matches.
+    manifest.projection == projection_for(doc_id)
+}
+
+/// Whether the canonical copy of `doc_id` claims the projection this build writes.
+///
+/// `None` when there is no manifest to ask — no canonical copy, or one a backfill
+/// wrote without one.
+pub fn canonical_projection_is_current(
+    crdt_dir: &Path,
+    doc_id: &str,
+) -> Result<Option<bool>, SyncError> {
+    let store = FsStore::open(PathBuf::from(crdt_dir))
+        .map_err(|e| SyncError::Store(format!("open {}: {e}", crdt_dir.display())))?;
+    Ok(read_manifest(&store, doc_id)?.map(|m| projection_is_current(doc_id, &m)))
+}
 
 /// Per-document serialization for the canonical store.
 ///
@@ -196,7 +240,7 @@ fn save_snapshot(
             .filter(|t| !t.is_empty())
             .unwrap_or_else(|| doc_type.to_string()),
         src_sha: prev.and_then(|m| m.src_sha.clone()),
-        projection: PROJECTION_V1.to_string(),
+        projection: projection_for(doc_id).to_string(),
         generation: Some(generation.clone()),
         heads,
         synced_at,
@@ -356,7 +400,7 @@ pub fn replace_canonical_from_git(
         doc_id: doc_id.to_string(),
         doc_type: doc_type.to_string(),
         src_sha: prev.as_ref().and_then(|m| m.src_sha.clone()),
-        projection: PROJECTION_V1.to_string(),
+        projection: projection_for(doc_id).to_string(),
         generation: Some(generation.clone()),
         heads,
         // Deliberately None: the document is provisional again.

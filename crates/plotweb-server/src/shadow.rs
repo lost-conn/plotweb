@@ -242,11 +242,40 @@ pub async fn run() {
 
 /// Boot-time hook (env `PLOTWEB_SHADOW_ON_BOOT`): run the comparison beside the live
 /// server and log the report, so a soak needs no downtime and no volume copy.
-pub async fn run_on_boot(data_dir: String, crdt_dir: String) {
+pub async fn run_on_boot(data_dir: String, crdt_dir: String, cutover: &crate::cutover::Cutover) {
     println!("[boot-shadow] comparing the canonical store against git");
     match run_shadow_pass(&data_dir, &crdt_dir).await {
-        Ok(summary) => print_summary(&data_dir, &crdt_dir, &summary),
+        Ok(summary) => {
+            print_summary(&data_dir, &crdt_dir, &summary);
+            report_against_cutover(&summary, cutover);
+        }
         Err(e) => eprintln!("[boot-shadow] {e}"),
     }
     println!("[boot-shadow] shadow pass complete");
+}
+
+/// Say what an unclean store means for the books that are *already* cut over.
+///
+/// The verdict on its own reads as advice about a future decision — "resolve the above
+/// before considering phase E" — and stays exactly as calm when the flag has been on
+/// for days and the documents it is talking about are the ones authors are writing
+/// into. This says which state the running server is actually in, and names the remedy.
+fn report_against_cutover(summary: &ShadowSummary, cutover: &crate::cutover::Cutover) {
+    if cutover.is_empty() || summary.is_clean() {
+        return;
+    }
+    println!();
+    println!(
+        "[boot-shadow] CUTOVER IS ON while {} document(s) are unreadable and {} diverge.",
+        summary.unreadable.len(),
+        summary.diverged.len()
+    );
+    println!(
+        "[boot-shadow] Those documents are being read from git, and writes to them are \
+         redirected there rather than being dropped — degraded, not lost."
+    );
+    println!(
+        "[boot-shadow] Rebuild them with `plotweb-server reconcile --prefer git` (or set \
+         PLOTWEB_RECONCILE_ON_BOOT=git and restart)."
+    );
 }

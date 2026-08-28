@@ -476,3 +476,124 @@ async fn preferring_the_crdt_can_empty_a_book_the_mirror_alone_refuses_to() {
         r.json
     );
 }
+
+// ── Documents that cannot be read at all ────────────────────────────────────
+//
+// The shadow pass has always had a bucket for these ("a blob from before a CRDT
+// change") and nothing ever fixed them. When the editor's collab seam moved from
+// Automerge to yrs, that turned every stored body into one the server could not open —
+// reads silently fell back to git, writes were dropped in favour of a sync engine that
+// could not deliver, and no command in the tree would rebuild them.
+
+/// `FsStore` percent-encodes `:` and `/` in a key to get a flat filename.
+fn blob_path(app: &TestApp, key: &str) -> std::path::PathBuf {
+    app.crdt_dir()
+        .join(key.replace(':', "%3A").replace('/', "%2F"))
+}
+
+/// A claimed chapter whose canonical bytes this build cannot read.
+async fn unreadable_chapter(app: &mut TestApp) -> (String, String) {
+    let (book_id, chapter_id) = diverged_chapter(app).await;
+    let doc_id = format!("chapter:{chapter_id}");
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(blob_path(app, &format!("{doc_id}/manifest"))).expect("manifest"),
+    )
+    .expect("manifest json");
+    let generation = manifest["generation"].as_str().unwrap_or_default().to_string();
+    let key = if generation.is_empty() {
+        format!("{doc_id}/snapshot")
+    } else {
+        format!("{doc_id}/{generation}/snapshot")
+    };
+    std::fs::write(blob_path(app, &key), b"a blob from before a CRDT change")
+        .expect("overwrite snapshot");
+    (book_id, chapter_id)
+}
+
+#[tokio::test]
+async fn an_unreadable_document_is_rebuilt_from_git() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (_book_id, chapter_id) = unreadable_chapter(&mut app).await;
+    let doc_id = format!("chapter:{chapter_id}");
+
+    let summary = run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        // Deliberately the direction that cannot apply: there is no readable stored
+        // copy to prefer, so the rebuild has to happen anyway.
+        Prefer::Crdt,
+        false,
+    )
+    .await
+    .expect("reconcile");
+
+    assert!(
+        summary.rebuilt.iter().any(|(d, _)| d == &doc_id),
+        "an unreadable document must be rebuilt, not reported and left: {summary:?}"
+    );
+
+    let bytes = plotweb_server::sync::canonical_snapshot(app.crdt_dir(), &doc_id)
+        .expect("store read")
+        .expect("a canonical copy after the rebuild");
+    let content = plotweb_crdt::materialize_body(&bytes).expect("the rebuild must be readable");
+    assert!(
+        content.contains("What git believes."),
+        "the rebuilt document carries git's content: {content}"
+    );
+}
+
+#[tokio::test]
+async fn a_rebuilt_document_is_provisional_again() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = unreadable_chapter(&mut app).await;
+    let doc_id = format!("chapter:{chapter_id}");
+
+    run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        Prefer::Git,
+        false,
+    )
+    .await
+    .expect("reconcile");
+
+    // Ownership cleared: the next client claims the document afresh rather than
+    // merging its own history into a copy that shares none.
+    let heads = app.get(&format!("/api/books/{book_id}/sync/heads")).await;
+    assert!(
+        heads.json.get(&doc_id).is_none(),
+        "a rebuilt document must be provisional again: {}",
+        heads.json
+    );
+}
+
+#[tokio::test]
+async fn a_dry_run_leaves_an_unreadable_document_alone() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (_book_id, chapter_id) = unreadable_chapter(&mut app).await;
+    let doc_id = format!("chapter:{chapter_id}");
+
+    let summary = run_all(
+        app.book_dir().to_str().unwrap(),
+        app.crdt_dir().to_str().unwrap(),
+        Prefer::Git,
+        true,
+    )
+    .await
+    .expect("reconcile");
+
+    assert!(
+        summary.rebuilt.iter().any(|(d, a)| d == &doc_id && a.starts_with("would")),
+        "a dry run reports the rebuild without doing it: {summary:?}"
+    );
+    let bytes = plotweb_server::sync::canonical_snapshot(app.crdt_dir(), &doc_id)
+        .expect("store read")
+        .expect("snapshot");
+    assert!(
+        plotweb_crdt::materialize_body(&bytes).is_err(),
+        "the unreadable copy is still there after a dry run"
+    );
+}

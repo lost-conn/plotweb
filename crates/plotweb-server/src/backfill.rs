@@ -183,7 +183,7 @@ fn backfill_doc(
         "doc_id": doc_id,
         "type": doc_type,
         "src_sha": src_sha,
-        "projection": "automerge-snapshot-v1",
+        "projection": crate::sync::projection_for(doc_id),
     })
     .to_string();
 
