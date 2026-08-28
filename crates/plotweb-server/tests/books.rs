@@ -91,3 +91,30 @@ async fn cannot_access_another_users_book() {
     let got = app.get(&format!("/api/books/{book}")).await;
     assert_eq!(got.json["title"], "Private");
 }
+
+/// The legacy SQLite→git pass must not run against a post-003 database.
+///
+/// It reads the pre-003 `books` schema, so on a migrated database its query cannot
+/// parse and it reported `data migration failed: no such column: description` on every
+/// boot — a warning with nothing behind it, on the exact line a genuine migration
+/// failure would use.
+#[tokio::test]
+async fn the_legacy_schema_check_tracks_migration_003() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_url = format!("sqlite:{}/legacy.db", dir.path().display());
+    let pool = plotweb_server::db::init_db_with(&db_url).await;
+
+    // 001 creates `books` with `description`, so a fresh database looks legacy until
+    // 003 has run — which is what makes the one-time pass worth attempting exactly once.
+    assert!(
+        plotweb_server::db::has_legacy_books_schema(&pool).await,
+        "a database that has not been through 003 still carries the legacy schema"
+    );
+
+    plotweb_server::db::run_migration_003(&pool).await;
+
+    assert!(
+        !plotweb_server::db::has_legacy_books_schema(&pool).await,
+        "after 003 the legacy pass must be skipped, not attempted and reported as failed"
+    );
+}
