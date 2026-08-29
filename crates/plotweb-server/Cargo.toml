@@ -32,7 +32,7 @@ automerge = "0.5"
 yrs = "0.27"
 # Cross-platform durable blob store — the CRDT backfill's write target (FsStore).
 # Pinned to the SAME rinch rev as rinch-editor-collab (via plotweb-crdt).
-rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "8c64f84", default-features = false }
+rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "b95100d", default-features = false }
 rhypedb-engine.workspace = true
 rhypedb-query.workspace = true
 rhypedb-schema.workspace = true
