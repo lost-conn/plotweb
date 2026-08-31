@@ -15,6 +15,16 @@ pub struct AppStore {
     pub error: Signal<Option<String>>,
     pub dark_mode: Signal<bool>,
     pub sidebar_open: Signal<bool>,
+    /// Copies of documents this device kept when the server replaced them
+    /// (`local_store::rescued_copies`), as `(doc_id, slot)`.
+    ///
+    /// Non-empty means this browser was holding writing the server had never seen.
+    /// Nothing in the UI used to say so, which is how a lost session looked identical
+    /// to a session that simply ended.
+    pub rescued: Signal<Vec<(String, String)>>,
+    /// The rescue currently open in the viewer, with its projected text.
+    pub rescue_open: Signal<Option<(String, String)>>,
+    pub rescue_text: Signal<Option<String>>,
 }
 
 impl AppStore {
@@ -32,6 +42,9 @@ impl AppStore {
             error: Signal::new(None),
             dark_mode: Signal::new(true),
             sidebar_open: Signal::new(true),
+            rescued: Signal::new(Vec::new()),
+            rescue_open: Signal::new(None),
+            rescue_text: Signal::new(None),
         }
     }
 }

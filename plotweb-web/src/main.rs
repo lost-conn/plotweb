@@ -31,6 +31,20 @@ fn app() -> NodeHandle {
     let store = AppStore::new();
     rinch_core::create_store(store);
 
+    // Did this device keep work the server replaced? Asked once at startup, before
+    // anything else: a rescue is only useful if the author is told it exists, and until
+    // now nothing in the UI ever was.
+    local_store::spawn(async move {
+        match local_store::rescued_copies().await {
+            Ok(found) if !found.is_empty() => {
+                log::warn!("local-first: {} rescued copy/copies on this device", found.len());
+                store.rescued.set(found);
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("local-first: could not list rescued copies: {e}"),
+        }
+    });
+
     // Parse the current URL to determine the initial route. On native there is no
     // browser location (and `web_sys::window()` panics off-wasm), so start at the
     // session check with a neutral route.
