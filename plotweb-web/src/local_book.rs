@@ -199,9 +199,12 @@ pub(crate) fn persist_book(book_id: &str) {
 /// The way out of §D8 for a structure document: ours was seeded independently (built
 /// from REST data rather than pulled), so it descends from nothing the server holds and
 /// the two would merge by concatenation. The server sees that from the documents
-/// themselves and refuses; this is what we do about it. Replacing rather than merging
-/// is the whole point — anything we hold that the canonical copy does not is lost, but
-/// what we hold is a second copy of the same book, not unsynced work.
+/// themselves and refuses; this is what we do about it.
+///
+/// "What we hold is a second copy of the same book, not unsynced work" was true while
+/// every structural change also dual-wrote to git. Under cutover it is not: a chapter
+/// created or reordered on this device may exist nowhere else. So this device's copy
+/// is kept before the replacement ([`crate::local_store::preserve_local_bytes`]).
 ///
 /// `false` if a different book (or none) is open, in which case the caller's cycle is
 /// moot rather than failed.
@@ -218,6 +221,14 @@ pub(crate) fn install_server_book(book_id: &str, bytes: &[u8]) -> bool {
         if state.book_id != book_id {
             return false;
         }
+        // Captured before the replacement, so the write that follows cannot race it.
+        let ours = state.doc.save();
+        let doc_id = format!("book:{book_id}");
+        crate::local_store::spawn(async move {
+            if let Err(e) = crate::local_store::preserve_local_bytes(&doc_id, &ours).await {
+                log::warn!("local-first: {doc_id}: could not keep this device's copy: {e}");
+            }
+        });
         state.doc = doc;
         state.persister.persist(state.doc.save());
         true

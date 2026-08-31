@@ -576,16 +576,179 @@ pub(crate) async fn mark_body_shares_server_history(doc_id: &str) -> StorageResu
     backend.put(&origin_key(doc_id), b"synced").await
 }
 
+// ── Rescue copies ────────────────────────────────────────────────────────────
+//
+// Installing the server's document over ours is the §D8 resolution, and it was
+// justified by an assumption that stopped holding at cutover: that everything we
+// hold also reached git, so replacing our copy costs history and not content. Under
+// cutover, sync is the *only* path an edit takes to the server, so a device that has
+// been writing holds text no other copy has — and on 2026-08-29 that text was
+// discarded to resolve a lineage conflict, silently.
+//
+// Until lineage reconciliation lands (`docs/one-writer-and-lineage.md` §4), the rule
+// here is simply: never overwrite a local document without keeping what it held.
+// Rescue keys live *outside* the doc prefix, so `DocStore::sweep_except` cannot
+// collect them, and they are numbered rather than timestamped because there is no
+// cross-platform clock on this side (`Date::now()` panics off-wasm).
+
+const RESCUE_PREFIX: &str = "_rescue/";
+
+fn rescue_prefix(doc_id: &str) -> String {
+    format!("{RESCUE_PREFIX}{doc_id}/")
+}
+
+/// The next unused `rNNNN` slot for this doc, so repeated rescues accumulate rather
+/// than overwrite each other.
+async fn next_rescue_slot(backend: &Rc<dyn Store>, doc_id: &str) -> StorageResult<String> {
+    let prefix = rescue_prefix(doc_id);
+    let mut highest = 0u32;
+    for key in backend.list(&prefix).await? {
+        let Some(rest) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        let slot = rest.split('/').next().unwrap_or_default();
+        if let Some(n) = slot.strip_prefix('r').and_then(|n| n.parse::<u32>().ok()) {
+            highest = highest.max(n);
+        }
+    }
+    Ok(format!("r{:04}", highest + 1))
+}
+
+/// Copy the stored document aside before something replaces it.
+///
+/// Preserves the live generation exactly as persisted — base snapshot plus every
+/// delta in order — rather than a materialization, so nothing depends on the text
+/// projection being correct at rescue time. `Ok(false)` means there was nothing
+/// durable to keep.
+pub(crate) async fn preserve_local_copy(doc_id: &str) -> StorageResult<bool> {
+    let backend = backend().await?;
+    preserve_local_copy_in(&backend, doc_id).await
+}
+
+/// [`preserve_local_copy`] against an explicit backend.
+pub(crate) async fn preserve_local_copy_in(
+    backend: &Rc<dyn Store>,
+    doc_id: &str,
+) -> StorageResult<bool> {
+    let store = DocStore::with_backend(backend.clone(), doc_id);
+    let Some(doc) = store.load().await? else {
+        return Ok(false);
+    };
+    let slot = next_rescue_slot(backend, doc_id).await?;
+    let base = format!("{}{slot}", rescue_prefix(doc_id));
+    for (seq, delta) in doc.deltas.iter().enumerate() {
+        backend
+            .put(&format!("{base}/delta/{seq:010}"), delta)
+            .await?;
+    }
+    // Written last: the snapshot's presence is what marks the rescue complete.
+    backend.put(&format!("{base}/snapshot"), &doc.snapshot).await?;
+    log::warn!(
+        "local-first: {doc_id}: kept a copy of this device's document as {slot} \
+         ({} delta(s)) before replacing it with the server's",
+        doc.deltas.len()
+    );
+    Ok(true)
+}
+
+/// Keep `bytes` — an already-materialized document a caller holds in memory — aside
+/// under the same scheme. Used by the structure documents, which replace an in-memory
+/// `AutoCommit` rather than a stored generation.
+pub(crate) async fn preserve_local_bytes(doc_id: &str, bytes: &[u8]) -> StorageResult<bool> {
+    let backend = backend().await?;
+    preserve_local_bytes_in(&backend, doc_id, bytes).await
+}
+
+/// [`preserve_local_bytes`] against an explicit backend.
+pub(crate) async fn preserve_local_bytes_in(
+    backend: &Rc<dyn Store>,
+    doc_id: &str,
+    bytes: &[u8],
+) -> StorageResult<bool> {
+    if bytes.is_empty() {
+        return Ok(false);
+    }
+    let slot = next_rescue_slot(backend, doc_id).await?;
+    backend
+        .put(&format!("{}{slot}/snapshot", rescue_prefix(doc_id)), bytes)
+        .await?;
+    log::warn!("local-first: {doc_id}: kept a copy of this device's document as {slot}");
+    Ok(true)
+}
+
+/// Every rescued copy on this device, as `(doc_id, slot)` pairs.
+///
+/// The surface a "this device held work the server never saw" indicator reads; also
+/// the thing that makes a rescue recoverable rather than merely stored.
+pub async fn rescued_copies() -> StorageResult<Vec<(String, String)>> {
+    let backend = backend().await?;
+    rescued_copies_in(&backend).await
+}
+
+/// [`rescued_copies`] against an explicit backend.
+pub(crate) async fn rescued_copies_in(
+    backend: &Rc<dyn Store>,
+) -> StorageResult<Vec<(String, String)>> {
+    let mut found = Vec::new();
+    for key in backend.list(RESCUE_PREFIX).await? {
+        let Some(rest) = key.strip_prefix(RESCUE_PREFIX) else {
+            continue;
+        };
+        // `{doc_id}/{slot}/snapshot` — only a complete rescue carries a snapshot.
+        let Some(base) = rest.strip_suffix("/snapshot") else {
+            continue;
+        };
+        if let Some((doc_id, slot)) = base.rsplit_once('/') {
+            found.push((doc_id.to_string(), slot.to_string()));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Read one rescued copy back: its base snapshot and the deltas that followed.
+pub async fn read_rescued_copy(doc_id: &str, slot: &str) -> StorageResult<Option<PersistedDoc>> {
+    let backend = backend().await?;
+    read_rescued_copy_in(&backend, doc_id, slot).await
+}
+
+/// [`read_rescued_copy`] against an explicit backend.
+pub(crate) async fn read_rescued_copy_in(
+    backend: &Rc<dyn Store>,
+    doc_id: &str,
+    slot: &str,
+) -> StorageResult<Option<PersistedDoc>> {
+    let base = format!("{}{slot}", rescue_prefix(doc_id));
+    let Some(snapshot) = backend.get(&format!("{base}/snapshot")).await? else {
+        return Ok(None);
+    };
+    let mut keys = backend.list(&format!("{base}/delta/")).await?;
+    keys.sort();
+    let mut deltas = Vec::with_capacity(keys.len());
+    for key in keys {
+        if let Some(bytes) = backend.get(&key).await? {
+            deltas.push(bytes);
+        }
+    }
+    Ok(Some(PersistedDoc { snapshot, deltas }))
+}
+
 /// Replace the open body document with the server's canonical one.
 ///
 /// The §D8 resolution when the server's copy is owned by another device: our
 /// independently-seeded doc can never be merged into it, so we take theirs wholesale.
-/// Safe pre-cutover — the peer's doc is git-current (it dual-writes like we do), and
-/// our own content reached git the same way.
+///
+/// **This device's copy is kept first** ([`preserve_local_copy`]). The original
+/// justification — the peer's doc is git-current and our content reached git the same
+/// way — was true only while every edit dual-wrote to git, which cutover ended. A
+/// failure to preserve aborts the install: losing the ability to sync is recoverable,
+/// losing the author's text is not.
 ///
 /// Installing goes through `start_collaboration_guest`, which loads the document and
 /// *then* attaches, so the load is never recorded into the session we are replacing.
 pub(crate) async fn install_server_body(doc_id: &str, bytes: &[u8]) -> StorageResult<bool> {
+    preserve_local_copy(doc_id).await?;
+
     let Some((handle, book_id, kind, store)) = with_body_session(doc_id, |s| {
         (
             s.handle.clone(),
@@ -915,6 +1078,100 @@ mod tests {
     fn node_from_json(schema: &Schema, json: &str) -> rinch_editor_core::Node {
         let doc: DocNode = serde_json::from_str(json).expect("valid DocNode json");
         schema.node_from_doc(&doc).expect("node from doc")
+    }
+
+    /// The gate the 2026-08-29 loss earned: a device holding work the server has never
+    /// seen still has it after the §D8 resolution replaces its document.
+    ///
+    /// The rescue keeps the live generation as persisted — base snapshot plus every
+    /// delta — because the deltas are where unsent keystrokes live; a snapshot-only
+    /// rescue would have preserved a document that stops exactly where the lost
+    /// chapter did.
+    #[test]
+    fn a_replaced_document_leaves_this_devices_copy_behind() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+
+        let store = DocStore::with_backend(backend.clone(), "chapter:lost");
+        let generation = block_on(store.publish_snapshot(b"base snapshot")).unwrap();
+        block_on(store.append_delta(&generation, 1, b"unsent keystrokes")).unwrap();
+        block_on(store.append_delta(&generation, 2, b"more unsent text")).unwrap();
+
+        assert!(block_on(preserve_local_copy_in(&backend, "chapter:lost")).unwrap());
+
+        let kept = block_on(read_rescued_copy_in(&backend, "chapter:lost", "r0001"))
+            .unwrap()
+            .expect("the rescue is readable");
+        assert_eq!(kept.snapshot, b"base snapshot");
+        assert_eq!(
+            kept.deltas,
+            vec![b"unsent keystrokes".to_vec(), b"more unsent text".to_vec()],
+            "the deltas are the unsent work; a snapshot alone is not a rescue"
+        );
+
+        assert_eq!(
+            block_on(rescued_copies_in(&backend)).unwrap(),
+            vec![("chapter:lost".to_string(), "r0001".to_string())]
+        );
+    }
+
+    /// Publishing a new generation sweeps the old one — the rescue must live outside
+    /// the doc prefix or the replacement it exists to survive would collect it.
+    #[test]
+    fn a_rescue_survives_the_replacement_that_follows_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+
+        let store = DocStore::with_backend(backend.clone(), "chapter:lost");
+        let generation = block_on(store.publish_snapshot(b"ours")).unwrap();
+        block_on(store.append_delta(&generation, 1, b"unsent")).unwrap();
+        block_on(preserve_local_copy_in(&backend, "chapter:lost")).unwrap();
+
+        // What `install_server_body` does next.
+        block_on(store.publish_snapshot(b"the server's copy")).unwrap();
+
+        let kept = block_on(read_rescued_copy_in(&backend, "chapter:lost", "r0001"))
+            .unwrap()
+            .expect("the rescue outlives the sweep");
+        assert_eq!(kept.snapshot, b"ours");
+        assert_eq!(kept.deltas, vec![b"unsent".to_vec()]);
+    }
+
+    /// Two conflicts in a row keep two copies; the second must not overwrite the first.
+    #[test]
+    fn repeated_rescues_accumulate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+
+        block_on(preserve_local_bytes_in(&backend, "book:b", b"first")).unwrap();
+        block_on(preserve_local_bytes_in(&backend, "book:b", b"second")).unwrap();
+
+        let copies = block_on(rescued_copies_in(&backend)).unwrap();
+        assert_eq!(copies.len(), 2, "each conflict keeps its own copy");
+        assert_eq!(
+            block_on(read_rescued_copy_in(&backend, "book:b", "r0001"))
+                .unwrap()
+                .unwrap()
+                .snapshot,
+            b"first"
+        );
+        assert_eq!(
+            block_on(read_rescued_copy_in(&backend, "book:b", "r0002"))
+                .unwrap()
+                .unwrap()
+                .snapshot,
+            b"second"
+        );
+    }
+
+    /// Nothing stored yet is not a rescue — a fresh document has nothing to keep.
+    #[test]
+    fn nothing_durable_means_nothing_to_preserve() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+
+        assert!(!block_on(preserve_local_copy_in(&backend, "chapter:fresh")).unwrap());
+        assert!(block_on(rescued_copies_in(&backend)).unwrap().is_empty());
     }
 
     /// The one-time recovery sweep: body docs written before the surface-binding fix
