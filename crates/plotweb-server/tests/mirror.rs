@@ -534,3 +534,79 @@ fn removed_by(
     let after = ids(input);
     before.into_iter().filter(|id| !after.contains(id)).collect()
 }
+
+/// History under cutover — the safety net an author reaches for after a bad sync.
+///
+/// A card written after the 2026-08-29 loss claimed History goes blank for a cut-over
+/// book, on the reasoning that reads come from the canonical document, which has no git
+/// history behind it. That reasoning is wrong, and this pins why: the history routes
+/// read git directly, and the mirror keeps git current, so a syncing device's work is
+/// recoverable like any other version. What the author actually saw was a *gap* — the
+/// client kept resetting instead of pushing, so nothing changed, and a pass with
+/// nothing to write correctly leaves no commit (`a_sync_round_that_changes_nothing_
+/// leaves_no_commit`).
+///
+/// How *often* a version is kept is the separate question, answered in plotweb-git by
+/// `amending_is_bounded_so_a_session_leaves_recoverable_versions`: saves seconds apart
+/// coalesce, saves past the amend window do not.
+#[tokio::test]
+async fn history_stays_readable_for_a_cut_over_book() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id, held) = synced_chapter(&mut app, "the version to recover").await;
+    app.cut_over(&book_id).await;
+
+    let before = app.get(&format!("/api/books/{book_id}/history")).await;
+    assert_eq!(before.status, StatusCode::OK);
+    let commits = before.json.as_array().expect("a commit list").clone();
+    assert!(
+        !commits.is_empty(),
+        "cutover must not hide the commits already there"
+    );
+
+    // The text at a commit is readable — this is exactly the route the 5507-character
+    // version was recovered through by hand on 2026-08-30.
+    let oid = commits[0]["oid"].as_str().expect("a commit id");
+    let at_commit = app
+        .get(&format!(
+            "/api/books/{book_id}/history/{oid}/chapters/{chapter_id}"
+        ))
+        .await;
+    assert_eq!(at_commit.status, StatusCode::OK);
+    assert!(
+        at_commit.json["content"]
+            .as_str()
+            .unwrap()
+            .contains("the version to recover"),
+        "a cut-over book's text must stay readable at its commit"
+    );
+
+    // A device's edit reaches git through the mirror, so history keeps describing the
+    // book as it actually is rather than freezing at the moment of cutover.
+    let (status, _) = app
+        .post_bytes(
+            &format!("/api/books/{book_id}/sync/chapter:{chapter_id}/update"),
+            &edit_as_update(&held, &doc_json("the version that replaced it")),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
+
+    let after = app.get(&format!("/api/books/{book_id}/history")).await;
+    let newest = after.json.as_array().expect("a commit list")[0]["oid"]
+        .as_str()
+        .expect("a commit id")
+        .to_string();
+    let latest = app
+        .get(&format!(
+            "/api/books/{book_id}/history/{newest}/chapters/{chapter_id}"
+        ))
+        .await;
+    assert!(
+        latest.json["content"]
+            .as_str()
+            .unwrap()
+            .contains("the version that replaced it"),
+        "the synced edit must be recoverable from history, not only from the canonical copy"
+    );
+}

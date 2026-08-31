@@ -104,12 +104,37 @@ pub fn commit_paths(repo: &Repository, rel_paths: &[String], message: &str) -> R
     Ok(())
 }
 
+/// How long a commit stays open to amendment. Consecutive autosaves of one chapter
+/// inside this window coalesce; past it, the next save starts a new commit.
+///
+/// Amending was introduced to stop an autosave-per-keystroke history, and it does —
+/// but with no bound it also means a long session on one chapter leaves exactly **one**
+/// commit, whose content keeps being overwritten. Every intermediate version is
+/// destroyed, and if the last write of the chain is a bad one (a stale device
+/// replacing newer text), the good text it replaced is gone from git as well as from
+/// the canonical document. History is the safety net that makes cutover survivable;
+/// an unbounded amend quietly removes it.
+///
+/// Five minutes is chosen to match [`crate::mirror`]'s `MAX_WAIT` checkpoint on the
+/// server side: an active session then leaves a recoverable version at roughly that
+/// cadence, while the noise this was built to suppress — a burst of saves seconds
+/// apart — still collapses into one commit.
+pub(crate) const AMEND_WINDOW_SECS: i64 = 300;
+
 /// True when `head` is a normal (single-parent) commit whose change set is
-/// exactly `rel_paths` — meaning the previous save touched the same file(s), so
-/// the upcoming save is a continuation and should amend rather than append.
+/// exactly `rel_paths` **and** which is recent enough to still be open — meaning the
+/// previous save touched the same file(s) moments ago, so the upcoming save is a
+/// continuation and should amend rather than append.
 fn can_amend(repo: &Repository, head: &git2::Commit, rel_paths: &[String]) -> bool {
     // Never amend the root/initial commit or a merge.
     if head.parent_count() != 1 {
+        return false;
+    }
+    // Past the window, the previous save is a version worth keeping.
+    let age = default_signature()
+        .map(|sig| sig.when().seconds() - head.time().seconds())
+        .unwrap_or(i64::MAX);
+    if age > AMEND_WINDOW_SECS {
         return false;
     }
     let Ok(parent) = head.parent(0) else { return false };
