@@ -170,7 +170,10 @@ pub fn api_router(state: AppState) -> Router {
         .route(
             "/api/sync/user",
             post(routes::sync::sync_user_doc)
-                .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY)),
+                .layer(DefaultBodyLimit::max(routes::sync::MAX_SYNC_BODY))
+                // A client resolves a §D8 conflict by GETting the document's own url,
+                // so every doc url must answer GET — see `get_canonical_user_doc`.
+                .get(routes::sync::get_canonical_user_doc),
         )
         .route("/api/fonts", get(routes::fonts::list))
         .route("/api/books", get(routes::books::list))

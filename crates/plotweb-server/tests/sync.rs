@@ -645,3 +645,63 @@ async fn a_malformed_sync_message_is_a_400_and_creates_nothing() {
         "a rejected message must not have created a canonical document"
     );
 }
+
+/// The §D8 resolution fetches the canonical copy with a **GET** against the document's
+/// own url, whatever kind of document it is. `/api/sync/user` was POST-only, so that
+/// GET answered `405`, the reset could never complete, and the client retried forever —
+/// a 409/405 cycle that ran in production until 2026-08-31.
+#[tokio::test]
+async fn the_user_index_answers_a_canonical_get() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+
+    // Nothing synced yet: no canonical copy, which is not an error — the client's own
+    // document stands and its first exchange establishes it.
+    let (status, body) = app.get_bytes("/api/sync/user").await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "not 405, and not an error");
+    assert!(body.is_empty());
+
+    let mut device = Device::new();
+    device.doc.put(ROOT, "dashboard", "established").unwrap();
+    device.sync(&mut app, "/api/sync/user").await;
+
+    let (status, bytes) = app.get_bytes("/api/sync/user").await;
+    assert_eq!(status, StatusCode::OK);
+    let canonical = automerge::AutoCommit::load(&bytes).expect("the reply is a document");
+    assert_eq!(
+        canonical
+            .get(ROOT, "dashboard")
+            .unwrap()
+            .and_then(|(v, _)| v.into_string().ok())
+            .as_deref(),
+        Some("established"),
+        "the GET returns the canonical user document, so a forked client can adopt it"
+    );
+}
+
+/// Every document url a client can hold must answer GET, because that is how a client
+/// resolves a lineage conflict. A new doc kind that forgets the GET route reintroduces
+/// the infinite reset loop, so this asserts the property rather than the one route.
+#[tokio::test]
+async fn every_doc_url_answers_a_canonical_get() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = book_with_chapter(&mut app).await;
+
+    for uri in [
+        "/api/sync/user".to_string(),
+        format!("/api/books/{book_id}/sync/book:{book_id}"),
+        chapter_uri(&book_id, &chapter_id),
+    ] {
+        let (status, _) = app.get_bytes(&uri).await;
+        assert_ne!(
+            status,
+            StatusCode::METHOD_NOT_ALLOWED,
+            "{uri} must answer GET — a client resolves §D8 by fetching this url"
+        );
+        assert!(
+            status == StatusCode::OK || status == StatusCode::NO_CONTENT,
+            "{uri} answered {status}"
+        );
+    }
+}
