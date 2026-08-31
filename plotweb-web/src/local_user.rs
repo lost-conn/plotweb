@@ -154,6 +154,9 @@ pub(crate) fn persist_user(user_id: &str) {
 
 /// Replace the open account's document with the server's canonical copy — the `user:`
 /// counterpart of [`crate::local_book::install_server_book`], for the same §D8 reason.
+///
+/// Keeps this device's copy first, like the body path does; see
+/// [`crate::local_store::preserve_local_bytes`].
 pub(crate) fn install_server_user(user_id: &str, bytes: &[u8]) -> bool {
     let Ok(doc) = AutoCommit::load(bytes) else {
         log::warn!("sync user:{user_id}: canonical copy did not load");
@@ -167,6 +170,14 @@ pub(crate) fn install_server_user(user_id: &str, bytes: &[u8]) -> bool {
         if state.user_id != user_id {
             return false;
         }
+        // Captured before the replacement, so the write that follows cannot race it.
+        let ours = state.doc.save();
+        let doc_id = format!("user:{user_id}");
+        crate::local_store::spawn(async move {
+            if let Err(e) = crate::local_store::preserve_local_bytes(&doc_id, &ours).await {
+                log::warn!("local-first: {doc_id}: could not keep this device's copy: {e}");
+            }
+        });
         state.doc = doc;
         state.persister.persist(state.doc.save());
         true
