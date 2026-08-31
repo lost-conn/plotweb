@@ -212,6 +212,45 @@ pub async fn sync_user_doc(
     run_round(&state, None, &doc_id, "user", body).await
 }
 
+/// `GET /api/sync/user` — the canonical `user:` index document, as raw bytes.
+///
+/// The `user:` counterpart of [`get_canonical_doc`], and it must exist for the same
+/// reason: a client resolving a §D8 conflict fetches the canonical copy with a **GET**
+/// against the document's own url (`Doc::url()`), whatever kind of document it is.
+/// Without this route that GET answered `405`, the resolution could never complete, and
+/// the client retried forever — an infinite 409/405 cycle that ran in production until
+/// 2026-08-31. `tests::every_doc_url_answers_get` is what stops a future doc type
+/// reintroducing it.
+pub async fn get_canonical_user_doc(
+    State(state): State<AppState>,
+    AuthSession(user_id): AuthSession,
+) -> Response {
+    let doc_id = format!("user:{user_id}");
+    let crdt_dir = state.crdt_dir.clone();
+    let result =
+        tokio::task::spawn_blocking(move || sync::canonical_snapshot(&crdt_dir, &doc_id)).await;
+
+    match result {
+        Ok(Ok(Some(bytes))) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        // No canonical copy yet: the client's own document stands, and its first
+        // exchange establishes it server-side. Not an error.
+        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => {
+            eprintln!("[sync] read user:{user_id}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            eprintln!("[sync] read worker panicked: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 /// Serialize on the doc, hand the protocol round to a blocking thread, and map the
 /// result onto a binary response.
 /// One yrs exchange for a body document: the client sends its state vector, and gets
