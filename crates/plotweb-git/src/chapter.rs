@@ -477,6 +477,7 @@ mod tests {
     use super::*;
     use crate::book;
     use crate::repo;
+    use crate::repo::AMEND_WINDOW_SECS;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -594,6 +595,70 @@ mod tests {
             head_tree_id(&base, &book_id),
             tree_before,
             "HEAD tree must differ once the new content is committed"
+        );
+    }
+
+    /// Backdate HEAD so the next save sees it as an older commit, without waiting.
+    fn backdate_head(base_dir: &PathBuf, book_id: &str, seconds: i64) {
+        let ms_dir = book::manuscript_dir(base_dir, book_id);
+        let git_repo = git2::Repository::open(&ms_dir).unwrap();
+        let head = git_repo.head().unwrap().peel_to_commit().unwrap();
+        let when = git2::Time::new(head.time().seconds() - seconds, 0);
+        let sig = git2::Signature::new("PlotWeb", "plotweb@localhost", &when).unwrap();
+        head.amend(Some("HEAD"), Some(&sig), Some(&sig), None, None, None)
+            .unwrap();
+    }
+
+    /// Autosaves seconds apart coalesce — that is what amending is for — but the
+    /// coalescing must be bounded, or a long session on one chapter leaves a single
+    /// commit whose content is overwritten each time. Every intermediate version would
+    /// be destroyed, and a bad final write (a stale device replacing newer text) would
+    /// take the good text with it. History is the safety net cutover depends on.
+    #[test]
+    fn amending_is_bounded_so_a_session_leaves_recoverable_versions() {
+        let dir = TempDir::new();
+        let base = dir.path().clone();
+        let book_id = uuid::Uuid::new_v4().to_string();
+        let book_id = book_id.as_str();
+        book::create_book(&base, book_id, "Amend Window", "desc", "2026-01-01 00:00:00").unwrap();
+        let chapter_id = uuid::Uuid::new_v4().to_string();
+        let chapter_id = chapter_id.as_str();
+        create_chapter(&base, book_id, chapter_id, "One", "2026-01-01 00:00:00").unwrap();
+
+        // First content save: the previous commit ("Add chapter") is a multi-file
+        // change, so this appends.
+        update_chapter(&base, book_id, chapter_id, None, Some("first pass")).unwrap();
+        let after_first = commit_count(&base, book_id);
+
+        // A save moments later continues the same commit.
+        update_chapter(&base, book_id, chapter_id, None, Some("first pass, tweaked")).unwrap();
+        assert_eq!(
+            commit_count(&base, book_id),
+            after_first,
+            "consecutive autosaves of one chapter still coalesce"
+        );
+
+        // The same save, once the window has passed, is a new version instead.
+        backdate_head(&base, book_id, AMEND_WINDOW_SECS + 60);
+        update_chapter(&base, book_id, chapter_id, None, Some("second pass")).unwrap();
+        assert_eq!(
+            commit_count(&base, book_id),
+            after_first + 1,
+            "past the window a save must start a new commit, so the earlier text stays \
+             recoverable"
+        );
+
+        // And the earlier text really is still there, at the commit before HEAD.
+        let ms_dir = book::manuscript_dir(&base, book_id);
+        let git_repo = git2::Repository::open(&ms_dir).unwrap();
+        let head = git_repo.head().unwrap().peel_to_commit().unwrap();
+        let previous = head.parent(0).unwrap();
+        let earlier =
+            get_chapter_at_commit(&base, book_id, chapter_id, &previous.id().to_string()).unwrap();
+        assert!(
+            earlier.content.contains("first pass, tweaked"),
+            "the superseded version must be readable at its own commit: {}",
+            earlier.content
         );
     }
 }
