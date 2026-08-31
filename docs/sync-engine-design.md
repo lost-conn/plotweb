@@ -195,6 +195,13 @@ it through the UI. The cost of refusing is a stale mirror and a line in the log.
 > seeds. Both answer `409`, and the client replaces its copy (`take_server_body` /
 > `take_server_structure`). Detected from the documents themselves rather than a
 > client-side flag, because after a reconcile resolves in git's favour that flag is wrong.
+>
+> **2026-08-30 — the resolution below cost a writing session.** "The client replaces its
+> copy" was safe only under the pre-cutover assumption stated at the end of this section
+> (every local edit also reached git). Cutover removed it; the rule was not revisited, and
+> a client discarded ~1.4k characters the server had never seen. The replacement is
+> lineage + epoch reconciliation, and a `409` that preserves local text instead of
+> overwriting it — see `docs/one-writer-and-lineage.md`.
 
 
 Today the client seeds a local doc from REST content, and the server's canonical doc was
