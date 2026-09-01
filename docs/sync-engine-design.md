@@ -251,6 +251,13 @@ Automerge-first post-cutover; then `seeded-local` no longer occurs.
 
 > **Written after the fact.** D1–D8 were decided before the code; this one is the shape
 > five production bugs turned out to share, recorded so the sixth is recognised on sight.
+>
+> **2026-09-01 — closed for bodies, by removing the writer rather than guarding it.**
+> Under cutover a body has one writer: sync. A client no longer sends whole-state body
+> content for a cut-over book and the server drops any that arrives, so the stale-source
+> case cannot occur there. The `sync_owned` declaration this section's guard relied on is
+> gone — see `docs/one-writer-and-lineage.md`. The rule still governs structure documents
+> and every non-cut-over book, where REST remains the writer.
 
 A CRDT converges by exchanging *changes*. Every layer here also has a tempting shortcut:
 some place already holds "the whole current value" — the editor's model, git's files, a

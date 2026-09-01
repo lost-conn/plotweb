@@ -191,33 +191,29 @@ pub async fn update(
 
     let doc_id = format!("chapter:{chapter_id}");
 
-    // `sync_owned` only means anything for a cut-over book. There, the canonical
-    // document is the source of truth and sync is already carrying this body's edits,
-    // so `content` is a stale duplicate: applying it re-inserts text the client has
-    // since deleted (the reappearing-sentence bug), and writing it to git would make
-    // the two copies disagree and lock the document on the next read.
+    // One writer per body. For a cut-over book the canonical document is the source of
+    // truth and sync carries the edits, so a whole-state `content` here can only be a
+    // stale duplicate: applying it re-inserts text the author has since deleted (the
+    // reappearing-sentence bug), and writing it to git would make the two copies
+    // disagree. Current clients do not send it; an older one still might, and it is
+    // dropped rather than trusted.
     //
-    // Anywhere else git *is* the truth and this write is the only one that reaches it.
-    // Honouring the flag without the cutover check is how an edit lands in the
-    // canonical store, is never written to git, and then vanishes on the next read —
-    // which is exactly what happened when this was decided client-side alone.
+    // Anywhere else git *is* the truth and this write is the only thing that reaches
+    // it, so it is written exactly as before.
     //
-    // The third condition is the one this cost two days of silently dropped writes to
-    // learn: a declaration that *sync owns this body* is only true if the canonical
-    // document exists and this build can read it. Trusting the client's half alone
-    // leaves both writers deferring to each other — git stands down because sync has
-    // it, sync cannot deliver because the document will not load — and the edit
-    // survives nowhere but the author's browser.
-    let claimed_by_sync = req.sync_owned && state.cutover.is_cut_over(&book_id);
-    let sync_owns_body = claimed_by_sync
-        && super::canonical_is_authoritative(&state, &book_id, &doc_id);
-    let overrode_claim = claimed_by_sync && !sync_owns_body;
+    // The second condition is what two days of silently dropped writes bought: a body
+    // is only sync's to carry if the canonical document exists and this build can read
+    // it. Without that check a broken canonical copy means git stands down for a writer
+    // that cannot deliver, and the edit survives nowhere but the author's browser. When
+    // it fails we take the content after all, and say so on the receipt.
+    let cut_over = state.cutover.is_cut_over(&book_id);
+    let sync_owns_body = cut_over && super::canonical_is_authoritative(&state, &book_id, &doc_id);
+    let degraded = cut_over && !sync_owns_body && req.content.is_some();
 
     let carries_content = req.content.is_some();
     let req = UpdateChapterRequest {
         title: req.title,
         content: if sync_owns_body { None } else { req.content },
-        sync_owned: req.sync_owned,
     };
     let wrote_to_git = req.content.is_some() || req.title.is_some();
 
@@ -229,10 +225,10 @@ pub async fn update(
         );
     }
 
-    // The claim was overridden, so stop the document advertising itself as a syncing
-    // client's responsibility. Until it is repaired, git is where this body lives; a
-    // stale claim would make the next write stand down all over again.
-    if overrode_claim {
+    // The canonical copy could not carry this body, so stop it advertising itself as a
+    // syncing client's responsibility. Until it is repaired, git is where this body
+    // lives; a stale claim would make the next write stand down all over again.
+    if degraded {
         let crdt_dir = state.crdt_dir.clone();
         let doc = doc_id.clone();
         if let Ok(Err(e)) =
@@ -275,7 +271,7 @@ pub async fn update(
         deferred_to_sync: sync_owns_body,
         warning: None,
     };
-    receipt.warning = super::save_warning(overrode_claim, carries_content, receipt.is_durable());
+    receipt.warning = super::save_warning(degraded, carries_content, receipt.is_durable());
     (StatusCode::OK, Json(serde_json::to_value(receipt).unwrap()))
 }
 

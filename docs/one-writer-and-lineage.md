@@ -1,6 +1,7 @@
 # One writer, and document lineage (Phase 2 course correction)
 
-**Status:** decided 2026-08-30, not yet implemented. Supersedes the two-writer model that
+**Status:** decided 2026-08-30; slices 1–5 implemented 2026-08-30/09-01 (see §6 for what
+each one landed as). Supersedes the two-writer model that
 phase E shipped. Written after a production data loss; read §1 before the design.
 
 This note answers two questions the migration left open, and it narrows the system rather
@@ -175,18 +176,31 @@ mostly a naming and retention decision rather than new machinery.
 
 Each is shippable and reversible on its own.
 
-1. **Stop the bleeding.** Make the `409` path non-destructive: preserve local text before
-   installing canonical, and surface it. No protocol change. *This is the fix that would
-   have prevented the loss.*
-2. **`GET /api/sync/user`.** The user-index reset currently 405s forever; add the missing
-   route plus a test that every `Doc::url()` answers GET.
-3. **Unconditional mirror.** Mirror canonical → git for every change, not only
-   REST-originated ones; restore History for cut-over books.
-4. **Lineage id + epoch**, with reconcile preserving both (§4, §5).
-5. **One writer.** Drop `content` from body REST writes for cut-over books; delete
-   `sync_owned` and the ownership machinery. Ship the pause-with-visible-unsent-changes
-   control in the same slice.
-6. **Checkpoints** as the merge base and the history surface.
+1. **Stop the bleeding.** ✅ Local content is preserved before a canonical copy is
+   installed (`preserve_local_copy`), and surfaced — a banner and a viewer, with an
+   explicit per-copy discard.
+2. **`GET /api/sync/user`.** ✅ The user-index reset had no GET to fetch, so it 405'd
+   forever. Added, with a test that *every* `Doc::url()` answers GET.
+3. **Mirror / history.** ✅ Not what this slice predicted. History was never invisible
+   under cutover — the routes read git and the mirror keeps it current. The real defect
+   was `repo::commit_paths` amending without a time bound, so a session on one chapter
+   left a single commit whose content was overwritten on every save. Now bounded to a
+   five-minute window matching `mirror::MAX_WAIT`.
+4. **Lineage id + epoch.** ✅ In the manifest (atomic with the generation flip), reported
+   as `x-plotweb-lineage` / `x-plotweb-epoch`, carried across rebuilds, and a rebuild
+   quarantines what it replaces. The client classifies a `409` by identity: same lineage
+   is a fork to reconcile, a different lineage is refused.
+5. **One writer.** ✅ Split in two, because doing it in one step reintroduced the failure
+   class from the other side:
+   - **5a** — the book reports `cutover`; a device with sync off sees a banner and
+     "Saved on this device" instead of "Saved". The state was already lossy-in-waiting;
+     this made it visible before it became lossy.
+   - **5b** — `content` dropped from body REST writes for a cut-over book, and
+     `sync_owned` deleted from the wire. The server decides from state it can verify
+     (`cut_over && canonical_is_authoritative`) rather than trusting a client flag, and
+     still takes the write when the canonical copy cannot carry it.
+6. **Checkpoints** as the merge base and the history surface. Partly covered by the
+   bounded amend window in slice 3; the merge-base half is still open.
 
 **Widening the cutover is blocked until at least 1, 3 and 5 have landed with regression
 tests.** The gate list in the widen card measures server-side agreement only, and must gain

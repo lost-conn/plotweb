@@ -2205,7 +2205,6 @@ fn do_switch_chapter_inner(
             let req = UpdateChapterRequest {
                 title: Some(title),
                 content: None,
-                sync_owned: false,
             };
             api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/chapters/{}", bid, leaving_cid),
@@ -2239,12 +2238,13 @@ fn do_switch_chapter_inner(
         if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
             chapter_dirty.set(false);
             save_status.set("saving");
-            // Same declaration as the autosave's — this path builds its own PUT
-            // rather than going through `save_content`.
+            // Same rule as the autosave's — this path builds its own PUT rather than
+            // going through `save_content`. A cut-over book takes body edits through
+            // sync only, so this write carries structure and not content.
+            let cut_over = store.current_book.get().map(|b| b.cutover).unwrap_or(false);
             let req = UpdateChapterRequest {
                 title: None,
-                content: Some(content),
-                sync_owned: crate::sync::body_is_syncing(&format!("chapter:{current_id}")),
+                content: (!cut_over).then_some(content),
             };
             // The just-left chapter's save is reported like any other: an optimistic
             // "saved" is set below for the chapter being opened, and a receipt that
@@ -2863,6 +2863,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // save indicator must not claim otherwise — "Saved" meaning two different things
     // depending on a flag the author cannot see is how a lost session looks like a
     // finished one.
+    // For a cut-over book the canonical document is the source of truth and sync
+    // carries the edits; a whole-state PUT can only be a stale duplicate of what the
+    // ops already said, so this device does not send one. Where the book is not cut
+    // over, git is the truth and this write is the only thing that reaches it.
+    let sends_body_content = move || {
+        !store
+            .current_book
+            .get()
+            .map(|b| b.cutover)
+            .unwrap_or(false)
+    };
     let saved_here_only = move || {
         store
             .current_book
@@ -3152,8 +3163,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // still come from git.
         let req = UpdateChapterRequest {
             title: None,
-            content: Some(content),
-            sync_owned: crate::sync::body_is_syncing(&format!("chapter:{chapter_id_to_save}")),
+            content: sends_body_content().then_some(content),
         };
         api::put::<_, SaveReceipt>(
             &format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
@@ -3295,7 +3305,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
         let req = UpdateChapterRequest {
             title: Some(title.clone()),
             content: None,
-            sync_owned: false,
         };
         api::put::<_, serde_json::Value>(
             &format!("/api/books/{}/chapters/{}", bid, cid),
@@ -3344,7 +3353,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
             let req = UpdateChapterRequest {
                 title: Some(title.clone()),
                 content: None,
-                sync_owned: false,
             };
             api::put::<_, serde_json::Value>(
                 &format!("/api/books/{}/chapters/{}", captured_bid, cid),
@@ -3726,8 +3734,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 save_status.set("saving");
                 let req = UpdateChapterRequest {
                     title: None,
-                    content: Some(content),
-                    sync_owned: crate::sync::body_is_syncing(&format!("chapter:{current_id}")),
+                    content: sends_body_content().then_some(content),
                 };
                 api::put::<_, SaveReceipt>(
                     &format!("/api/books/{}/chapters/{}", bid, current_id),
@@ -3847,11 +3854,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
             note_save_status.set("saving");
             let req = UpdateNoteRequest {
                 title: Some(title_val),
-                content: Some(content),
+                // Body only; title and colour are structure, which REST still carries.
+                content: sends_body_content().then_some(content),
                 color: color_val,
-                // Covers the body only; title and colour are structure, and sync does
-                // not carry them.
-                sync_owned: crate::sync::body_is_syncing(&format!("note:{nid}")),
             };
             api::put::<_, SaveReceipt>(
                 &format!("/api/books/{}/notes/{}", bid, nid),

@@ -146,7 +146,6 @@ pub async fn reconcile_body(
                         &UpdateChapterRequest {
                             title: None,
                             content: Some(content),
-                            sync_owned: false,
                         },
                     )
                     .await

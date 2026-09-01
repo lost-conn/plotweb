@@ -209,7 +209,6 @@ async fn mirror_body(
                     &UpdateChapterRequest {
                         title: None,
                         content: Some(content),
-                        sync_owned: false,
                     },
                 )
                 .await
@@ -344,7 +343,6 @@ async fn mirror_chapters(
                 let update = UpdateChapterRequest {
                     title: Some(title.clone()),
                     content: None,
-                    sync_owned: false,
                 };
                 match books.update_chapter(book_id, id, &update).await {
                     Ok(()) => wrote = true,

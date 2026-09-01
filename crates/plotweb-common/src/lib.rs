@@ -144,9 +144,9 @@ pub struct SaveReceipt {
     /// The server deliberately left this content to the client's sync engine, having
     /// confirmed the canonical document is one it can actually read and write.
     pub deferred_to_sync: bool,
-    /// Author-facing explanation of a degraded or refused write. Present when the
-    /// server had to override the client's `sync_owned` declaration, and when nothing
-    /// was persisted at all.
+    /// Author-facing explanation of a degraded or refused write. Present when a
+    /// cut-over book's canonical document could not carry the edit after all, and when
+    /// nothing was persisted at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
@@ -163,18 +163,15 @@ impl SaveReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateChapterRequest {
     pub title: Option<String>,
-    pub content: Option<String>,
-    /// The client saying "sync is carrying this body's edits, so treat my `content`
-    /// as a duplicate rather than the truth".
+    /// Absent for a cut-over book: there, sync is the only writer of a body, so a
+    /// whole-state copy can only be a stale duplicate of what the ops already said.
     ///
-    /// It is a *declaration*, not an instruction: the server ignores it unless the
-    /// book is cut over, because only then is the canonical document the source of
-    /// truth. Both halves are needed and neither side knows both — the client knows
-    /// whether it is syncing this document, the server knows whether the book has
-    /// been cut over. Deciding with only one half is how a REST write gets dropped
-    /// for a book whose reads still come from git, and the edit vanishes.
-    #[serde(default)]
-    pub sync_owned: bool,
+    /// This used to be accompanied by a `sync_owned` declaration, and the two of them
+    /// were a negotiation between two writers over who should stand down — a
+    /// negotiation whose failures cost, in order, two days of silently dropped writes,
+    /// the reappearing-text bug, and a writing session. There is one writer now, so
+    /// there is nothing to declare.
+    pub content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -389,11 +386,9 @@ pub struct CreateNoteRequest {
 pub struct UpdateNoteRequest {
     pub title: Option<String>,
     pub content: Option<String>,
+    /// See [`UpdateChapterRequest::content`]. Title and colour are structure, which
+    /// REST still carries for every book.
     pub color: Option<String>,
-    /// See [`UpdateChapterRequest::sync_owned`]. Title and colour are structure and
-    /// are never covered by it — sync does not carry them.
-    #[serde(default)]
-    pub sync_owned: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

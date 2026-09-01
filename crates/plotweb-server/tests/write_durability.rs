@@ -1,16 +1,19 @@
 //! A save must never be dropped by both writers.
 //!
-//! Under cutover a client can declare `sync_owned` — "my sync engine is carrying this
-//! body, treat my content as a duplicate" — and the server withholds the write from
-//! git. That is correct only while the canonical document is one the server can
-//! actually read and write. When it isn't, honouring the declaration leaves git
-//! standing down for a sync engine that cannot deliver, and the edit survives nowhere
-//! but the author's browser: two days of writing reached neither store in production
-//! before anything said so.
+//! Under cutover sync is the only writer of a body, so the server withholds a REST
+//! body write from git. That is correct only while the canonical document is one the
+//! server can actually read and write. When it isn't, withholding leaves git standing
+//! down for a writer that cannot deliver, and the edit survives nowhere but the
+//! author's browser: two days of writing reached neither store in production before
+//! anything said so.
 //!
 //! These pin the rule (git takes the write whenever the canonical copy can't), the
-//! exception (a healthy canonical copy still defers), and the reporting that made the
+//! exception (a healthy canonical copy defers), and the reporting that made the
 //! original failure invisible — a `200` that persisted nothing.
+//!
+//! The tests still send the old `sync_owned` flag in places, deliberately: it is what
+//! an older client sends, the field no longer exists, and the outcome must not depend
+//! on it.
 
 mod common;
 
@@ -181,8 +184,10 @@ async fn a_claimed_write_is_still_deferred_when_the_canonical_copy_is_healthy() 
     );
 }
 
+/// The receipt has to describe what actually happened, because a `200` that persisted
+/// nothing is what made the original failure invisible.
 #[tokio::test]
-async fn an_ordinary_write_reports_both_stores() {
+async fn a_cut_over_write_reports_that_sync_carries_it() {
     let mut app = TestApp::new().await;
     app.register("author", "password123").await;
     let (book_id, chapter_id) = cut_over_with_claimed_chapter(&mut app).await;
@@ -194,10 +199,34 @@ async fn an_ordinary_write_reports_both_stores() {
         )
         .await;
 
-    assert_eq!(r.json["git"], true);
     assert_eq!(
-        r.json["canonical"], true,
-        "a cut-over write lands in both stores: {}",
+        r.json["deferred_to_sync"], true,
+        "one writer: the body is sync's to carry, and the receipt says so: {}",
         r.json
     );
+    assert_eq!(r.json["git"], false, "so git did not take the body");
+    assert!(
+        r.json["warning"].is_null(),
+        "and that is the ordinary case, not a degraded one: {}",
+        r.json
+    );
+}
+
+/// Where the book is not cut over, REST is the only writer there is.
+#[tokio::test]
+async fn an_ordinary_write_to_an_ordinary_book_reaches_git() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Ordinary Novel").await;
+    let chapter_id = app.create_chapter(&book_id, "One").await;
+
+    let r = app
+        .put(
+            &format!("/api/books/{book_id}/chapters/{chapter_id}"),
+            &json!({ "content": doc_json("an ordinary save") }),
+        )
+        .await;
+
+    assert_eq!(r.json["git"], true, "git is the truth here: {}", r.json);
+    assert_eq!(r.json["deferred_to_sync"], false);
 }
