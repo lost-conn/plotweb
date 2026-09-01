@@ -276,6 +276,22 @@ fn rescue_viewer(store: AppStore) -> NodeHandle {
     }
 }
 
+/// Says plainly that this device is writing only to itself.
+///
+/// A cut-over book takes edits through sync; with sync off, a save reaches this
+/// device's storage and stops there. That was true before this banner existed and
+/// nothing said it, which is the shape of every loss in this arc: the app reporting
+/// success for something that only half happened.
+#[component]
+fn sync_off_banner() -> NodeHandle {
+    rsx! {
+        div {
+            style: "background: #4A3B22; color: #FFF4DF; padding: 8px 16px; font-size: 13px; display: flex; align-items: center; gap: 10px;",
+            span { "This book syncs, and sync is off on this device — anything you write here stays on this device until you turn it on." }
+        }
+    }
+}
+
 #[component]
 pub fn app_shell() -> NodeHandle {
     let store = use_store::<AppStore>();
@@ -290,6 +306,11 @@ pub fn app_shell() -> NodeHandle {
             }
             if store.rescue_open.get().is_some() {
                 {rescue_viewer(__scope, store)}
+            }
+            if store.current_book.get().map(|b| b.cutover).unwrap_or(false)
+                && !crate::sync::enabled()
+            {
+                {sync_off_banner(__scope)}
             }
 
             match store.current_route.get() {

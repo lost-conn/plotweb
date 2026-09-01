@@ -82,6 +82,14 @@ pub struct Book {
     pub font_settings: Option<FontSettings>,
     #[serde(default)]
     pub cover_image: Option<String>,
+    /// Whether this book reads from the canonical CRDT rather than git.
+    ///
+    /// The client needs this to tell the author the truth about where their writing
+    /// goes: for a cut-over book, sync is how an edit reaches the server, so a device
+    /// with sync off is writing only to itself. Nothing in the UI used to say that, and
+    /// "Saved" meant two different things depending on a flag the author could not see.
+    #[serde(default)]
+    pub cutover: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

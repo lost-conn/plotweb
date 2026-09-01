@@ -913,6 +913,7 @@ mod tests {
             word_count: Some(0),
             font_settings: None,
             cover_image: None,
+            cutover: false,
         }
     }
 
