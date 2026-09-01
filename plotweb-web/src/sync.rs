@@ -597,28 +597,64 @@ fn establish_body_provenance(label: String, doc: Doc) {
     });
 }
 
-/// Install the server's canonical body document over ours, then start syncing.
+/// Install the server's canonical body document over ours, then start syncing — or
+/// refuse, when it is not our document at all.
+///
+/// Two very different situations answer `409`, and until the server carried a document
+/// identity they were indistinguishable:
+///
+/// - **Forked.** Same lineage — the same chapter, rebuilt from git by a reconcile, so
+///   our history was abandoned deliberately. Taking the canonical copy is right, and
+///   what we hold is kept first (`preserve_local_copy`) so nothing we wrote is lost.
+/// - **Unrelated.** A different lineage — not this chapter's document at all. Replacing
+///   ours would destroy one document to install another, so we keep ours and stop. A
+///   person has to look.
 fn take_server_body(label: String, doc: Doc, doc_id: String) {
-    crate::api::get_bytes(&doc.url(), move |result| match result {
-        // No canonical copy at all: nothing to reconcile, our document stands and the
-        // first exchange will establish it server-side.
-        Ok(None) => {
+    crate::api::get_canonical(&doc.url(), move |result| match result {
+        Ok(canonical) if canonical.bytes.is_none() => {
+            // No canonical copy at all: nothing to reconcile, our document stands and
+            // the first exchange will establish it server-side.
             let (label, doc_id) = (label.clone(), doc_id.clone());
             crate::local_store::spawn(async move {
-                if let Err(e) =
-                    crate::local_store::mark_body_shares_server_history(&doc_id).await
-                {
+                if let Err(e) = crate::local_store::mark_body_shares_server_history(&doc_id).await {
                     log::warn!("sync {doc_id}: {e}");
                 }
                 start_cycle(&label);
             });
         }
-        Ok(Some(bytes)) => {
+        Ok(canonical) => {
             let (label, doc_id) = (label.clone(), doc_id.clone());
             crate::local_store::spawn(async move {
+                let bytes = canonical.bytes.unwrap_or_default();
+                let ours = match crate::local_store::local_identity(&doc_id).await {
+                    Ok((lineage, _)) => lineage,
+                    Err(e) => {
+                        log::warn!("sync {doc_id}: {e}");
+                        None
+                    }
+                };
+                if !identities_agree(ours.as_deref(), canonical.lineage.as_deref()) {
+                    log::warn!(
+                        "sync {doc_id}: the canonical copy is a different document (ours \
+                         {ours:?}, theirs {:?}) — keeping ours, and stopping",
+                        canonical.lineage
+                    );
+                    unregister(&label, 409);
+                    return;
+                }
                 match crate::local_store::install_server_body(&doc_id, &bytes).await {
-                    // Installed: our document now descends from the server's.
-                    Ok(true) => start_cycle(&label),
+                    Ok(true) => {
+                        if let Err(e) = crate::local_store::record_identity(
+                            &doc_id,
+                            canonical.lineage.as_deref(),
+                            canonical.epoch,
+                        )
+                        .await
+                        {
+                            log::warn!("sync {doc_id}: {e}");
+                        }
+                        start_cycle(&label);
+                    }
                     // The body closed, or the server's document is outside the collab
                     // scope. Leave it unsynced rather than risk a duplicate merge.
                     Ok(false) => {}
@@ -630,6 +666,18 @@ fn take_server_body(label: String, doc: Doc, doc_id: String) {
         Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),
         Err(_) => finish(&label, false),
     });
+}
+
+/// Whether a canonical document is the same document as ours.
+///
+/// Unknown on either side is **not** a disagreement: a document from before identities
+/// existed, or one this device has never adopted, has nothing to contradict. Only two
+/// known-and-different lineages mean "not the same document".
+pub(crate) fn identities_agree(ours: Option<&str>, theirs: Option<&str>) -> bool {
+    match (ours, theirs) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
 }
 
 /// Park a document as signed-out: stop, quietly, until the next sign-in.
@@ -779,28 +827,62 @@ fn round(label: String, state: Rc<RefCell<SyncState>>, n: u32) {
 /// Install the server's canonical structure document over ours, then sync again.
 fn take_server_structure(label: String) {
     let Some(doc) = doc_of(&label) else { return };
-    crate::api::get_bytes(&doc.url(), move |result| match result {
+    let doc_id = doc.label();
+    crate::api::get_canonical(&doc.url(), move |result| match result {
         // No canonical copy at all: nothing to reconcile, ours stands.
-        Ok(None) => finish(&label, true),
-        Ok(Some(bytes)) => {
-            let installed = match &doc {
-                Doc::Book(id) => crate::local_book::install_server_book(id, &bytes),
-                Doc::User(id) => crate::local_user::install_server_user(id, &bytes),
-                // Bodies take `take_server_body` instead; they never reach this path.
-                Doc::Body { .. } => false,
-            };
-            if installed {
-                STORE.with(|s| {
-                    if let Some(store) = s.borrow().as_ref() {
-                        doc.persist_and_project(store);
+        Ok(canonical) if canonical.bytes.is_none() => finish(&label, true),
+        Ok(canonical) => {
+            // Same rule as bodies: a different lineage is a different document, and
+            // installing it would destroy ours to make room for something that was
+            // never this book's structure.
+            let (label, doc, doc_id) = (label.clone(), doc.clone(), doc_id.clone());
+            crate::local_store::spawn(async move {
+                let ours = match crate::local_store::local_identity(&doc_id).await {
+                    Ok((lineage, _)) => lineage,
+                    Err(e) => {
+                        log::warn!("sync {doc_id}: {e}");
+                        None
                     }
-                });
-                start_cycle(&label);
-            } else {
-                // A different book is open now, or the copy did not load. Leave it
-                // rather than risk merging two unrelated documents.
-                finish(&label, false);
-            }
+                };
+                if !identities_agree(ours.as_deref(), canonical.lineage.as_deref()) {
+                    log::warn!(
+                        "sync {doc_id}: the canonical copy is a different document (ours \
+                         {ours:?}, theirs {:?}) — keeping ours, and stopping",
+                        canonical.lineage
+                    );
+                    unregister(&label, 409);
+                    return;
+                }
+
+                let bytes = canonical.bytes.unwrap_or_default();
+                let installed = match &doc {
+                    Doc::Book(id) => crate::local_book::install_server_book(id, &bytes),
+                    Doc::User(id) => crate::local_user::install_server_user(id, &bytes),
+                    // Bodies take `take_server_body` instead; they never reach this path.
+                    Doc::Body { .. } => false,
+                };
+                if installed {
+                    if let Err(e) = crate::local_store::record_identity(
+                        &doc_id,
+                        canonical.lineage.as_deref(),
+                        canonical.epoch,
+                    )
+                    .await
+                    {
+                        log::warn!("sync {doc_id}: {e}");
+                    }
+                    STORE.with(|s| {
+                        if let Some(store) = s.borrow().as_ref() {
+                            doc.persist_and_project(store);
+                        }
+                    });
+                    start_cycle(&label);
+                } else {
+                    // A different book is open now, or the copy did not load. Leave it
+                    // rather than risk merging two unrelated documents.
+                    finish(&label, false);
+                }
+            });
         }
         Err(e) if e.status == 401 => park_unauthed(&label),
         Err(e) if e.status == 403 || e.status == 404 => unregister(&label, e.status),
@@ -923,6 +1005,31 @@ mod tests {
             "/api/books/b1/sync/book:b1",
             "the book doc syncs on its own book's route"
         );
+    }
+
+    /// The distinction slice 4 exists to make. Two known-and-different lineages mean
+    /// "not the same document" — install nothing. Anything else (either side unknown,
+    /// a pre-identity document, a device that has never adopted one) has nothing to
+    /// contradict, so the ordinary path runs.
+    #[test]
+    fn only_two_known_and_different_lineages_disagree() {
+        assert!(
+            identities_agree(Some("L"), Some("L")),
+            "the same chapter, rebuilt: reconcilable"
+        );
+        assert!(
+            !identities_agree(Some("L"), Some("M")),
+            "a different document must never be installed over ours"
+        );
+        assert!(
+            identities_agree(None, Some("M")),
+            "a device that has never adopted an identity has nothing to contradict"
+        );
+        assert!(
+            identities_agree(Some("L"), None),
+            "a canonical copy from before identities existed is not a conflict"
+        );
+        assert!(identities_agree(None, None));
     }
 }
 

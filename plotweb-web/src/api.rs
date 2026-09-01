@@ -143,6 +143,54 @@ pub fn get_bytes(url: &str, on_done: impl FnOnce(Result<Option<Vec<u8>>, BinErro
     });
 }
 
+/// A canonical document, with the identity the server reports beside it.
+///
+/// `lineage` says *which document* this is; `epoch` says how many times it has been
+/// rebuilt rather than merged into. A client compares them against what it holds to
+/// tell a fork (same lineage, higher epoch — the same chapter, rebuilt) from a document
+/// that is simply not the same one.
+pub struct CanonicalDoc {
+    pub bytes: Option<Vec<u8>>,
+    pub lineage: Option<String>,
+    pub epoch: u64,
+}
+
+/// `GET url`, yielding the canonical document together with its identity headers.
+pub fn get_canonical(url: &str, on_done: impl FnOnce(Result<CanonicalDoc, BinError>) + 'static) {
+    let req = Request::get(&full_url(url));
+    fetch(req, move |res| {
+        on_done(match res {
+            Err(e) => Err(BinError {
+                status: 0,
+                message: e.to_string(),
+            }),
+            Ok(resp) if resp.status >= 400 => Err(BinError {
+                status: resp.status,
+                message: resp.text(),
+            }),
+            Ok(resp) => {
+                let header = |name: &str| {
+                    resp.headers
+                        .iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                        .map(|(_, v)| v.clone())
+                };
+                Ok(CanonicalDoc {
+                    bytes: if resp.status == 204 {
+                        None
+                    } else {
+                        Some(resp.body.clone())
+                    },
+                    lineage: header("x-plotweb-lineage"),
+                    epoch: header("x-plotweb-epoch")
+                        .and_then(|e| e.parse().ok())
+                        .unwrap_or(0),
+                })
+            }
+        })
+    });
+}
+
 /// `POST url` with a raw byte body, yielding the raw response bytes.
 ///
 /// The sync endpoints speak `application/octet-stream` in both directions

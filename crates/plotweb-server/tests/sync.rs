@@ -705,3 +705,145 @@ async fn every_doc_url_answers_a_canonical_get() {
         );
     }
 }
+
+/// A document's identity survives an ordinary save. Lineage answers the question a
+/// state vector cannot — "is this the same chapter?" — so a save that minted a new one
+/// each time would make every reconnect look like a different document.
+#[tokio::test]
+async fn a_save_carries_the_documents_identity_forward() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+
+    let mut device = Device::new();
+    device.doc.put(ROOT, "dashboard", "first").unwrap();
+    device.sync(&mut app, "/api/sync/user").await;
+
+    let store = rinch_storage::FsStore::open(app.crdt_dir().clone()).unwrap();
+    let doc_id = {
+        // The only user: find the one `user:` doc the store holds.
+        let mut found = None;
+        for entry in std::fs::read_dir(app.crdt_dir()).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().to_string();
+            let decoded = name.replace("%3A", ":").replace("%2F", "/");
+            if decoded.starts_with("user:") && decoded.ends_with("/manifest") {
+                found = Some(decoded.trim_end_matches("/manifest").to_string());
+            }
+        }
+        found.expect("a user document was written")
+    };
+
+    let first = plotweb_server::sync::read_manifest(&store, &doc_id)
+        .unwrap()
+        .expect("a manifest");
+    let lineage = first.lineage.clone().expect("a lineage was minted");
+    assert_eq!(first.epoch, 0, "an untouched document is at epoch 0");
+
+    device.doc.put(ROOT, "dashboard", "second").unwrap();
+    device.sync(&mut app, "/api/sync/user").await;
+
+    let second = plotweb_server::sync::read_manifest(&store, &doc_id)
+        .unwrap()
+        .expect("a manifest");
+    assert_eq!(
+        second.lineage.as_deref(),
+        Some(lineage.as_str()),
+        "an ordinary save continues the same document"
+    );
+    assert_eq!(second.epoch, 0, "only a rebuild forks a document");
+}
+
+/// The transition that cost a writing session: the server rebuilds a document from git,
+/// orphaning the history every connected device holds.
+///
+/// Three things must be true afterwards — it is the same chapter (lineage kept), the
+/// devices are *forked* rather than stale (epoch bumped), and the copy those devices
+/// were syncing against still exists somewhere (quarantined). On 2026-08-29 none of the
+/// three were, and the only surviving copy was in one browser's IndexedDB.
+#[tokio::test]
+async fn a_rebuild_keeps_the_lineage_bumps_the_epoch_and_quarantines_what_it_replaces() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = book_with_chapter(&mut app).await;
+    let uri = chapter_uri(&book_id, &chapter_id);
+
+    let device = BodyDevice::new();
+    device.put("text", "what the device was syncing against");
+    device.sync(&mut app, &uri).await;
+
+    let doc_id = format!("chapter:{chapter_id}");
+    let store = rinch_storage::FsStore::open(app.crdt_dir().clone()).unwrap();
+    let before = plotweb_server::sync::read_manifest(&store, &doc_id)
+        .unwrap()
+        .expect("a manifest");
+    let lineage = before.lineage.clone().expect("a lineage");
+    let replaced = plotweb_server::sync::canonical_snapshot(app.crdt_dir(), &doc_id)
+        .unwrap()
+        .expect("a canonical copy");
+
+    // What `reconcile --prefer git` does.
+    plotweb_server::sync::replace_canonical_from_git(
+        app.crdt_dir(),
+        &doc_id,
+        "chapter",
+        &plotweb_crdt::project_body(
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"rebuilt from git"}]}]}"#,
+            plotweb_crdt::BodyKind::Chapter,
+        )
+        .expect("projection"),
+    )
+    .expect("rebuild");
+
+    let after = plotweb_server::sync::read_manifest(&store, &doc_id)
+        .unwrap()
+        .expect("a manifest");
+    assert_eq!(
+        after.lineage.as_deref(),
+        Some(lineage.as_str()),
+        "a rebuild produces a new history for the SAME chapter — that distinction is \
+         what lets a forked device reconcile by text instead of being reset"
+    );
+    assert_eq!(after.epoch, 1, "the rebuild forks every device holding it");
+    assert!(
+        after.synced_at.is_none(),
+        "and the document is provisional again"
+    );
+
+    let quarantined = std::fs::read(
+        app.crdt_dir().join(
+            format!("_quarantine/{doc_id}/e1/snapshot")
+                .replace(':', "%3A")
+                .replace('/', "%2F"),
+        ),
+    )
+    .expect("the pre-rebuild copy is kept, not swept");
+    assert_eq!(
+        quarantined, replaced,
+        "the quarantined bytes are exactly what the rebuild replaced"
+    );
+}
+
+/// A client cannot tell a fork from an unrelated document without being told which
+/// document the canonical copy *is*.
+#[tokio::test]
+async fn the_canonical_get_reports_the_documents_identity() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = book_with_chapter(&mut app).await;
+    let uri = chapter_uri(&book_id, &chapter_id);
+
+    let device = BodyDevice::new();
+    device.put("text", "established");
+    device.sync(&mut app, &uri).await;
+
+    let (status, headers) = app.get_bytes_with_headers(&uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        headers.get("x-plotweb-lineage").is_some(),
+        "the reply must say which document this is"
+    );
+    assert_eq!(
+        headers.get("x-plotweb-epoch").map(|v| v.to_str().unwrap()),
+        Some("0"),
+        "and how many times it has been rebuilt"
+    );
+}

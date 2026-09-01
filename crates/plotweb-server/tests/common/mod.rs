@@ -238,6 +238,25 @@ impl TestApp {
         (status, bytes.to_vec())
     }
 
+    /// GET raw bytes plus the response headers — for the identity headers a client
+    /// reads to tell a rebuilt document from an unrelated one.
+    pub async fn get_bytes_with_headers(
+        &mut self,
+        uri: &str,
+    ) -> (StatusCode, axum::http::HeaderMap) {
+        let mut req = Request::builder()
+            .method("GET")
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        if let Some(c) = &self.cookie {
+            req.headers_mut()
+                .insert("cookie", c.parse().expect("cookie header"));
+        }
+        let resp = self.router.clone().oneshot(req).await.expect("response");
+        (resp.status(), resp.headers().clone())
+    }
+
     /// POST a multipart file upload (single `file` field).
     pub async fn post_multipart(&mut self, uri: &str, filename: &str, data: &[u8]) -> Resp {
         let boundary = "----plotwebtestboundary";

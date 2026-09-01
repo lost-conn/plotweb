@@ -264,15 +264,35 @@ impl DocStore {
         self.backend.put(&self.delta_key(generation, seq), delta).await
     }
 
-    /// Delete every key for this document except the manifest and the keep-generation.
+    /// Delete the generations this document no longer needs.
+    ///
+    /// Only **generation** keys (`{doc_id}/g7/…`). The sweep used to take everything
+    /// under the doc prefix that was not the manifest or the live generation, which
+    /// included the metadata stored beside the document: `origin` — §D8's provenance
+    /// flag — and `server-fingerprint`. Since opening a chapter compacts it, and
+    /// compaction publishes a generation, both were destroyed every time an author
+    /// opened a chapter: the client forgot it shared history with the server, and the
+    /// headless sweep forgot what it had already seen. The state-vector check on the
+    /// server is what kept that from corrupting anything.
     async fn sweep_except(&self, keep_gen: &str) -> StorageResult<()> {
         let keep = self.gen_prefix(keep_gen);
-        let manifest = self.manifest_key();
-        for key in self.backend.list(&self.doc_prefix()).await? {
-            if key == manifest || key.starts_with(&keep) {
+        let doc_prefix = self.doc_prefix();
+        for key in self.backend.list(&doc_prefix).await? {
+            if key.starts_with(&keep) {
                 continue;
             }
-            self.backend.delete(&key).await?;
+            let Some(rest) = key.strip_prefix(&doc_prefix) else {
+                continue;
+            };
+            // `g<digits>/…` is a generation; anything else is metadata that belongs to
+            // the document rather than to one of its generations.
+            let is_generation = rest
+                .split_once('/')
+                .and_then(|(seg, _)| seg.strip_prefix('g'))
+                .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+            if is_generation {
+                self.backend.delete(&key).await?;
+            }
         }
         Ok(())
     }
@@ -574,6 +594,52 @@ pub(crate) async fn body_shares_server_history(doc_id: &str) -> StorageResult<bo
 pub(crate) async fn mark_body_shares_server_history(doc_id: &str) -> StorageResult<()> {
     let backend = backend().await?;
     backend.put(&origin_key(doc_id), b"synced").await
+}
+
+// ── Document identity (lineage + epoch) ──────────────────────────────────────
+//
+// What the server reports beside a canonical document. Stored beside ours so the next
+// conflict can be classified rather than guessed at: same lineage means the same
+// chapter rebuilt (reconcilable), a different lineage means a different document
+// (not reconcilable by anything but a person). Safe to keep here now that the
+// generation sweep leaves a document's metadata alone.
+
+fn lineage_key(doc_id: &str) -> String {
+    format!("{doc_id}/lineage")
+}
+fn epoch_key(doc_id: &str) -> String {
+    format!("{doc_id}/epoch")
+}
+
+/// The identity this device last learned for `doc_id`.
+pub(crate) async fn local_identity(doc_id: &str) -> StorageResult<(Option<String>, u64)> {
+    let backend = backend().await?;
+    let lineage = backend
+        .get(&lineage_key(doc_id))
+        .await?
+        .and_then(|b| String::from_utf8(b).ok());
+    let epoch = backend
+        .get(&epoch_key(doc_id))
+        .await?
+        .and_then(|b| String::from_utf8(b).ok())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    Ok((lineage, epoch))
+}
+
+/// Record the identity of the canonical document this device has just adopted.
+pub(crate) async fn record_identity(
+    doc_id: &str,
+    lineage: Option<&str>,
+    epoch: u64,
+) -> StorageResult<()> {
+    let backend = backend().await?;
+    if let Some(lineage) = lineage {
+        backend.put(&lineage_key(doc_id), lineage.as_bytes()).await?;
+    }
+    backend
+        .put(&epoch_key(doc_id), epoch.to_string().as_bytes())
+        .await
 }
 
 // ── Rescue copies ────────────────────────────────────────────────────────────
@@ -1199,6 +1265,38 @@ mod tests {
         assert!(
             json.contains("and the one that did not"),
             "the unsent edit must survive the round trip: {json}"
+        );
+    }
+
+    /// Compaction must not take the metadata stored beside a document with it.
+    ///
+    /// Opening a chapter compacts it, and the sweep used to delete everything under the
+    /// doc prefix that was not the live generation — including `origin` (§D8's
+    /// provenance flag) and `server-fingerprint`. So a client forgot it shared history
+    /// with the server every time its author opened a chapter.
+    #[test]
+    fn compaction_keeps_the_metadata_beside_a_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+        let store = DocStore::with_backend(backend.clone(), "chapter:probe");
+        block_on(store.publish_snapshot(b"one")).unwrap();
+        block_on(backend.put("chapter:probe/origin", b"synced")).unwrap();
+        block_on(backend.put("chapter:probe/server-fingerprint", b"abc")).unwrap();
+        // What opening the chapter again does (reconstruct, then compact).
+        block_on(store.publish_snapshot(b"two")).unwrap();
+        let origin = block_on(backend.get("chapter:probe/origin")).unwrap();
+        let fp = block_on(backend.get("chapter:probe/server-fingerprint")).unwrap();
+        assert!(
+            origin.is_some(),
+            "the provenance flag must survive compaction, or §D8's first gate is \
+             always wrong after a chapter is opened"
+        );
+        assert!(fp.is_some(), "so must the headless sweep's bookkeeping");
+
+        // Old generations still go.
+        assert!(
+            block_on(backend.get("chapter:probe/g0/snapshot")).unwrap().is_none(),
+            "the superseded generation is still swept"
         );
     }
 
