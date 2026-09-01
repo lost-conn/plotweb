@@ -2858,6 +2858,19 @@ fn render_note_card(
 #[component]
 pub fn book_page(book_id: String) -> NodeHandle {
     let store = use_store::<AppStore>();
+    // For a cut-over book the canonical document is the source of truth and sync is how
+    // an edit reaches it, so with sync off this device is writing only to itself. The
+    // save indicator must not claim otherwise — "Saved" meaning two different things
+    // depending on a flag the author cannot see is how a lost session looks like a
+    // finished one.
+    let saved_here_only = move || {
+        store
+            .current_book
+            .get()
+            .map(|b| b.cutover)
+            .unwrap_or(false)
+            && !crate::sync::enabled()
+    };
     let show_chapter_modal = Signal::new(false);
     let new_chapter_title = Signal::new(String::new());
 
@@ -4324,8 +4337,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 }
                                 div {
                                     class: {|| format!("save-indicator {}", save_status.get())},
-                                    {|| match save_status.get() {
+                                    {move || match save_status.get() {
                                         "saving" => "Saving...".to_string(),
+                                        // "Saved" has to mean the same thing everywhere.
+                                        // For a cut-over book sync is how an edit reaches
+                                        // the server, so with sync off this save reached
+                                        // this device and nothing else — say so.
+                                        "saved" if saved_here_only() => {
+                                            "Saved on this device".to_string()
+                                        }
                                         "saved" => "Saved".to_string(),
                                         "error" => "Save failed — retry".to_string(),
                                         _ => "Unsaved".to_string(),
@@ -4731,6 +4751,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     class: "note-save-indicator",
                                     {move || match note_save_status.get() {
                                         "saving" => "Saving...".to_string(),
+                                        "saved" if saved_here_only() => {
+                                            "Saved on this device".to_string()
+                                        }
                                         "saved" => "Saved".to_string(),
                                         _ => "Unsaved".to_string(),
                                     }}

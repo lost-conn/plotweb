@@ -34,6 +34,7 @@ pub async fn list(
             Ok(data) => {
                 let chapter_count = data.chapter_order.len() as i64;
                 let word_count = state.books.book_word_count(&id).await;
+                let cut_over = state.cutover.is_cut_over(&id);
                 books.push(Book {
                     id,
                     title: data.title,
@@ -44,10 +45,12 @@ pub async fn list(
                     word_count: Some(word_count),
                     font_settings: data.font_settings,
                     cover_image: data.cover_image,
+                cutover: cut_over,
                 });
             }
             Err(_) => {
                 // Git repo missing — show basic info from the metadata row
+                let cut_over = state.cutover.is_cut_over(&id);
                 books.push(Book {
                     id,
                     title: row.string("title").unwrap_or_default(),
@@ -58,6 +61,7 @@ pub async fn list(
                     word_count: Some(0),
                     font_settings: None,
                     cover_image: None,
+                cutover: cut_over,
                 });
             }
         }
@@ -114,6 +118,7 @@ pub async fn create(
         );
     }
 
+    let cut_over = state.cutover.is_cut_over(&id);
     let book = Book {
         id,
         title: req.title,
@@ -124,6 +129,7 @@ pub async fn create(
         word_count: Some(0),
         font_settings: None,
         cover_image: None,
+    cutover: cut_over,
     };
     (StatusCode::CREATED, Json(serde_json::to_value(book).unwrap()))
 }
@@ -151,6 +157,7 @@ pub async fn get(
                 .as_ref()
                 .map(|s| s.chapters.len())
                 .unwrap_or(data.chapter_order.len()) as i64;
+            let cut_over = state.cutover.is_cut_over(&id);
             let book = Book {
                 id,
                 title: canonical.as_ref().map(|s| s.title.clone()).unwrap_or(data.title),
@@ -170,6 +177,7 @@ pub async fn get(
                     .as_ref()
                     .map(|s| s.cover_ref.clone())
                     .unwrap_or(data.cover_image),
+            cutover: cut_over,
             };
             (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))
         }

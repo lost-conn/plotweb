@@ -400,6 +400,9 @@ pub fn project_books(store: AppStore) {
                     word_count: None,
                     font_settings: None,
                     cover_image: e.cover_ref,
+                    // The user index does not record it, and a cached-only card cannot
+                    // ask. It is corrected the moment the book itself is fetched.
+                    cutover: false,
                 });
             }
         }
@@ -498,6 +501,7 @@ mod tests {
             word_count: Some(0),
             font_settings: None,
             cover_image: cover.map(|c| c.to_string()),
+            cutover: false,
         }
     }
 

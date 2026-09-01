@@ -309,3 +309,36 @@ mod sync_owned {
         assert_eq!(list.json.as_array().unwrap()[0]["title"], "One, renamed");
     }
 }
+
+/// A client cannot tell the author the truth about where their writing goes unless it
+/// knows whether this book is cut over. For a cut-over book sync is how an edit reaches
+/// the server, so a device with sync off is writing only to itself — and "Saved" meaning
+/// two different things depending on a flag nobody can see is the shape of every loss in
+/// this arc.
+#[tokio::test]
+async fn a_book_reports_whether_it_is_cut_over() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Ordinary Novel").await;
+
+    let r = app.get(&format!("/api/books/{book_id}")).await;
+    assert_eq!(r.status, StatusCode::OK);
+    assert_eq!(
+        r.json["cutover"], false,
+        "a book that is not cut over must say so"
+    );
+
+    app.cut_over(&book_id).await;
+
+    let r = app.get(&format!("/api/books/{book_id}")).await;
+    assert_eq!(r.json["cutover"], true);
+
+    // And in the shelf listing, which is where the dashboard reads from.
+    let list = app.get("/api/books").await;
+    let books = list.json.as_array().expect("a book list");
+    let entry = books
+        .iter()
+        .find(|b| b["id"] == book_id.as_str())
+        .expect("the book is listed");
+    assert_eq!(entry["cutover"], true);
+}
