@@ -2,7 +2,7 @@ import { test, expect, Browser, Page } from "@playwright/test";
 import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } from "./helpers";
 
 /**
- * One document, one writer — decided by the server, declared by the client.
+ * One document, one writer — decided by whether the book is cut over.
  *
  * Two writers on one body is how deleted text comes back under the author's cursor:
  * sync carries the deletion across as an incremental change while the REST autosave
@@ -10,17 +10,17 @@ import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } fr
  * applies that snapshot into the canonical document as a diff that says "re-insert the
  * sentence".
  *
- * But *which* writer should stand down depends on whether the book is cut over, and
- * neither side knows both halves: the client knows whether it is syncing this document,
- * the server knows whether the book's reads come from the canonical copy. The first
- * attempt at this rule had the client withhold the write on its own, which dropped the
- * save for every book that was not cut over — the edit reached the canonical store,
- * never reached git, and vanished on the next read.
+ * There used to be a `sync_owned` declaration on the wire, and a negotiation between
+ * two writers over which should stand down. It is gone: for a cut-over book sync is the
+ * only writer of a body, and everywhere else REST is. What remains to protect is the
+ * regression the negotiation was introduced to fix — a client withholding the body
+ * write for a book that is *not* cut over, where git is the truth and that write is the
+ * only thing reaching it. The edit landed in the canonical store, never reached git,
+ * and vanished on the next read.
  *
- * So the client always writes and declares `sync_owned`, and the server drops the body
- * only where that declaration means something. These cover both halves: the write still
- * lands when the book is not cut over (the regression), and it still carries the
- * declaration so the server has something to decide with (the original bug).
+ * Cutover itself is covered server-side (`tests/cutover.rs::one_writer`), where a book
+ * can actually be cut over; here the server is never cut over, so these pin the
+ * everywhere-else half.
  */
 
 /** A device: a fresh context with sync enabled before any script runs. */
@@ -62,10 +62,13 @@ test("sync on, book not cut over: edits still persist across a reload", async ({
   await expect(page.locator("#editor-main")).toContainText("This has to survive a reload.");
 });
 
-test("sync on: the body write declares that sync owns it", async ({ browser, baseURL }) => {
-  // The declaration is what lets the *server* decide, since only it knows whether the
-  // book is cut over. Without the flag on the wire there is nothing to decide with, and
-  // the reappearing-text bug comes back for cut-over books.
+test("sync on, book not cut over: the body write still carries content", async ({
+  browser,
+  baseURL,
+}) => {
+  // The regression this file exists for. Sync being on must not make the client
+  // withhold the body: git is the truth for a book that is not cut over, and this write
+  // is the only thing that reaches it.
   test.setTimeout(120_000);
 
   const page = await openDevice(browser, baseURL!);
@@ -78,28 +81,29 @@ test("sync on: the body write declares that sync owns it", async ({ browser, bas
   await typeInEditor(page, "First sentence, to get sync going.");
   await page.waitForTimeout(6000);
 
-  const declared: boolean[] = [];
+  const carried: boolean[] = [];
   page.on("request", (r) => {
     if (r.method() !== "PUT") return;
     if (!/\/api\/books\/[^/]+\/chapters\//.test(r.url())) return;
     const body = r.postData() ?? "";
-    if (!body.includes('"content"') || body.includes('"content":null')) return;
-    declared.push(body.includes('"sync_owned":true'));
+    if (!body.includes('"content"')) return;
+    carried.push(!body.includes('"content":null'));
+    expect(body, "the declaration is gone from the wire").not.toContain("sync_owned");
   });
 
   await typeInEditor(page, " Second sentence, typed while sync is on.");
   await page.waitForTimeout(6000);
 
-  expect(declared.length, "the body write must still be sent").toBeGreaterThan(0);
+  expect(carried.length, "the body write must still be sent").toBeGreaterThan(0);
   expect(
-    declared.every(Boolean),
-    `every body write must declare sync ownership: ${JSON.stringify(declared)}`,
+    carried.every(Boolean),
+    `every body write must carry content here: ${JSON.stringify(carried)}`,
   ).toBe(true);
 });
 
-test("sync off: the chapter body is written without the declaration", async ({ page }) => {
-  // The counterpart. Sync is off, so REST is the only writer there is and the write
-  // must not claim otherwise.
+test("sync off: the chapter body is written over REST", async ({ page }) => {
+  // The counterpart. Sync is off and the book is not cut over, so REST is the only
+  // writer there is.
   await registerNewUser(page);
   await createBook(page, "Rest Writer Novel");
   await addChapter(page, "Chapter One");
@@ -109,8 +113,8 @@ test("sync off: the chapter body is written without the declaration", async ({ p
   page.on("request", (r) => {
     if (r.method() === "PUT" && /\/api\/books\/[^/]+\/chapters\//.test(r.url())) {
       const body = r.postData() ?? "";
-      if (!body.includes('"content"')) return;
-      expect(body).toContain('"sync_owned":false');
+      if (!body.includes('"content"') || body.includes('"content":null')) return;
+      expect(body, "the declaration is gone from the wire").not.toContain("sync_owned");
       bodyWrites.push(new URL(r.url()).pathname);
     }
   });

@@ -209,15 +209,14 @@ pub async fn update(
         );
     }
 
-    // See `chapters::update`: the declaration only counts for a cut-over book, and only
-    // when the server can confirm the canonical document is one it can actually read —
-    // otherwise both writers stand down and the edit reaches neither. Title and colour
-    // are structure and are never covered by it.
+    // See `chapters::update`: for a cut-over book sync is the only writer of a body,
+    // and only where the server can confirm the canonical document is one it can
+    // actually read — otherwise nothing carries the edit at all. Title and colour are
+    // structure, which REST still carries for every book.
     let doc_id = format!("note:{note_id}");
-    let claimed_by_sync = req.sync_owned && state.cutover.is_cut_over(&book_id);
-    let sync_owns_body =
-        claimed_by_sync && super::canonical_is_authoritative(&state, &book_id, &doc_id);
-    let overrode_claim = claimed_by_sync && !sync_owns_body;
+    let cut_over = state.cutover.is_cut_over(&book_id);
+    let sync_owns_body = cut_over && super::canonical_is_authoritative(&state, &book_id, &doc_id);
+    let degraded = cut_over && !sync_owns_body && req.content.is_some();
 
     let carries_content = req.content.is_some();
     let content = if sync_owns_body { None } else { req.content.clone() };
@@ -244,8 +243,9 @@ pub async fn update(
         );
     }
 
-    // The claim was overridden: clear it, so the next write doesn't stand down too.
-    if overrode_claim {
+    // The canonical copy could not carry it: clear the claim, so the next write does
+    // not stand down for a writer that cannot deliver.
+    if degraded {
         let crdt_dir = state.crdt_dir.clone();
         let doc = doc_id.clone();
         if let Ok(Err(e)) =
@@ -282,7 +282,7 @@ pub async fn update(
         deferred_to_sync: sync_owns_body,
         warning: None,
     };
-    receipt.warning = super::save_warning(overrode_claim, carries_content, receipt.is_durable());
+    receipt.warning = super::save_warning(degraded, carries_content, receipt.is_durable());
     (StatusCode::OK, Json(serde_json::to_value(receipt).unwrap()))
 }
 
