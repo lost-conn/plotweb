@@ -199,8 +199,27 @@ Each is shippable and reversible on its own.
      `sync_owned` deleted from the wire. The server decides from state it can verify
      (`cut_over && canonical_is_authoritative`) rather than trusting a client flag, and
      still takes the write when the canonical copy cannot carry it.
-6. **Checkpoints** as the merge base and the history surface. Partly covered by the
-   bounded amend window in slice 3; the merge-base half is still open.
+6. **Checkpoints / recovery surfaces.** ✅ Landed as *making the difference visible*
+   rather than as an automatic merge — see the note below. Quarantined copies are
+   reachable (`plotweb-server quarantine list|show`), `reconcile` no longer runs from a
+   boot hook, and the rescue viewer marks the paragraphs a rescued copy holds that the
+   chapter does not. The history half was covered by the bounded amend window in slice 3.
+
+### Why slice 6 is not an automatic three-way merge
+
+§4.2 above says a forked client should "three-way merge against the last common
+checkpoint". Building that literally would mean an algorithm deciding, unattended, how to
+combine two versions of someone's prose — and a bad merge produces text that reads as
+though the author wrote it, which is the one failure mode nobody catches by looking.
+
+Every loss in this arc came from the system resolving an ambiguity on its own. So the
+merge base earns its keep by making the difference **visible and reviewable**: the viewer
+marks what the rescued copy has and the chapter lacks, and the author moves it. That is
+the same conclusion §2 reached about conflicts generally — *ask, or preserve; never
+resolve silently* — applied to merging rather than to discarding.
+
+An automatic merge stays possible later, on top of this, if the reviewable version turns
+out to be tedious in practice. It should not come first.
 
 **Widening the cutover is blocked until at least 1, 3 and 5 have landed with regression
 tests.** The gate list in the widen card measures server-side agreement only, and must gain

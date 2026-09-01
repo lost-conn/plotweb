@@ -2288,6 +2288,11 @@ fn do_switch_chapter_inner(
             // The model now reflects the current chapter — save-on-leave / autosave
             // may safely persist it.
             loaded_chapter_id.set(Some(new_cid.clone()));
+            // What a rescued copy is compared against (see `store.open_body`).
+            store.open_body.set(Some((
+                format!("chapter:{new_cid}"),
+                chapter.content.clone(),
+            )));
             // Freshly loaded: nothing to save until the author changes something.
             chapter_dirty.set(false);
 

@@ -25,6 +25,13 @@ pub struct AppStore {
     /// The rescue currently open in the viewer, with its projected text.
     pub rescue_open: Signal<Option<(String, String)>>,
     pub rescue_text: Signal<Option<String>>,
+    /// The body text of the chapter currently loaded in the editor, as `(doc_id, text)`.
+    ///
+    /// The comparison base for a rescued copy. It cannot come from `chapters`: under
+    /// local-first that list is projected from the `book:` structure document, which
+    /// carries order and titles but no body text. The editor's own content is the only
+    /// thing on this device that knows what the chapter currently says.
+    pub open_body: Signal<Option<(String, String)>>,
 }
 
 impl AppStore {
@@ -45,6 +52,7 @@ impl AppStore {
             rescued: Signal::new(Vec::new()),
             rescue_open: Signal::new(None),
             rescue_text: Signal::new(None),
+            open_body: Signal::new(None),
         }
     }
 }

@@ -129,8 +129,56 @@ fn rescue_label(store: &AppStore, doc_id: &str) -> String {
     doc_id.to_string()
 }
 
-/// Plain text out of the stored `DocNode` JSON, for a read-only preview.
-fn rescue_preview(json: &str) -> String {
+/// Paragraphs of the live chapter/note this rescue belongs to, if it is open.
+///
+/// The comparison base. Deliberately *only* what is already loaded: a rescue viewer
+/// that fetches is a viewer that can fail, and this has to work on a device that cannot
+/// reach the server at all — which is the device most likely to be holding one.
+fn live_paragraphs(store: &AppStore, doc_id: &str) -> Vec<String> {
+    match store.open_body.get() {
+        Some((open_id, text)) if open_id == doc_id => paragraphs_of(&text),
+        // A different chapter is open, or none. Comparing against the wrong document
+        // would mark every paragraph as missing, which is worse than not comparing.
+        _ => Vec::new(),
+    }
+}
+
+/// Split a stored `DocNode` JSON (or legacy HTML) into comparable paragraphs.
+fn paragraphs_of(content: &str) -> Vec<String> {
+    rescue_preview(content)
+        .split("\n\n")
+        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// The rescued copy as rows: each paragraph, and whether it is missing from the live
+/// document. `None` for the flag when there is nothing to compare against.
+fn rescue_rows(store: &AppStore) -> Vec<(String, bool)> {
+    let Some(json) = store.rescue_text.get() else {
+        return Vec::new();
+    };
+    let live = store
+        .rescue_open
+        .get()
+        .map(|(doc_id, _)| live_paragraphs(store, &doc_id))
+        .unwrap_or_default();
+    paragraphs_of(&json)
+        .into_iter()
+        .map(|para| {
+            let only_here = !live.is_empty() && !live.iter().any(|l| l.contains(para.as_str()));
+            (para, only_here)
+        })
+        .collect()
+}
+
+/// Plain text out of stored content, for a read-only preview.
+///
+/// Handles both shapes on purpose: the editor's `DocNode` JSON, and the legacy
+/// HTML/Markdown that predates it and is still in older chapters. A comparison base
+/// that silently returned nothing for legacy content would report "nothing to compare
+/// against" for exactly the oldest, most valuable chapters.
+fn rescue_preview(content: &str) -> String {
     fn walk(v: &serde_json::Value, out: &mut String) {
         match v {
             serde_json::Value::Object(map) => {
@@ -151,9 +199,36 @@ fn rescue_preview(json: &str) -> String {
             _ => {}
         }
     }
-    let mut out = String::new();
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(json) {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(content) {
+        let mut out = String::new();
         walk(&v, &mut out);
+        return out.trim().to_string();
+    }
+    // Legacy: block tags become paragraph breaks, everything else is stripped.
+    let mut out = String::new();
+    let mut in_tag = false;
+    let mut tag = String::new();
+    for c in content.chars() {
+        match c {
+            '<' => {
+                in_tag = true;
+                tag.clear();
+            }
+            '>' => {
+                in_tag = false;
+                let name = tag.trim_start_matches('/').trim();
+                if name.starts_with('p')
+                    || name.starts_with("br")
+                    || name.starts_with('h')
+                    || name.starts_with("div")
+                    || name.starts_with("li")
+                {
+                    out.push_str("\n\n");
+                }
+            }
+            _ if in_tag => tag.push(c),
+            _ => out.push(c),
+        }
     }
     out.trim().to_string()
 }
@@ -248,14 +323,61 @@ fn rescue_viewer(store: AppStore) -> NodeHandle {
                 }
 
                 div {
-                    style: "padding: 16px 18px; overflow-y: auto; white-space: pre-wrap; line-height: 1.55; flex: 1;",
-                    {move || match store.rescue_text.get() {
-                        None => "Reading…".to_string(),
-                        Some(json) if json.is_empty() => {
-                            "This copy could not be projected back to text. The bytes are still stored on this device.".to_string()
+                    style: "padding: 6px 18px 0; font-size: 13px; color: var(--rinch-color-dimmed);",
+                    {move || {
+                        let Some(json) = store.rescue_text.get() else {
+                            return String::new();
+                        };
+                        let Some((doc_id, _)) = store.rescue_open.get() else {
+                            return String::new();
+                        };
+                        let live = live_paragraphs(&store, &doc_id);
+                        if live.is_empty() {
+                            return "The chapter this came from is not open, so there is \
+                                    nothing to compare it against — every paragraph is shown."
+                                .to_string();
                         }
-                        Some(json) => rescue_preview(&json),
+                        let only_here = paragraphs_of(&json)
+                            .into_iter()
+                            .filter(|p| !live.iter().any(|l| l.contains(p.as_str())))
+                            .count();
+                        match only_here {
+                            0 => "Everything in this copy is already in the chapter — \
+                                  nothing here is missing from it."
+                                .to_string(),
+                            1 => "1 paragraph here is not in the chapter (highlighted).".to_string(),
+                            n => format!("{n} paragraphs here are not in the chapter (highlighted)."),
+                        }
                     }}
+                }
+
+                div {
+                    style: "padding: 12px 18px 16px; overflow-y: auto; line-height: 1.55; flex: 1;",
+                    // A reactive node swap has to be a match in the macro — a closure
+                    // returning a node renders as its Debug text here.
+                    match store.rescue_text.get() {
+                        None => div { "Reading…" },
+                        Some(json) if json.is_empty() => div {
+                            "This copy could not be projected back to text. The bytes are still stored on this device."
+                        },
+                        Some(_) => div {
+                            for (para, only_here) in rescue_rows(&store) {
+                                div {
+                                    key: para.clone(),
+                                    // The only-here paragraphs are the reason this
+                                    // viewer exists; the rest is context for them.
+                                    style: {
+                                        if only_here {
+                                            "margin-bottom: 12px; padding: 6px 10px; border-left: 3px solid #C97B4A; background: rgba(201,123,74,0.12);"
+                                        } else {
+                                            "margin-bottom: 12px; padding: 6px 10px; opacity: 0.55;"
+                                        }
+                                    },
+                                    {para}
+                                }
+                            }
+                        },
+                    }
                 }
 
                 div {
@@ -282,6 +404,63 @@ fn rescue_viewer(store: AppStore) -> NodeHandle {
 /// device's storage and stops there. That was true before this banner existed and
 /// nothing said it, which is the shape of every loss in this arc: the app reporting
 /// success for something that only half happened.
+#[cfg(test)]
+mod rescue_comparison {
+    use super::*;
+
+    /// The viewer's job is to show what the chapter is missing, not to dump text. A
+    /// rescue whose every paragraph is already in the chapter has nothing to act on;
+    /// one that carries a paragraph the chapter lacks is the whole reason it was kept.
+    #[test]
+    fn a_paragraph_the_chapter_lacks_is_the_one_worth_showing() {
+        let doc = r#"{"type":"doc","content":[
+            {"type":"paragraph","content":[{"type":"text","text":"The bus section is dug in."}]},
+            {"type":"paragraph","content":[{"type":"text","text":"He looks up at the night sky."}]}
+        ]}"#;
+        let paras = paragraphs_of(doc);
+        assert_eq!(paras.len(), 2);
+
+        // The chapter as the server has it — it stops before the second paragraph.
+        let live = paragraphs_of(
+            r#"{"type":"doc","content":[
+                {"type":"paragraph","content":[{"type":"text","text":"The bus section is dug in."}]}
+            ]}"#,
+        );
+
+        let missing: Vec<&String> = paras
+            .iter()
+            .filter(|p| !live.iter().any(|l| l.contains(p.as_str())))
+            .collect();
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].contains("night sky"));
+    }
+
+    /// Legacy chapters store HTML, not `DocNode` JSON. A comparison base that returned
+    /// nothing for those would report "nothing to compare against" for exactly the
+    /// oldest chapters — which is where a rescue matters most.
+    #[test]
+    fn legacy_html_content_still_yields_paragraphs() {
+        let paras = paragraphs_of("<p>First paragraph.</p><p>Second paragraph.</p>");
+        assert_eq!(paras.len(), 2, "got {paras:?}");
+        assert!(paras[0].contains("First paragraph."));
+        assert!(paras[1].contains("Second paragraph."));
+    }
+
+    /// Whitespace differences are not content differences — the projection and the
+    /// stored copy will not agree on them, and a viewer that highlighted every
+    /// paragraph would be no more useful than the raw dump it replaced.
+    #[test]
+    fn spacing_alone_is_not_a_difference() {
+        let a = paragraphs_of(
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"One   two\n three"}]}]}"#,
+        );
+        let b = paragraphs_of(
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"One two three"}]}]}"#,
+        );
+        assert_eq!(a, b, "paragraphs compare on words, not on spacing");
+    }
+}
+
 #[component]
 fn sync_off_banner() -> NodeHandle {
     rsx! {
