@@ -110,6 +110,30 @@ pub async fn adopt_book_doc(
     }
 }
 
+/// Identity headers for a canonical document: which document this is (`lineage`) and
+/// how many times it has been rebuilt rather than merged into (`epoch`).
+///
+/// Headers rather than a body field so the bytes stay exactly a document, and so an
+/// older client — which reads neither — is unaffected. A client compares them against
+/// what it holds to tell a *fork* (same lineage, higher epoch: the same chapter, rebuilt,
+/// reconcilable by text) from a genuinely *unrelated* document (different lineage, not
+/// reconcilable by anything but a person).
+fn identity_headers(state: &AppState, doc_id: &str) -> Vec<(&'static str, String)> {
+    let Ok(store) = rinch_storage::FsStore::open(state.crdt_dir.clone()) else {
+        return Vec::new();
+    };
+    match sync::read_manifest(&store, doc_id) {
+        Ok(Some(m)) => {
+            let mut out = vec![("x-plotweb-epoch", m.epoch.to_string())];
+            if let Some(lineage) = m.lineage {
+                out.push(("x-plotweb-lineage", lineage));
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// `GET /api/books/{book_id}/sync/{doc_id}` — the canonical document as a full
 /// Automerge snapshot, or `204` when the server holds none.
 ///
@@ -138,12 +162,20 @@ pub async fn get_canonical_doc(
             .await;
 
     match result {
-        Ok(Ok(Some(bytes))) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "application/octet-stream")],
-            bytes,
-        )
-            .into_response(),
+        Ok(Ok(Some(bytes))) => {
+            let mut response = (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "application/octet-stream")],
+                bytes,
+            )
+                .into_response();
+            for (name, value) in identity_headers(&state, &doc_id) {
+                if let Ok(v) = value.parse() {
+                    response.headers_mut().insert(name, v);
+                }
+            }
+            response
+        }
         Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(e)) => {
             eprintln!("[sync] read {doc_id}: {e}");

@@ -189,6 +189,28 @@ pub struct DocManifest {
     /// Set the first time a client syncs this doc. Presence means "client-owned now".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub synced_at: Option<String>,
+    /// Stable identity of *this chapter's document*, minted once and carried across
+    /// every rebuild. It answers the question a state vector cannot: two documents
+    /// that share no history may still be the same chapter, rebuilt — which is
+    /// reconcilable — or genuinely different documents, which is not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<String>,
+    /// Bumped every time the canonical document is rebuilt rather than merged into.
+    /// A client at a lower epoch is **forked**, not stale: it holds a history the
+    /// server deliberately abandoned, and may hold text nothing else has.
+    #[serde(default)]
+    pub epoch: u64,
+}
+
+/// Carry a document's identity across a save, minting it the first time.
+///
+/// In the manifest rather than beside it on purpose: the manifest put is the atomic
+/// commit point for a generation, so identity and content can never disagree. Written
+/// as two files they could, and the unsafe direction — content newer than epoch — is
+/// exactly a silent merge of disjoint histories.
+fn carry_lineage(prev: Option<&DocManifest>) -> String {
+    prev.and_then(|m| m.lineage.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
 }
 
 /// Read a doc's manifest, if it has one.
@@ -244,6 +266,9 @@ fn save_snapshot(
         generation: Some(generation.clone()),
         heads,
         synced_at,
+        lineage: Some(carry_lineage(prev)),
+        // An ordinary save continues the document; only a rebuild forks it.
+        epoch: prev.map(|m| m.epoch).unwrap_or(0),
     };
     let encoded =
         serde_json::to_vec(&manifest).map_err(|e| SyncError::Store(format!("encode: {e}")))?;
@@ -393,6 +418,19 @@ pub fn replace_canonical_from_git(
             .collect()
     };
 
+    // Keep what is about to be replaced. The rebuild is the moment a device's history
+    // is orphaned, and the copy being discarded here is the only server-side record of
+    // what those devices were syncing against — on 2026-08-29 nothing kept it, and the
+    // only surviving copy was in one browser's IndexedDB.
+    let epoch = prev.as_ref().map(|m| m.epoch).unwrap_or(0) + 1;
+    if let Some(existing) = load_snapshot(&store, doc_id, prev.as_ref())? {
+        let key = format!("_quarantine/{doc_id}/e{epoch}/snapshot");
+        if let Err(e) = block_on(store.put(&key, &existing)) {
+            // Not fatal, but loud: proceeding means the pre-rebuild copy is gone.
+            eprintln!("[reconcile] {doc_id}: could not quarantine the pre-rebuild copy: {e}");
+        }
+    }
+
     let generation = next_gen(prev.as_ref().and_then(|m| m.generation.as_deref()));
     block_on(store.put(&format!("{doc_id}/{generation}/snapshot"), bytes))
         .map_err(|e| SyncError::Store(e.to_string()))?;
@@ -405,6 +443,9 @@ pub fn replace_canonical_from_git(
         heads,
         // Deliberately None: the document is provisional again.
         synced_at: None,
+        // Same chapter, new history — that distinction is the whole point.
+        lineage: Some(carry_lineage(prev.as_ref())),
+        epoch,
     };
     let encoded =
         serde_json::to_vec(&manifest).map_err(|e| SyncError::Store(format!("encode: {e}")))?;
