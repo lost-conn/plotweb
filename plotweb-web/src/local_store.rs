@@ -706,6 +706,57 @@ pub(crate) async fn rescued_copies_in(
     Ok(found)
 }
 
+/// Materialize a rescued **body** copy into its `DocNode` JSON — the same shape a
+/// chapter's content has everywhere else, so the surface that shows it can reuse the
+/// ordinary rendering path.
+///
+/// A rescue that cannot be projected returns `Ok(None)` rather than an error: the bytes
+/// are still on disk either way, and a viewer that cannot render one should say so
+/// rather than lose it.
+pub async fn materialize_rescued_copy(doc_id: &str, slot: &str) -> StorageResult<Option<String>> {
+    let backend = backend().await?;
+    let Some(doc) = read_rescued_copy_in(&backend, doc_id, slot).await? else {
+        return Ok(None);
+    };
+    Ok(project_rescue(&doc))
+}
+
+/// Replay a rescued generation — base snapshot, then each delta in order — and
+/// serialize the result. Pure, so the tests drive it directly.
+pub(crate) fn project_rescue(doc: &PersistedDoc) -> Option<String> {
+    use rinch_editor_collab::CollabSession;
+    use rinch_editor_core::serialize::DocNode;
+    use rinch_editor_core::{EditorState, Schema};
+
+    let schema = Rc::new(Schema::starter_kit());
+    let mut session = CollabSession::from_bytes(&doc.snapshot).ok()?;
+    for delta in &doc.deltas {
+        let projected = session.projected_doc(&schema).ok()?;
+        let base = EditorState::create(
+            schema.clone(),
+            projected,
+            rinch_editor_core::default_plugins(),
+        );
+        // A delta that will not integrate stops the replay rather than failing it: the
+        // text up to that point is still worth handing back.
+        if session.integrate_incremental(&base, delta).is_err() {
+            break;
+        }
+    }
+    let node: DocNode = session.projected_doc(&schema).ok()?.to_doc().ok()?;
+    serde_json::to_string(&node).ok()
+}
+
+/// Forget a rescued copy, once its author has taken what they need from it.
+pub async fn discard_rescued_copy(doc_id: &str, slot: &str) -> StorageResult<()> {
+    let backend = backend().await?;
+    let base = format!("{}{slot}/", rescue_prefix(doc_id));
+    for key in backend.list(&base).await? {
+        backend.delete(&key).await?;
+    }
+    Ok(())
+}
+
 /// Read one rescued copy back: its base snapshot and the deltas that followed.
 pub async fn read_rescued_copy(doc_id: &str, slot: &str) -> StorageResult<Option<PersistedDoc>> {
     let backend = backend().await?;
@@ -1112,6 +1163,42 @@ mod tests {
         assert_eq!(
             block_on(rescued_copies_in(&backend)).unwrap(),
             vec![("chapter:lost".to_string(), "r0001".to_string())]
+        );
+    }
+
+    /// A rescue is only useful if the author can read it back, so the stored
+    /// generation must project to the same text the editor would have shown — deltas
+    /// replayed, not just the base snapshot.
+    #[test]
+    fn a_rescued_copy_projects_back_to_its_text() {
+        let schema = Rc::new(Schema::starter_kit());
+        let seed = node_from_json(
+            &schema,
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"the sentence that reached the server"}]}]}"#,
+        );
+        let edited = node_from_json(
+            &schema,
+            r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"the sentence that reached the server, and the one that did not"}]}]}"#,
+        );
+
+        let state = EditorState::create(
+            schema.clone(),
+            seed.clone(),
+            rinch_editor_core::default_plugins(),
+        );
+        let mut session = CollabSession::new(&state).expect("project seed");
+        let snapshot = session.snapshot();
+        session.record_local(&seed, &edited).expect("project edit");
+        let delta = session.save_incremental().expect("encode the edit");
+
+        let rescued = PersistedDoc {
+            snapshot,
+            deltas: vec![delta],
+        };
+        let json = project_rescue(&rescued).expect("a rescue projects back");
+        assert!(
+            json.contains("and the one that did not"),
+            "the unsent edit must survive the round trip: {json}"
         );
     }
 

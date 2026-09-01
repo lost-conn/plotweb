@@ -25,6 +25,11 @@ rinch-http = { git = "https://github.com/joeleaver/rinch", rev = "b95100d" }
 # Cross-platform durable local storage (native FsStore / web IdbStore). The local-
 # first seam for chapter-body Automerge docs (Phase 2). Cross-platform, so shared.
 rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "b95100d" }
+# The body CRDT itself. Pulled transitively by rinch-web's `collaboration` feature and
+# by rinch on desktop, but named directly so a *rescued* generation can be replayed and
+# projected back to text without an editor attached (`local_store::project_rescue` — the
+# viewer that shows an author what this device kept). Cross-platform, so shared.
+rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "b95100d" }
 # Hand-projected `book:` structure doc (chapter order/titles, notes tree, meta).
 # Already in the tree transitively (rinch-editor-collab / rinch-web `collaboration`);
 # named directly so `local_book.rs` can build/read a plain Automerge doc. On wasm the
@@ -86,9 +91,9 @@ uuid = { version = "1", features = ["js"] }
 rinch = { git = "https://github.com/joeleaver/rinch", rev = "b95100d", features = ["desktop", "collaboration"] }
 
 # Native durability proof (local_store::tests): drive the chapter-body Automerge
-# round-trip (CollabSession) against a tempdir FsStore, no GUI needed.
+# round-trip against a tempdir FsStore, no GUI needed. `rinch-editor-collab` is a
+# regular dependency now (see above), so only the tempdir helper is test-only.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "b95100d" }
 tempfile = "3"
 
 [profile.dev]
