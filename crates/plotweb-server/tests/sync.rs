@@ -847,3 +847,89 @@ async fn the_canonical_get_reports_the_documents_identity() {
         "and how many times it has been rebuilt"
     );
 }
+
+/// Keeping bytes nobody can read is only marginally better than not keeping them. A
+/// rebuild sets the previous document aside; this is the read side that makes it a
+/// recovery rather than an archive nobody can open.
+///
+/// Two shapes, deliberately both: a **client-owned** body carries the editor's own yrs
+/// document, which `materialize_body` cannot project (no `meta.format` tag — it is not a
+/// server-made projection), while a document the server projected can be read straight
+/// back as text. The raw bytes are always retrievable, which is what a hand salvage
+/// needs; the text is a convenience where the shape allows it.
+#[tokio::test]
+async fn a_quarantined_copy_can_be_listed_and_read_back() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, chapter_id) = book_with_chapter(&mut app).await;
+    let uri = chapter_uri(&book_id, &chapter_id);
+    let doc_id = format!("chapter:{chapter_id}");
+
+    let device = BodyDevice::new();
+    device.put("text", "the sentence the devices were syncing against");
+    device.sync(&mut app, &uri).await;
+
+    // Nothing has been rebuilt, so nothing is held.
+    assert!(
+        plotweb_server::quarantine::list(app.crdt_dir())
+            .expect("list")
+            .is_empty(),
+        "a store with no rebuild holds no quarantined copies"
+    );
+
+    let rebuild = |text: &str| {
+        plotweb_server::sync::replace_canonical_from_git(
+            app.crdt_dir(),
+            &doc_id,
+            "chapter",
+            &plotweb_crdt::project_body(
+                &format!(
+                    r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{text}"}}]}}]}}"#
+                ),
+                plotweb_crdt::BodyKind::Chapter,
+            )
+            .expect("projection"),
+        )
+        .expect("rebuild");
+    };
+
+    // First rebuild retires the device's own document.
+    rebuild("rebuilt from git");
+
+    let held = plotweb_server::quarantine::list(app.crdt_dir()).expect("list");
+    assert_eq!(held.len(), 1, "the rebuild set one copy aside");
+    assert_eq!(held[0].doc_id, doc_id);
+    assert_eq!(held[0].epoch, 1);
+    assert!(held[0].bytes > 0);
+    assert!(
+        plotweb_server::quarantine::read(app.crdt_dir(), &doc_id, 1)
+            .expect("read")
+            .is_some(),
+        "the raw bytes of a client-owned copy are always retrievable — that is what a \
+         hand salvage works from"
+    );
+
+    // Second rebuild retires a document the server projected, which reads back as text.
+    rebuild("rebuilt again");
+
+    let text = plotweb_server::quarantine::materialize(app.crdt_dir(), &doc_id, 2)
+        .expect("materialize")
+        .expect("the copy is there");
+    assert!(
+        text.contains("rebuilt from git"),
+        "a quarantined projection must read back as the text it was: {text}"
+    );
+
+    // The live document is the newest rebuild — quarantine is a copy, not a rollback.
+    let (status, bytes) = app.get_bytes(&uri).await;
+    assert_eq!(status, StatusCode::OK);
+    let live = plotweb_crdt::materialize_body(&bytes).expect("live document");
+    assert!(live.contains("rebuilt again"));
+
+    assert!(
+        plotweb_server::quarantine::materialize(app.crdt_dir(), &doc_id, 99)
+            .expect("materialize")
+            .is_none(),
+        "an epoch that was never retired holds nothing"
+    );
+}

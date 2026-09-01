@@ -54,6 +54,14 @@ async fn main() {
         return;
     }
 
+    // `quarantine list` / `quarantine show <doc_id> <epoch>` reach the copies a rebuild
+    // set aside. Read-only. Without this the bytes are kept but unreachable, which is
+    // only marginally better than not keeping them.
+    if args.get(1).map(String::as_str) == Some("quarantine") {
+        plotweb_server::quarantine::run(args.get(2).map(String::as_str), &args[3..]).await;
+        return;
+    }
+
     let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:plotweb.db".into());
     let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "data/books".into());
     let rhype_dir = std::env::var("RHYPEDB_DATA_DIR").unwrap_or_else(|_| "data/rhypedb".into());
@@ -142,11 +150,29 @@ async fn main() {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
 
-    let reconcile_setting = std::env::var("PLOTWEB_RECONCILE_ON_BOOT")
+    // `PLOTWEB_RECONCILE_ON_BOOT` used to run a reconcile here. It no longer does, and
+    // the variable is refused loudly rather than ignored quietly.
+    //
+    // The `*_ON_BOOT` hooks exist so a read-only pass can run lock-free beside live
+    // traffic — the audit and the shadow report are read-only, and that is why they are
+    // safe to leave on. Reconcile is not: it rebuilds canonical documents and orphans
+    // the history every connected device holds. On 2026-08-28 it did exactly that,
+    // unattended, while a browser was open, and a writing session was lost the next day
+    // as a consequence. A rebuild is a decision someone makes, watching the output —
+    // `plotweb-server reconcile --prefer git|crdt`, with `--dry-run` first.
+    if std::env::var("PLOTWEB_RECONCILE_ON_BOOT")
         .ok()
-        .filter(|v| !v.is_empty() && v != "0");
+        .is_some_and(|v| !v.is_empty() && v != "0")
+    {
+        eprintln!(
+            "[boot] PLOTWEB_RECONCILE_ON_BOOT is no longer honoured: a reconcile rebuilds \
+             canonical documents and orphans connected devices, so it must be run \
+             deliberately — `plotweb-server reconcile --prefer git|crdt [--dry-run]`. \
+             Unset the variable to silence this."
+        );
+    }
 
-    if want_backfill || want_shadow || reconcile_setting.is_some() {
+    if want_backfill || want_shadow {
         let dd = data_dir.clone();
         let cd = crdt_dir.clone();
         // What the shadow verdict means depends on whether the flag it talks about is
@@ -161,12 +187,6 @@ async fn main() {
                     boot_books,
                 )
                 .await;
-            }
-            // Between the two: resolving a divergence is only meaningful once the
-            // backfill has refreshed what it can, and the shadow report is only worth
-            // reading once the resolutions have happened.
-            if let Some(setting) = reconcile_setting.as_deref() {
-                plotweb_server::reconcile::run_on_boot(setting, dd.clone(), cd.clone()).await;
             }
             if want_shadow {
                 plotweb_server::shadow::run_on_boot(dd, cd, &boot_cutover).await;

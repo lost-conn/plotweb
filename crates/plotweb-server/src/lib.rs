@@ -11,6 +11,7 @@ pub mod cutover;
 pub mod db;
 pub mod email;
 pub mod mirror;
+pub mod quarantine;
 pub mod rhype;
 pub mod rhype_migrate;
 pub mod reconcile;
