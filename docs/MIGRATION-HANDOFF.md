@@ -202,8 +202,10 @@ The canonical Automerge store is **staged but unread**. Everything below is wher
    and `POST /api/books/{book_id}/sync/{doc_id}` + `POST /api/sync/user` now run the real
    protocol against the canonical store, authorized and per-doc locked.
    Slice 3 also landed: `plotweb-web/src/sync.rs` syncs the `user:` and `book:` docs
-   (callback-driven, `rinch_core::set_timeout` poll, off unless `PLOTWEB_SYNC=1` / web
-   `localStorage["plotweb_sync"]="1"`). Proven natively with two app instances: a chapter
+   (callback-driven, `rinch_core::set_timeout` poll). It ran behind a global opt-in flag
+   until one writer made sync the only path a cut-over book's edits have; now **cutover
+   implies sync, per book**, and `PLOTWEB_SYNC` / `localStorage["plotweb_sync"]` is an
+   override — `"1"` on everywhere, `"0"` off everywhere. Proven natively with two app instances: a chapter
    added on one device appears in the other's open book **in place**.
    Next: slice 2 (upstream rinch `EditorHandle` sync pass-through — the CRDT has the
    methods, the handle doesn't expose them), then slice 4 (chapter/note bodies, which

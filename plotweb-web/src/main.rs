@@ -45,6 +45,12 @@ fn app() -> NodeHandle {
         }
     });
 
+    // Which books are cut over, as far as this device was last told. Read before the
+    // session check, because it decides whether writing on this device can reach the
+    // server at all: a cut-over book takes body edits through sync only, and a device
+    // that started offline cannot wait for a fetch to find that out.
+    sync::hydrate_cutover(store);
+
     // Parse the current URL to determine the initial route. On native there is no
     // browser location (and `web_sys::window()` panics off-wasm), so start at the
     // session check with a neutral route.

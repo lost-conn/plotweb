@@ -36,8 +36,8 @@
 //!
 //! # Still additive
 //!
-//! Every REST write remains in place; this only moves CRDT bytes. Off by default —
-//! see [`enabled`].
+//! Every REST write remains in place for a book that is not cut over; this only moves
+//! CRDT bytes. Which books sync is [`enabled_for_book`]'s answer.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -206,23 +206,140 @@ thread_local! {
     static STORE: RefCell<Option<AppStore>> = const { RefCell::new(None) };
 }
 
-/// Whether background sync runs at all.
-///
-/// Off unless explicitly switched on, per slice 3's rollout plan: native reads
-/// `PLOTWEB_SYNC=1`, web reads `localStorage["plotweb_sync"] == "1"`. When off, every
-/// entry point here is a no-op and the app behaves exactly as it did before.
+// ── Whether sync runs, and for which documents ───────────────────────────────
+//
+// Slice 3 shipped this as one global opt-in flag, off by default, because sync was
+// additive: every write still went to git, so a device with sync off lost nothing.
+// One writer (#48/#49) ended that. For a **cut-over** book the client sends no body
+// content over REST and the server drops any that arrives, so sync is the only path
+// an edit has — and a device with sync off is writing to itself.
+//
+// So the gate is no longer global: **cutover implies sync**, per book. Pre-cutover
+// books are unchanged (sync stays off unless asked for), which matters because with
+// sync on and cutover off both writers are live at once — a whole-content PUT into
+// git and yrs ops into the canonical copy, with nothing mirroring between them.
+//
+// The flag survives as an override in both directions: `"1"` forces sync on for every
+// book (how the e2e suite and the native app ask for it), `"0"` is the kill switch for
+// a device where sync itself is the problem.
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Gate {
+    /// `plotweb_sync=1` — sync every open document, cut over or not.
+    On,
+    /// `plotweb_sync=0` — sync nothing. The escape hatch.
+    Off,
+    /// Unset: sync a book iff it is cut over.
+    ByBook,
+}
+
+fn gate_of(flag: Option<&str>) -> Gate {
+    match flag {
+        Some("1") => Gate::On,
+        Some("0") => Gate::Off,
+        _ => Gate::ByBook,
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
-pub fn enabled() -> bool {
-    std::env::var("PLOTWEB_SYNC").map(|v| v == "1").unwrap_or(false)
+fn gate() -> Gate {
+    gate_of(std::env::var("PLOTWEB_SYNC").ok().as_deref())
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn enabled() -> bool {
-    crate::platform::window()
+fn gate() -> Gate {
+    let flag = crate::platform::window()
         .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item("plotweb_sync").ok().flatten())
-        .map(|v| v == "1")
-        .unwrap_or(false)
+        .and_then(|s| s.get_item("plotweb_sync").ok().flatten());
+    gate_of(flag.as_deref())
+}
+
+thread_local! {
+    /// Books known to be cut over. Server-derived (it arrives with the book's REST
+    /// payload) and cached in local storage, so a cold start knows before it can ask
+    /// — see [`crate::local_store::cut_over_books`].
+    static CUTOVER: RefCell<std::collections::HashSet<String>> =
+        RefCell::new(std::collections::HashSet::new());
+}
+
+/// The decision itself, without asking where the book or the flag came from.
+fn allows(gate: Gate, cut_over: bool) -> bool {
+    match gate {
+        Gate::On => true,
+        Gate::Off => false,
+        Gate::ByBook => cut_over,
+    }
+}
+
+/// Whether sync carries this book's documents on this device.
+pub fn enabled_for_book(book_id: &str) -> bool {
+    allows(gate(), book_is_cut_over(book_id))
+}
+
+/// Whether sync carries the account's `user:` index.
+///
+/// It belongs to no book, so it rides along as soon as *any* book on this device is
+/// cut over: the index is how a book created on another device appears here at all,
+/// and a cut-over book whose card never arrives cannot be opened to be synced.
+pub fn enabled_for_user() -> bool {
+    allows(gate(), CUTOVER.with(|c| !c.borrow().is_empty()))
+}
+
+/// Whether `book_id` is cut over as far as this device knows.
+pub fn book_is_cut_over(book_id: &str) -> bool {
+    CUTOVER.with(|c| c.borrow().contains(book_id))
+}
+
+/// Record what the server said about a book, and act on it: learning that a book is
+/// cut over is what switches sync on for it, so anything already open must be
+/// registered now rather than at the next navigation.
+pub fn note_cutover(book_id: &str, cut_over: bool, store: AppStore) {
+    let changed = CUTOVER.with(|c| {
+        let mut set = c.borrow_mut();
+        if cut_over {
+            set.insert(book_id.to_string())
+        } else {
+            set.remove(book_id)
+        }
+    });
+    if !changed {
+        return;
+    }
+    let owned = book_id.to_string();
+    crate::local_store::spawn(async move {
+        if let Err(e) = crate::local_store::remember_cutover(&owned, cut_over).await {
+            log::warn!("sync: could not cache the cutover flag for {owned}: {e}");
+        }
+    });
+    if cut_over && crate::local_book::open_book_id().as_deref() == Some(book_id) {
+        register_book(book_id, store);
+        // And whatever is already attached: a body registers at attach time, so one
+        // opened before the answer arrived (a cold offline start goes straight to the
+        // chapter it was left on) would otherwise wait for the next chapter to be
+        // opened before any of it left the device.
+        for doc_id in crate::local_store::open_body_ids() {
+            register_body(&doc_id, book_id);
+        }
+    }
+}
+
+/// Load the cached cutover answers this device kept from previous sessions.
+///
+/// Additive: an answer already learned this session (a fetch that beat the read) wins,
+/// since it is the newer one.
+pub fn hydrate_cutover(store: AppStore) {
+    crate::local_store::spawn(async move {
+        match crate::local_store::cut_over_books().await {
+            Ok(books) => {
+                for book_id in books {
+                    // Through `note_cutover`, so a book already open when the answer
+                    // lands starts syncing instead of waiting to be reopened.
+                    note_cutover(&book_id, true, store.clone());
+                }
+            }
+            Err(e) => log::warn!("sync: could not read the cached cutover flags: {e}"),
+        }
+    });
 }
 
 /// Register the signed-in account's `user:` doc and sync it now.
@@ -234,10 +351,21 @@ pub fn register_user(user_id: &str, store: AppStore) {
 }
 
 /// Register the open book's `book:` doc and sync it now.
+///
+/// Also registers the account's `user:` index. Under [`Gate::ByBook`] the index's own
+/// gate only opens once a cut-over book is known, and at sign-in none was — so without
+/// this the book list would stay unsynced until the next launch.
 pub fn register_book(book_id: &str, store: AppStore) {
-    register(Doc::Book(book_id.to_string()), store);
-    if enabled() {
-        arm_sweep(book_id);
+    if !enabled_for_book(book_id) {
+        return;
+    }
+    register(Doc::Book(book_id.to_string()), store.clone());
+    arm_sweep(book_id);
+    if let Some(user_id) = crate::local_user::open_user_id() {
+        let label = format!("user:{user_id}");
+        if !ENGINE.with(|e| e.borrow().contains_key(&label)) {
+            register_user(&user_id, store);
+        }
     }
 }
 
@@ -249,7 +377,7 @@ pub fn register_book(book_id: &str, store: AppStore) {
 /// registration is dropped, since a cycle against a closed editor has nothing to
 /// drive. (Background sync of unopened bodies is slice 5.)
 pub fn register_body(doc_id: &str, book_id: &str) {
-    if !enabled() {
+    if !enabled_for_book(book_id) {
         return;
     }
     let store = STORE.with(|s| s.borrow().clone());
@@ -288,9 +416,7 @@ pub fn register_body(doc_id: &str, book_id: &str) {
 /// local store (which is durable) and already on its way up as a change. A document
 /// parked for sign-in is *not* syncing — REST is the only writer then, and must stay on.
 pub fn body_is_syncing(doc_id: &str) -> bool {
-    if !enabled() {
-        return false;
-    }
+    // No separate gate: a body is in the engine only if its book's gate let it in.
     ENGINE.with(|e| {
         e.borrow()
             .get(doc_id)
@@ -299,7 +425,12 @@ pub fn body_is_syncing(doc_id: &str) -> bool {
 }
 
 fn register(doc: Doc, store: AppStore) {
-    if !enabled() {
+    let allowed = match &doc {
+        Doc::User(_) => enabled_for_user(),
+        Doc::Book(book_id) => enabled_for_book(book_id),
+        Doc::Body { book_id, .. } => enabled_for_book(book_id),
+    };
+    if !allowed {
         return;
     }
     STORE.with(|s| *s.borrow_mut() = Some(store));
@@ -331,16 +462,12 @@ fn register(doc: Doc, store: AppStore) {
 /// device. It also made every race around switching chapters twenty seconds wide
 /// instead of one and a half.
 pub fn nudge_body(doc_id: &str) {
-    if !enabled() {
-        return;
-    }
+    // No gate of its own: `arm_timer` no-ops for a label the engine does not hold, and
+    // registration is what the gate decides.
     arm_timer(doc_id, NUDGE_DEBOUNCE_MS);
 }
 
 pub fn nudge(label_owner: &str, is_book: bool) {
-    if !enabled() {
-        return;
-    }
     let label = if is_book {
         format!("book:{label_owner}")
     } else {
@@ -1045,5 +1172,35 @@ mod seam_canary {
         let _state_vector: fn(&EditorHandle) -> Option<Vec<u8>> = EditorHandle::collab_state_vector;
         let _diff: fn(&EditorHandle, &[u8]) -> Option<Vec<u8>> = EditorHandle::collab_sync_diff;
         let _receive: fn(&EditorHandle, &[u8]) -> bool = EditorHandle::collab_receive;
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    #[test]
+    fn the_flag_is_an_override_in_both_directions() {
+        assert_eq!(gate_of(Some("1")), Gate::On, "the e2e suite and the native app ask with 1");
+        assert_eq!(gate_of(Some("0")), Gate::Off, "0 is the kill switch");
+        assert_eq!(gate_of(None), Gate::ByBook, "unset is the ordinary case");
+        assert_eq!(gate_of(Some("yes")), Gate::ByBook, "anything else is not an override");
+    }
+
+    /// The rule this replaced a global opt-in with: a cut-over book has no path to the
+    /// server except sync, so sync is not optional for it. A book that is *not* cut
+    /// over stays off — with sync on and cutover off there are two live writers of the
+    /// same body (a whole-content PUT into git, yrs ops into the canonical copy) and
+    /// nothing mirroring between them.
+    #[test]
+    fn cutover_implies_sync_and_nothing_else_does() {
+        assert!(allows(Gate::ByBook, true), "a cut-over book must sync unasked");
+        assert!(!allows(Gate::ByBook, false), "a git-backed book must not");
+        assert!(allows(Gate::On, false), "the override reaches books that are not cut over");
+        assert!(
+            !allows(Gate::Off, true),
+            "the kill switch must beat cutover, or a device where sync is the problem \
+             has nowhere to stand"
+        );
     }
 }

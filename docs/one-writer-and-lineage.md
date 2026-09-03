@@ -236,5 +236,8 @@ still has its work afterwards.*
 - **Retention.** How many checkpoints, and does the CRDT delta log get pruned on the same
   schedule? The compaction that erased the local deltas on 2026-08-30 was correct behaviour
   that we happened to need.
-- **Native app.** `PLOTWEB_SYNC=1` is opt-in there too; one writer makes it mandatory for
-  cut-over books, so the native build must default it on before its books are cut over.
+- ~~**Native app.** `PLOTWEB_SYNC=1` is opt-in there too; one writer makes it mandatory for
+  cut-over books, so the native build must default it on before its books are cut over.~~
+  **Settled**: the gate is per book on every client — a cut-over book syncs whether or not
+  anything asked, and `PLOTWEB_SYNC` / `plotweb_sync` only overrides that (`"1"` on
+  everywhere, `"0"` off everywhere). Nothing has to remember to switch a device on.

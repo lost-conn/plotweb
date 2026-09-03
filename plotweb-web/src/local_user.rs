@@ -209,6 +209,11 @@ fn with_user(user_id: &str, f: impl FnOnce(&mut AutoCommit)) {
 /// the projection). Schedules its async work and returns immediately.
 pub fn enter_user(user_id: String, books: Vec<Book>, store: AppStore) {
     let doc_id = format!("user:{user_id}");
+    // The list carries each book's cutover flag, so the dashboard is the first place
+    // this device can learn it — including for books it will not open this session.
+    for book in &books {
+        crate::sync::note_cutover(&book.id, book.cutover, store.clone());
+    }
     spawn(async move {
         let ds = match DocStore::open(&doc_id).await {
             Ok(ds) => ds,
@@ -390,6 +395,7 @@ pub fn project_books(store: AppStore) {
                 out.push(b);
             } else {
                 // Cached-only (offline): render from the subset the doc holds.
+                let cut_over = crate::sync::book_is_cut_over(&e.id);
                 out.push(Book {
                     id: e.id,
                     title: e.title,
@@ -400,9 +406,10 @@ pub fn project_books(store: AppStore) {
                     word_count: None,
                     font_settings: None,
                     cover_image: e.cover_ref,
-                    // The user index does not record it, and a cached-only card cannot
-                    // ask. It is corrected the moment the book itself is fetched.
-                    cutover: false,
+                    // The user index does not record it, so this is what the device
+                    // was told last time it could ask. It is corrected the moment the
+                    // book itself is fetched.
+                    cutover: cut_over,
                 });
             }
         }

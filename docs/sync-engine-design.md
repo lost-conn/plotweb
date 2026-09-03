@@ -443,8 +443,19 @@ Shape notes worth knowing before touching it:
   a reload.
 - **401 is a state, not an error**: the engine parks in `Unauthed` until the next sign-in
   re-registers it. 403/404 unregisters the doc. Status 0 (offline) backs off.
-- **Off by default** — `PLOTWEB_SYNC=1` natively, `localStorage["plotweb_sync"] == "1"` on
-  web. Every entry point is a no-op when off.
+- **Cutover decides, per book** (was: off by default behind one global flag). Under one
+  writer a cut-over book takes body edits through sync and nothing else, so sync is not
+  optional for it; a book still backed by git stays off, because sync on *and* cutover off
+  means two live writers of the same body with nothing mirroring between them. The flag
+  survives as an override in both directions — `PLOTWEB_SYNC` / `localStorage`
+  `plotweb_sync`, `"1"` forces it on everywhere (how the e2e suite asks), `"0"` is the kill
+  switch. See `Gate` / `enabled_for_book` in `plotweb-web/src/sync.rs`, and
+  `e2e/tests/sync-gate.spec.ts`, which pins both directions.
+- **The client caches which books are cut over** (`_cutover/{book_id}` in local storage,
+  outside any doc prefix so compaction cannot sweep it). Cutover arrives with a book's REST
+  payload, but it is also what decides whether writing on this device can reach the server
+  at all — a device that starts offline with no cached answer would take the REST path and
+  report an ordinary "Saved" for text that is going nowhere.
 - **The projections had to change too** (found by the native drive, not by a test): both
   `project_chapters` and `project_notes` used the CRDT only to *refine* REST-fetched
   records — a chapter or note whose id existed solely in the synced `book:` doc was
@@ -616,9 +627,10 @@ wired to a route yet.
 structure-doc disjoint gap (`book:`/`user:` are Automerge and have no equivalent of the
 yrs unrelated-history check).
 
-Reversibility: slices 1–2 are additive (a new endpoint, an upstream method). Slices 3–4 sit
-behind a client flag (`PLOTWEB_SYNC=1` natively / a build flag on web) until proven; off =
-today's behaviour exactly.
+Reversibility: slices 1–2 are additive (a new endpoint, an upstream method). Slices 3–4 sat
+behind a client flag until proven; that flag is now an override rather than the switch —
+cutover turns sync on by itself, and `plotweb_sync=0` is what restores the old behaviour on
+a device.
 
 ---
 

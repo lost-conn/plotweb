@@ -946,6 +946,79 @@ pub(crate) async fn body_fingerprint(doc_id: &str) -> StorageResult<Option<Strin
         .and_then(|b| String::from_utf8(b).ok()))
 }
 
+// ── Which books are cut over (device-local cache) ────────────────────────────
+//
+// Cutover is the server's fact, and it arrives with a book's REST payload. But it is
+// also the fact that decides *whether writing on this device can reach the server at
+// all*: under cutover, sync is the only path a body edit takes. A device that starts
+// offline therefore cannot afford to wait for a fetch to learn it — with no answer it
+// would treat the book as git-backed, take the REST path, and report a plain "Saved"
+// for text that is going nowhere.
+//
+// So each answer is cached here as it arrives, and read back at startup. Keys live
+// outside any doc prefix (like the rescues above), so `DocStore::sweep_except` cannot
+// collect them when a chapter is compacted.
+
+const CUTOVER_PREFIX: &str = "_cutover/";
+
+fn cutover_key(book_id: &str) -> String {
+    format!("{CUTOVER_PREFIX}{book_id}")
+}
+
+/// Remember what the server just said about `book_id`, so the next cold start knows
+/// before it can ask.
+pub async fn remember_cutover(book_id: &str, cut_over: bool) -> StorageResult<()> {
+    let backend = backend().await?;
+    remember_cutover_in(&backend, book_id, cut_over).await
+}
+
+/// [`remember_cutover`] against an explicit backend.
+pub(crate) async fn remember_cutover_in(
+    backend: &Rc<dyn Store>,
+    book_id: &str,
+    cut_over: bool,
+) -> StorageResult<()> {
+    let key = cutover_key(book_id);
+    if cut_over {
+        backend.put(&key, b"1").await
+    } else {
+        // A book can be moved back (the flag is reversible to current content), and a
+        // stale "1" would keep this device sending body edits through sync only.
+        backend.delete(&key).await
+    }
+}
+
+/// Every book this device has been told is cut over.
+pub async fn cut_over_books() -> StorageResult<Vec<String>> {
+    let backend = backend().await?;
+    cut_over_books_in(&backend).await
+}
+
+/// [`cut_over_books`] against an explicit backend.
+pub(crate) async fn cut_over_books_in(backend: &Rc<dyn Store>) -> StorageResult<Vec<String>> {
+    let mut found = Vec::new();
+    for key in backend.list(CUTOVER_PREFIX).await? {
+        if let Some(book_id) = key.strip_prefix(CUTOVER_PREFIX) {
+            found.push(book_id.to_string());
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// The body documents the two editor surfaces currently hold.
+///
+/// For the case where a book turns out to be cut over *after* its chapter was already
+/// attached: the body's registration is decided at attach time, so learning late has to
+/// go back for what is open rather than wait for the next chapter to be opened.
+pub(crate) fn open_body_ids() -> Vec<String> {
+    [&ACTIVE_CHAPTER_BODY, &ACTIVE_NOTE_BODY]
+        .into_iter()
+        .filter_map(|slot| slot.with(|a| a.borrow().clone()))
+        .filter(|doc_id| body_is_open(doc_id))
+        .collect()
+}
+
 /// Whether either editor surface currently holds `doc_id`.
 pub(crate) fn body_is_open(doc_id: &str) -> bool {
     with_body_session(doc_id, |_| ()).is_some()
@@ -1265,6 +1338,43 @@ mod tests {
         assert!(
             json.contains("and the one that did not"),
             "the unsent edit must survive the round trip: {json}"
+        );
+    }
+
+    /// A device must be able to answer "is this book cut over" before it can ask the
+    /// server.
+    ///
+    /// Under cutover, body edits reach the server through sync and nothing else. A
+    /// device that starts offline and has no cached answer treats the book as
+    /// git-backed, takes the REST path, and reports an ordinary "Saved" for text that
+    /// is going nowhere — so the answer has to survive a restart, and a chapter's
+    /// compaction, which is what took the metadata beside a document before.
+    #[test]
+    fn the_cutover_answer_survives_a_restart_and_a_compaction() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+        block_on(remember_cutover_in(&backend, "book-a", true)).unwrap();
+        block_on(remember_cutover_in(&backend, "book-b", false)).unwrap();
+
+        // Opening a chapter in that book: reconstruct, then compact.
+        let store = DocStore::with_backend(backend.clone(), "chapter:probe");
+        block_on(store.publish_snapshot(b"one")).unwrap();
+        block_on(store.publish_snapshot(b"two")).unwrap();
+
+        // A fresh backend over the same directory is what a restart looks like.
+        let reopened: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+        assert_eq!(
+            block_on(cut_over_books_in(&reopened)).unwrap(),
+            vec!["book-a".to_string()],
+            "the cut-over book must still be known, and a book that never was must not              be invented"
+        );
+
+        // Reversible: the flag can be taken off a book, and this device must stop
+        // treating sync as the only way its writing leaves.
+        block_on(remember_cutover_in(&reopened, "book-a", false)).unwrap();
+        assert!(
+            block_on(cut_over_books_in(&reopened)).unwrap().is_empty(),
+            "moving a book back must clear the cached answer"
         );
     }
 

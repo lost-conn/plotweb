@@ -330,6 +330,9 @@ pub fn enter(
     store: AppStore,
 ) {
     let doc_id = format!("book:{book_id}");
+    // Before anything is registered: whether this book is cut over is what decides
+    // whether sync carries it, and this REST payload is the server's answer.
+    crate::sync::note_cutover(&book_id, book.cutover, store.clone());
     spawn(async move {
         let ds = match DocStore::open(&doc_id).await {
             Ok(ds) => ds,
@@ -376,7 +379,7 @@ pub fn enter(
         // Project the (now-authoritative) local doc into the render signals.
         project(store.clone());
 
-        // The doc exists now, so it can be synced. No-op unless sync is enabled.
+        // The doc exists now, so it can be synced. No-op unless this book syncs here.
         crate::sync::register_book(&book_id, store);
     });
 }

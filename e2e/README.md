@@ -45,8 +45,15 @@ at runtime and there is no id to name in `PLOTWEB_CUTOVER_BOOKS` at boot. The cu
 paths are reached with a wildcard instead:
 
 ```
-cd e2e && npm run test:cutover      # PLOTWEB_E2E_CUTOVER=* playwright test cutover-sync
+cd e2e && npm run test:cutover      # PLOTWEB_E2E_CUTOVER=* playwright test cutover-sync …
 ```
+
+**sync-gate.spec.ts** runs in *both* modes, and is the pair that pins which books sync:
+against the default server a git-backed book must touch no sync endpoint, and against the
+cut-over server a browser that has never been configured must sync anyway — writing on it
+reaches a second, equally unconfigured device. Specs that want a device with sync genuinely
+off now have to say so with `plotweb_sync="0"`; leaving the flag unset no longer means off
+for a cut-over book.
 
 Worth the separate invocation: cut over **and** syncing is where every production bug in
 the offline-first arc has lived — reappearing deleted text, chapters locked behind a 409,

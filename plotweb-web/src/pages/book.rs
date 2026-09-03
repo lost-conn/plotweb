@@ -2117,6 +2117,95 @@ fn render_history_chapter_preview(
 /// none of those, or that only landed after the server overruled how this client
 /// believed the body was being carried, is precisely the case that used to read as
 /// "Saved" while two days of writing went nowhere.
+/// PUT a chapter body, and take the write back if the server could not place it.
+///
+/// One writer decides who carries a cut-over book's body, and the server is the one who
+/// knows: it lets sync own the body only while the canonical document is one it can
+/// actually read and write (`canonical_is_authoritative`). When that check fails it
+/// intends to take the content to git after all and say so on the receipt — but the
+/// client stopped sending content for a cut-over book at all, so there was nothing to
+/// take. The save then landed nowhere and the author was told nothing beyond a
+/// four-word status: exactly the two-day silence #48 set out to end, arrived at from
+/// the other side.
+///
+/// So a non-durable receipt is answered once, with the content: the canonical copy is
+/// broken, sync has already stood down server-side, and git is the only writer left.
+/// Once, deliberately — a second refusal is reported rather than retried.
+fn save_chapter_body(
+    url: String,
+    content: String,
+    cut_over: bool,
+    save_status: Signal<&'static str>,
+    save_alert: Signal<Option<String>>,
+) {
+    let req = UpdateChapterRequest {
+        title: None,
+        content: (!cut_over).then(|| content.clone()),
+    };
+    let retry_url = url.clone();
+    api::put::<_, SaveReceipt>(&url, &req, move |result| match result {
+        Ok(receipt) if cut_over && !receipt.is_durable() => {
+            let req = UpdateChapterRequest {
+                title: None,
+                content: Some(content),
+            };
+            api::put::<_, SaveReceipt>(&retry_url, &req, move |result| {
+                apply_save_receipt(result, save_status, save_alert)
+            });
+        }
+        other => apply_save_receipt(other, save_status, save_alert),
+    });
+}
+
+/// The note editor's half of [`save_chapter_body`], including the same one-answer
+/// fallback: a note body is carried by the same one writer, and lands nowhere in the
+/// same way when the canonical copy cannot be read.
+///
+/// Title and colour are structure, which REST carries either way, so they ride along on
+/// both attempts.
+fn save_note_body(
+    url: String,
+    title: String,
+    content: String,
+    color: Option<String>,
+    cut_over: bool,
+    note_save_status: Signal<&'static str>,
+    save_alert: Signal<Option<String>>,
+) {
+    let build = move |body: Option<String>| UpdateNoteRequest {
+        title: Some(title.clone()),
+        content: body,
+        color: color.clone(),
+    };
+    let req = build((!cut_over).then(|| content.clone()));
+    let retry_url = url.clone();
+    api::put::<_, SaveReceipt>(&url, &req, move |result| match result {
+        Ok(receipt) if cut_over && !receipt.is_durable() => {
+            let req = build(Some(content));
+            api::put::<_, SaveReceipt>(&retry_url, &req, move |result| {
+                apply_note_save_receipt(result, note_save_status, save_alert)
+            });
+        }
+        other => apply_note_save_receipt(other, note_save_status, save_alert),
+    });
+}
+
+/// A note body takes the same server path as a chapter's, so the same receipt decides
+/// whether this counts as saved.
+fn apply_note_save_receipt(
+    result: Result<SaveReceipt, api::ApiError>,
+    note_save_status: Signal<&'static str>,
+    save_alert: Signal<Option<String>>,
+) {
+    match result {
+        Ok(receipt) => {
+            note_save_status.set(if receipt.is_durable() { "saved" } else { "error" });
+            save_alert.set(receipt.warning);
+        }
+        Err(_) => note_save_status.set("error"),
+    }
+}
+
 fn apply_save_receipt(
     result: Result<SaveReceipt, api::ApiError>,
     save_status: Signal<&'static str>,
@@ -2242,17 +2331,15 @@ fn do_switch_chapter_inner(
             // going through `save_content`. A cut-over book takes body edits through
             // sync only, so this write carries structure and not content.
             let cut_over = store.current_book.get().map(|b| b.cutover).unwrap_or(false);
-            let req = UpdateChapterRequest {
-                title: None,
-                content: (!cut_over).then_some(content),
-            };
             // The just-left chapter's save is reported like any other: an optimistic
             // "saved" is set below for the chapter being opened, and a receipt that
             // says this write went nowhere has to win over it.
-            api::put::<_, SaveReceipt>(
-                &format!("/api/books/{}/chapters/{}", bid, current_id),
-                &req,
-                move |result| apply_save_receipt(result, save_status, save_alert),
+            save_chapter_body(
+                format!("/api/books/{}/chapters/{}", bid, current_id),
+                content,
+                cut_over,
+                save_status,
+                save_alert,
             );
         }
     }
@@ -2883,9 +2970,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         store
             .current_book
             .get()
-            .map(|b| b.cutover)
-            .unwrap_or(false)
-            && !crate::sync::enabled()
+            .is_some_and(|b| b.cutover && !crate::sync::enabled_for_book(&b.id))
     };
     let show_chapter_modal = Signal::new(false);
     let new_chapter_title = Signal::new(String::new());
@@ -3046,6 +3131,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 let fs = book.font_settings.clone().unwrap_or_default();
                 fonts::load_book_fonts(&fs);
                 font_settings.set(fs);
+                // Before the signal that renders the page, not after: the gate is read
+                // from plain state rather than a signal (as the flag always was), so
+                // the render triggered by `current_book` has to see the answer already
+                // recorded. It also has to be recorded before an editor can attach — a
+                // body registers for sync only if its book's gate is open by then.
+                crate::sync::note_cutover(&book.id, book.cutover, store);
                 store.current_book.set(Some(book.clone()));
                 Some(book)
             }
@@ -3166,14 +3257,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // server knows that. Withholding it here regardless is how an edit reaches the
         // canonical store, never reaches git, and vanishes from a book whose reads
         // still come from git.
-        let req = UpdateChapterRequest {
-            title: None,
-            content: sends_body_content().then_some(content),
-        };
-        api::put::<_, SaveReceipt>(
-            &format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
-            &req,
-            move |result| apply_save_receipt(result, save_status, save_alert),
+        save_chapter_body(
+            format!("/api/books/{}/chapters/{}", bid, chapter_id_to_save),
+            content,
+            !sends_body_content(),
+            save_status,
+            save_alert,
         );
     };
 
@@ -3737,14 +3826,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
             let bid = bid_signal.get();
             if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
                 save_status.set("saving");
-                let req = UpdateChapterRequest {
-                    title: None,
-                    content: sends_body_content().then_some(content),
-                };
-                api::put::<_, SaveReceipt>(
-                    &format!("/api/books/{}/chapters/{}", bid, current_id),
-                    &req,
-                    move |result| apply_save_receipt(result, save_status, save_alert),
+                save_chapter_body(
+                    format!("/api/books/{}/chapters/{}", bid, current_id),
+                    content,
+                    !sends_body_content(),
+                    save_status,
+                    save_alert,
                 );
             }
         }
@@ -3857,27 +3944,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
             crate::local_book::note_meta(&bid, &nid, Some(&title_val), color_val.as_deref());
 
             note_save_status.set("saving");
-            let req = UpdateNoteRequest {
-                title: Some(title_val),
-                // Body only; title and colour are structure, which REST still carries.
-                content: sends_body_content().then_some(content),
-                color: color_val,
-            };
-            api::put::<_, SaveReceipt>(
-                &format!("/api/books/{}/notes/{}", bid, nid),
-                &req,
-                move |result| {
-                    match result {
-                        // A note body takes the same server path as a chapter's, so
-                        // the same receipt decides whether this counts as saved.
-                        Ok(receipt) => {
-                            note_save_status
-                                .set(if receipt.is_durable() { "saved" } else { "error" });
-                            save_alert.set(receipt.warning);
-                        }
-                        Err(_) => note_save_status.set("error"),
-                    }
-                },
+            save_note_body(
+                format!("/api/books/{}/notes/{}", bid, nid),
+                title_val,
+                content,
+                color_val,
+                !sends_body_content(),
+                note_save_status,
+                save_alert,
             );
         }
     };
