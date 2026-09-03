@@ -895,7 +895,7 @@ pub fn apply_content(canonical: &[u8], content: &str, kind: BodyKind) -> Result<
         .map_err(|e| format!("could not materialize the stored document: {e}"))?;
 
     session
-        .record_local(&before, &after)
+        .record_local(&schema, &before, &after)
         .map_err(|e| format!("could not record the edit: {e}"))?;
     Ok(session.snapshot())
 }
