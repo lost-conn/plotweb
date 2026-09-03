@@ -155,12 +155,11 @@ source.
   which our `default-features = false` build requires; rhypedb `master` may not
   have it yet). Once that merges to `master`, repin all three `rhypedb-*` deps in
   the root `Cargo.toml` (and the matching note in `Cargo.toml` / `Dockerfile`).
-- **rinch** is pinned to `rev = b95100d…` in `plotweb-web/Cargo.toml`, kept in
+- **rinch** is pinned to `rev = 7909da4…` in `plotweb-web/Cargo.toml`, kept in
   sync with the `Dockerfile`'s `RINCH_COMMIT` (and the `rinch-*` git deps in the
   root `Cargo.toml`, `plotweb-crdt` and `plotweb-server` — they must all name the
-  same rev). Repin them together as rinch's `main` advances. `b95100d` is a
-  commit on rinch `main`; it supersedes the earlier `fix/editor-mobile-soft-keyboard`
-  branch pin, whose work landed on `main` as PR #249.
+  same rev). Repin them together as rinch's `main` advances. `7909da4` is a
+  commit on rinch `main`.
 
 ## Verification status
 

@@ -1254,7 +1254,9 @@ mod tests {
         );
         let mut session = CollabSession::new(&state).expect("project seed");
         let snapshot = session.snapshot();
-        session.record_local(&seed, &edited).expect("project edit");
+        session
+            .record_local(&schema, &seed, &edited)
+            .expect("project edit");
         let delta = session.save_incremental().expect("encode the edit");
 
         let rescued = PersistedDoc {
@@ -1446,7 +1448,7 @@ mod tests {
 
             // Project the edit and capture its incremental delta.
             session
-                .record_local(&seed_node, &edited_node)
+                .record_local(&schema, &seed_node, &edited_node)
                 .expect("project edit");
             // Fallible since rinch #190 (yrs encodes the delta rather than handing
             // back a buffer it always has).
