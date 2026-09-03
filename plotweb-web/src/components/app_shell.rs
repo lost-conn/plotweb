@@ -462,11 +462,16 @@ mod rescue_comparison {
 }
 
 #[component]
+/// Shown when a cut-over book is open on a device where sync cannot carry it.
+///
+/// Cutover now switches sync on by itself, so this is reachable only where the flag
+/// says `plotweb_sync=0` — the kill switch. It stays because that state still has to
+/// be visible: a save that reaches nothing must not look like any other save.
 fn sync_off_banner() -> NodeHandle {
     rsx! {
         div {
             style: "background: #4A3B22; color: #FFF4DF; padding: 8px 16px; font-size: 13px; display: flex; align-items: center; gap: 10px;",
-            span { "This book syncs, and sync is off on this device — anything you write here stays on this device until you turn it on." }
+            span { "This book syncs, and sync is switched off on this device — anything you write here stays on this device until it is turned back on." }
         }
     }
 }
@@ -486,8 +491,10 @@ pub fn app_shell() -> NodeHandle {
             if store.rescue_open.get().is_some() {
                 {rescue_viewer(__scope, store)}
             }
-            if store.current_book.get().map(|b| b.cutover).unwrap_or(false)
-                && !crate::sync::enabled()
+            if store
+                .current_book
+                .get()
+                .is_some_and(|b| b.cutover && !crate::sync::enabled_for_book(&b.id))
             {
                 {sync_off_banner(__scope)}
             }

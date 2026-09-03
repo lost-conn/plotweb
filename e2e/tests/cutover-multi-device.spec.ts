@@ -27,9 +27,13 @@ async function openDevice(
   sync = true,
 ): Promise<{ page: Page; context: BrowserContext }> {
   const context = await browser.newContext();
-  if (sync) {
-    await context.addInitScript(() => window.localStorage.setItem("plotweb_sync", "1"));
-  }
+  // Explicit in both directions. Cutover now switches sync on by itself, so an
+  // unconfigured device on a cut-over book *syncs* — "0", the kill switch, is the only
+  // way to get a device that seeds its body documents from REST.
+  await context.addInitScript(
+    (value) => window.localStorage.setItem("plotweb_sync", value),
+    sync ? "1" : "0",
+  );
   const page = await context.newPage();
   await page.goto(baseURL);
   return { page, context };
@@ -205,7 +209,10 @@ test("a device whose document was seeded independently replaces it, once", async
   await typeInEditor(a.page, "Canonical sentence. ");
   await a.page.waitForTimeout(8000);
 
-  // A second device with sync OFF: it seeds its own local document from REST.
+  // A second device with sync switched off (`plotweb_sync=0`): it seeds its own local
+  // document from REST. That is now a deliberate state rather than the default — see
+  // `openDevice` — but it is the state that produced the disjoint histories §D8 is for,
+  // and any device that used the app before its book was cut over still holds one.
   const b = await openDevice(browser, baseURL!, false);
   await signIn(b.page, username, password);
   await b.page.goto(`/book/${bookId}`);

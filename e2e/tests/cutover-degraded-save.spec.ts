@@ -14,6 +14,12 @@ import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } fr
  *
  * The server now takes the write to git and reports the degradation; this is the half
  * that decides whether anyone finds out.
+ *
+ * One writer briefly made this unreachable rather than fixed: the client stopped sending
+ * body content for a cut-over book at all, so the server had nothing to take to git and
+ * the receipt carried no warning — the save landed nowhere, quietly, which is the very
+ * thing this file exists to catch. The client now answers a non-durable receipt once,
+ * with the content (`save_chapter_body`), which is what puts the alert below back.
  */
 
 // Needs a server started with `PLOTWEB_CUTOVER_BOOKS=*` — the flag is what makes a
