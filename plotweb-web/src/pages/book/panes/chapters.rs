@@ -2,6 +2,8 @@
 //! chapter-body-save machinery it and the editor pane share.
 
 use rinch::prelude::*;
+// Reached only from inside the `web_only!` block below; unused natively.
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{Chapter, SaveReceipt, UpdateChapterRequest};
@@ -13,6 +15,7 @@ use crate::store::AppStore;
 
 use super::super::state::BookState;
 use super::super::BookPane;
+#[cfg(target_arch = "wasm32")]
 use super::editor::scroll_to_text_in_editor;
 
 /// Apply a save response to the editor's status and the author-facing alert.

@@ -4,10 +4,15 @@
 use std::collections::HashMap;
 
 use rinch::prelude::*;
+// Both are reached only from inside `web_only!` blocks below, so on the native
+// target they are genuinely unused. Gated rather than deleted — matches how
+// `main.rs` imports `JsCast`.
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{BetaFeedback, Chapter};
 
+#[cfg(target_arch = "wasm32")]
 use super::panes::editor::scroll_to_text_in_editor;
 
 /// Render a feedback card in the editor sidebar.
