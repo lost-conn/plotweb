@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-ui-font="inter">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PlotWeb — Design Language v1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playwrite+DE+Grund:wght@100..400&family=Macondo+Swash+Caps&family=Inter:wght@400;500;600&family=Source+Sans+3:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=Fira+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════
+   TOKENS — the proposal. Colors are unchanged from production.
+   ══════════════════════════════════════════════════════════════ */
+:root {
+  /* Teal ramp (from rinch) */
+  --teal-0:#e6fcf5; --teal-1:#c3fae8; --teal-2:#96f2d7; --teal-3:#63e6be;
+  --teal-4:#38d9a9; --teal-5:#20c997; --teal-6:#12b886; --teal-7:#0ca678;
+  --teal-8:#099268; --teal-9:#087f5b;
+  --violet-6:#7950f2; --red-6:#e03131; --amber-6:#f08c00;
+
+  /* ── Type scale — 10 ad-hoc sizes → 6 ── */
+  --pw-text-2xs: 11px;   /* micro labels, counts */
+  --pw-text-xs:  12px;   /* metadata, captions */
+  --pw-text-sm:  13px;   /* dense UI, sidebar */
+  --pw-text-md:  15px;   /* default UI */
+  --pw-text-lg:  19px;   /* pane heading */
+  --pw-text-xl:  26px;   /* page title */
+
+  --pw-lh-tight: 1.25;
+  --pw-lh-ui:    1.45;
+  --pw-lh-prose: 1.7;
+
+  /* ── Space — 4px base ── */
+  --pw-space-3xs: 2px;  --pw-space-2xs: 4px;  --pw-space-xs: 8px;
+  --pw-space-sm:  12px; --pw-space-md:  16px; --pw-space-lg: 24px;
+  --pw-space-xl:  32px; --pw-space-2xl: 48px; --pw-space-3xl: 64px;
+
+  /* ── Radius — 8 values → 3 + pill ── */
+  --pw-radius-sm: 4px;    /* inputs, chips, toolbar buttons */
+  --pw-radius-md: 8px;    /* cards, panels, dialogs */
+  --pw-radius-lg: 14px;   /* covers, mobile sheets */
+  --pw-radius-full: 999px;
+
+  /* ── Z-index — 5 literals → named scale ── */
+  --pw-z-sticky: 10; --pw-z-popover: 100; --pw-z-overlay: 200;
+  --pw-z-sheet: 210; --pw-z-dialog: 220; --pw-z-drag: 300; --pw-z-toast: 400;
+
+  /* ── Motion ── */
+  --pw-ease: cubic-bezier(.2,.8,.2,1);
+  --pw-dur-fast: 120ms; --pw-dur: 200ms; --pw-dur-slow: 320ms;
+
+  /* ── Measure ── */
+  --pw-measure: 34em;     /* ≈68 characters of prose */
+  --pw-pane-max: 720px;   /* settings / list panes */
+
+  /* ── Fonts ── */
+  --pw-font-display: 'Macondo Swash Caps', cursive;
+  --pw-font-prose:   'Playwrite DE Grund', Georgia, serif;
+  --pw-font-ui:      'Inter', system-ui, sans-serif;
+  --pw-font-mono:    'IBM Plex Mono', ui-monospace, monospace;
+}
+
+[data-ui-font="source"] { --pw-font-ui: 'Source Sans 3', system-ui, sans-serif; }
+[data-ui-font="plex"]   { --pw-font-ui: 'IBM Plex Sans', system-ui, sans-serif; }
+[data-ui-font="fira"]   { --pw-font-ui: 'Fira Sans', system-ui, sans-serif; }
+[data-ui-font="playwrite"] { --pw-font-ui: 'Playwrite DE Grund', Georgia, serif; }
+
+/* ── Theme ── */
+[data-theme="dark"] {
+  --body:#1C1917; --surface:#262220; --text:#E7E0D8; --dimmed:#9C9489;
+  --border:#3D3733; --placeholder:#6B6359; --deep:#1A1714; --deepest:#14120F;
+  --hairline: rgba(231,224,216,.09);
+  --pw-shadow-1: 0 1px 2px rgba(0,0,0,.4);
+  --pw-shadow-2: 0 4px 16px -2px rgba(0,0,0,.55);
+  --pw-shadow-3: 0 18px 50px -10px rgba(0,0,0,.7);
+}
+[data-theme="light"] {
+  --body:#FAF8F5; --surface:#FFFFFF; --text:#2C2520; --dimmed:#8C8278;
+  --border:#E0D8CF; --placeholder:#A89E94; --deep:#F3F0EC; --deepest:#EDE9E3;
+  --hairline: rgba(44,37,32,.09);
+  --pw-shadow-1: 0 1px 2px rgba(60,45,30,.07);
+  --pw-shadow-2: 0 4px 16px -2px rgba(60,45,30,.13);
+  --pw-shadow-3: 0 18px 50px -10px rgba(60,45,30,.22);
+}
+:root { --pw-focus-ring: 0 0 0 2px var(--body), 0 0 0 4px var(--teal-6); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   SHEET CHROME (this document, not the app)
+   ══════════════════════════════════════════════════════════════ */
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--body); color:var(--text);
+  font-family:var(--pw-font-ui); font-size:var(--pw-text-md);
+  line-height:var(--pw-lh-ui); -webkit-font-smoothing:antialiased;
+}
+.topbar{
+  position:sticky; top:0; z-index:var(--pw-z-sticky);
+  display:flex; align-items:center; gap:var(--pw-space-lg);
+  padding:var(--pw-space-sm) var(--pw-space-lg);
+  background:var(--deep); border-bottom:1px solid var(--border);
+  flex-wrap:wrap;
+}
+.topbar b{font-family:var(--pw-font-display);font-weight:400;font-size:var(--pw-text-lg)}
+.topbar nav{display:flex;gap:var(--pw-space-md);flex-wrap:wrap;font-size:var(--pw-text-sm)}
+.topbar nav a{color:var(--dimmed);text-decoration:none}
+.topbar nav a:hover{color:var(--teal-4)}
+.topbar .spacer{flex:1}
+.ctl{display:flex;align-items:center;gap:var(--pw-space-2xs);font-size:var(--pw-text-xs);color:var(--dimmed)}
+select,.btnlike{
+  font:inherit;font-size:var(--pw-text-xs);background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--pw-radius-sm);
+  padding:4px 8px;cursor:pointer;
+}
+main{max-width:1180px;margin:0 auto;padding:var(--pw-space-2xl) var(--pw-space-lg) 120px}
+section{margin-bottom:var(--pw-space-3xl);scroll-margin-top:80px}
+h2{
+  font-family:var(--pw-font-display);font-weight:400;font-size:var(--pw-text-xl);
+  margin-bottom:var(--pw-space-2xs);
+}
+h3{font-size:var(--pw-text-md);font-weight:600;margin:var(--pw-space-xl) 0 var(--pw-space-sm)}
+.lede{color:var(--dimmed);font-size:var(--pw-text-sm);max-width:62ch;margin-bottom:var(--pw-space-lg)}
+.note{
+  border-left:2px solid var(--teal-7);padding:var(--pw-space-xs) var(--pw-space-sm);
+  background:var(--deep);font-size:var(--pw-text-sm);color:var(--dimmed);
+  margin:var(--pw-space-md) 0;border-radius:0 var(--pw-radius-sm) var(--pw-radius-sm) 0;
+}
+.note b{color:var(--text);font-weight:600}
+code{font-family:var(--pw-font-mono);font-size:.88em;color:var(--teal-4)}
+.grid{display:grid;gap:var(--pw-space-md)}
+.demo{
+  background:var(--deep);border:1px solid var(--border);
+  border-radius:var(--pw-radius-md);padding:var(--pw-space-lg);
+}
+.caption{font-size:var(--pw-text-xs);color:var(--dimmed);margin-top:var(--pw-space-xs)}
+.pill{
+  display:inline-block;font-size:var(--pw-text-2xs);letter-spacing:.06em;
+  text-transform:uppercase;color:var(--dimmed);border:1px solid var(--border);
+  border-radius:var(--pw-radius-full);padding:2px 8px;
+}
+.pill.good{color:var(--teal-4);border-color:var(--teal-8)}
+.pill.bad{color:var(--red-6);border-color:var(--red-6)}
+
+/* ══════════════════════════════════════════════════════════════
+   PROPOSED PRIMITIVES — the actual design system
+   ══════════════════════════════════════════════════════════════ */
+
+/* Button — 4 tiers, one shape language */
+.pw-btn{
+  font:inherit;font-size:var(--pw-text-sm);font-weight:500;
+  border-radius:var(--pw-radius-sm);padding:7px 14px;cursor:pointer;
+  border:1px solid transparent;background:transparent;color:var(--text);
+  transition:background var(--pw-dur-fast) var(--pw-ease),
+             border-color var(--pw-dur-fast) var(--pw-ease),
+             color var(--pw-dur-fast) var(--pw-ease);
+  display:inline-flex;align-items:center;gap:6px;
+}
+.pw-btn:focus-visible{outline:none;box-shadow:var(--pw-focus-ring)}
+.pw-btn--primary{background:var(--teal-7);color:#fff;border-color:var(--teal-7)}
+.pw-btn--primary:hover{background:var(--teal-6);border-color:var(--teal-6)}
+.pw-btn--default{border-color:var(--border);background:var(--surface)}
+.pw-btn--default:hover{border-color:var(--dimmed)}
+.pw-btn--quiet{color:var(--dimmed)}
+.pw-btn--quiet:hover{background:var(--hairline);color:var(--text)}
+.pw-btn--danger{color:var(--red-6)}
+.pw-btn--danger:hover{background:rgba(224,49,49,.1)}
+.pw-btn[disabled]{opacity:.4;cursor:not-allowed}
+
+/* Input */
+.pw-input{
+  font:inherit;font-size:var(--pw-text-sm);width:100%;
+  background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--pw-radius-sm);
+  padding:7px 10px;transition:border-color var(--pw-dur-fast) var(--pw-ease);
+}
+.pw-input::placeholder{color:var(--placeholder)}
+.pw-input:focus{outline:none;border-color:var(--teal-7);box-shadow:var(--pw-focus-ring)}
+.pw-field{display:block;margin-bottom:var(--pw-space-md)}
+.pw-label{
+  display:block;font-size:var(--pw-text-xs);color:var(--dimmed);
+  margin-bottom:var(--pw-space-2xs);
+}
+
+/* Card — ONE card. Variants change accent, never chrome. */
+.pw-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--pw-radius-md);padding:var(--pw-space-sm) var(--pw-space-md);
+  transition:border-color var(--pw-dur-fast) var(--pw-ease);
+  position:relative;overflow:hidden;
+}
+.pw-card:hover{border-color:var(--dimmed)}
+.pw-card--accent::before{
+  content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--accent,var(--teal-6));
+}
+
+/* Section header — the sidebar's organising device */
+.pw-section-header{
+  display:flex;align-items:center;gap:var(--pw-space-xs);
+  font-size:var(--pw-text-2xs);font-weight:600;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--dimmed);
+  padding:var(--pw-space-xs) var(--pw-space-xs) var(--pw-space-2xs);
+}
+.pw-section-header .count{
+  margin-left:auto;font-weight:400;letter-spacing:0;
+  font-size:var(--pw-text-2xs);color:var(--placeholder);
+}
+
+/* Pane header — top of any main-pane surface */
+.pw-pane-header{
+  display:flex;align-items:baseline;gap:var(--pw-space-sm);
+  padding-bottom:var(--pw-space-sm);margin-bottom:var(--pw-space-lg);
+  border-bottom:1px solid var(--hairline);
+}
+.pw-pane-header h4{
+  font-family:var(--pw-font-display);font-weight:400;font-size:var(--pw-text-lg);
+}
+.pw-pane-header .sub{font-size:var(--pw-text-xs);color:var(--dimmed)}
+.pw-pane-header .actions{margin-left:auto;display:flex;gap:var(--pw-space-xs)}
+
+/* Hairline divider */
+.pw-rule{height:1px;background:var(--hairline);border:0;margin:var(--pw-space-md) 0}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <b>PlotWeb</b>
+  <nav>
+    <a href="#principles">Principles</a>
+    <a href="#typeface">UI typeface</a>
+    <a href="#scales">Scales</a>
+    <a href="#primitives">Primitives</a>
+    <a href="#overlays">Overlays</a>
+    <a href="#notes">Notes options</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="ctl">UI font
+    <select id="fontsel">
+      <option value="inter">Inter</option>
+      <option value="source">Source Sans 3</option>
+      <option value="plex">IBM Plex Sans</option>
+      <option value="fira">Fira Sans</option>
+      <option value="playwrite">Playwrite (current)</option>
+    </select>
+  </span>
+  <button class="btnlike" id="themebtn">Light mode</button>
+</div>
+
+<main>
+
+<!-- ══════════════ PRINCIPLES ══════════════ -->
+<section id="principles">
+  <h2>Design language</h2>
+  <p class="lede">Quiet studio with warm paper. Five rules that decide every later argument.</p>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
+    <div class="demo">
+      <h3 style="margin-top:0">1 · Text is the only loud thing</h3>
+      <p class="caption">Chrome sits at <code>--dimmed</code> or below. Nothing competes with prose for attention. Accent teal marks state and action, never decoration.</p>
+    </div>
+    <div class="demo">
+      <h3 style="margin-top:0">2 · Containers are earned</h3>
+      <p class="caption">Whitespace and hairlines before boxes; boxes before shadows. A card exists only where things must be told apart at a glance. Today three card styles wrap things that needed no box at all.</p>
+    </div>
+    <div class="demo">
+      <h3 style="margin-top:0">3 · One measure</h3>
+      <p class="caption">Prose is <code>34em</code> ≈ 68 characters wherever it appears — editor, note, reader, preview. The reader already does this at 760px. The editor does not, and that is the single biggest defect in the app.</p>
+    </div>
+    <div class="demo">
+      <h3 style="margin-top:0">4 · Chrome retreats on typing</h3>
+      <p class="caption">Begin typing and furniture fades. Move the pointer, press <code>Esc</code>, or stop for 3s and it returns. Never removes information you cannot get back instantly.</p>
+    </div>
+    <div class="demo">
+      <h3 style="margin-top:0">5 · Display type belongs to the book</h3>
+      <p class="caption">Macondo and Playwrite set book titles, chapter headings and prose — the things that are <em>yours</em>. Application chrome gets a quiet face that survives 11px.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ TYPEFACE ══════════════ -->
+<section id="typeface">
+  <h2>UI typeface</h2>
+  <p class="lede">Switch the picker in the header to recast this entire document — including the samples below — so you can judge each face in situ rather than as a specimen. "Playwrite (current)" shows what the app does today.</p>
+
+  <div class="note"><b>Why this matters more than you'd expect.</b> The Typography panel only restyles <em>book content</em>. Application chrome is not user-configurable, so whatever ships here is what every author reads for four hours at a stretch, at 11–13px.</div>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(255px,1fr))">
+    <div class="demo">
+      <div class="pw-section-header">Chapters <span class="count">12</span></div>
+      <div style="font-size:var(--pw-text-sm);padding:6px 8px;border-radius:var(--pw-radius-sm);background:var(--hairline)">Chapter 4 — The Crossing</div>
+      <div style="font-size:var(--pw-text-sm);padding:6px 8px;color:var(--dimmed)">Chapter 5 — Salt and Debt</div>
+      <div style="font-size:var(--pw-text-xs);color:var(--dimmed);padding:6px 8px">2,418 words · edited 20 min ago</div>
+      <p class="caption">Sidebar at 13px / metadata at 12px — the sizes that decide legibility.</p>
+    </div>
+    <div class="demo">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <button class="pw-btn pw-btn--primary">Add chapter</button>
+        <button class="pw-btn pw-btn--default">Import</button>
+        <button class="pw-btn pw-btn--quiet">Export</button>
+      </div>
+      <label class="pw-field"><span class="pw-label">Reader name</span><input class="pw-input" placeholder="Who is this link for?"></label>
+      <p class="caption">Controls at 13px. Watch how each face handles the numerals and the cap-height of button labels.</p>
+    </div>
+    <div class="demo">
+      <p style="font-size:var(--pw-text-2xs);letter-spacing:.06em;text-transform:uppercase;color:var(--dimmed);margin-bottom:8px">Uppercase micro label</p>
+      <p style="font-size:var(--pw-text-xs);color:var(--dimmed)">Access: all chapters · Created 17 Sep 2026 · 1,204 / 82,000 words · 4 unresolved notes</p>
+      <p class="caption" style="margin-top:12px">11px uppercase and 12px dense metadata — where Playwrite falls apart and the sans faces separate from each other.</p>
+    </div>
+  </div>
+
+  <h3>The prose faces stay exactly as they are</h3>
+  <div class="demo">
+    <div style="font-family:var(--pw-font-display);font-size:26px;margin-bottom:8px">Chapter One — The Crossing</div>
+    <p style="font-family:var(--pw-font-prose);font-size:16px;line-height:var(--pw-lh-prose);max-width:34em">
+      The evening sun cast long shadows across the cobblestone streets. She adjusted her coat and stepped into the alley, where the scent of old books and rain-soaked stone hung in the air.
+    </p>
+    <p class="caption">Macondo Swash Caps + Playwrite DE Grund, set at the proposed <code>34em</code> measure. This is what the reader sees and what the editor should look like.</p>
+  </div>
+
+  <h3>Recommendation</h3>
+  <p class="lede" style="margin-bottom:0"><b style="color:var(--text)">Source Sans 3.</b> Humanist rather than geometric, so it sits beside a handwriting face without arguing with it; warmer than Inter, which reads slightly clinical against this palette; and it holds up at 11px uppercase where Fira gets wide and Plex gets technical. Inter is the safe second choice if you'd rather have the more neutral, more familiar option.</p>
+</section>
+
+<!-- ══════════════ SCALES ══════════════ -->
+<section id="scales">
+  <h2>Scales</h2>
+  <p class="lede">Every number below replaces a pile of literals. The counts are measured from the current source.</p>
+
+  <h3>Type <span class="pill bad">10 sizes today</span> <span class="pill good">6 proposed</span></h3>
+  <div class="demo">
+    <div style="display:grid;gap:10px">
+      <div style="display:flex;align-items:baseline;gap:16px"><code style="width:130px">--pw-text-2xs</code><span style="font-size:11px">11px — counts, uppercase micro labels</span></div>
+      <div style="display:flex;align-items:baseline;gap:16px"><code style="width:130px">--pw-text-xs</code><span style="font-size:12px">12px — metadata, captions, timestamps</span></div>
+      <div style="display:flex;align-items:baseline;gap:16px"><code style="width:130px">--pw-text-sm</code><span style="font-size:13px">13px — dense UI: sidebar, buttons, inputs</span></div>
+      <div style="display:flex;align-items:baseline;gap:16px"><code style="width:130px">--pw-text-md</code><span style="font-size:15px">15px — default body UI</span></div>
+      <div style="display:flex;align-items:baseline;gap:16px"><code style="width:130px">--pw-text-lg</code><span style="font-size:19px">19px — pane heading</span></div>
+      <div style="display:flex;align-items:baseline;gap:16px"><code style="width:130px">--pw-text-xl</code><span style="font-size:26px">26px — page title</span></div>
+    </div>
+    <p class="caption">Today 11px, 12px and 13px all do "small secondary text". The split above gives each one a job: 11 counts, 12 describes, 13 is interactive.</p>
+  </div>
+
+  <h3>Space <span class="pill bad">1/2/4/6/8/10/12/16/20/24/32/40/48 today</span></h3>
+  <div class="demo">
+    <div style="display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap">
+      <div><div style="width:2px;height:2px;background:var(--teal-6)"></div><div class="caption">3xs·2</div></div>
+      <div><div style="width:4px;height:4px;background:var(--teal-6)"></div><div class="caption">2xs·4</div></div>
+      <div><div style="width:8px;height:8px;background:var(--teal-6)"></div><div class="caption">xs·8</div></div>
+      <div><div style="width:12px;height:12px;background:var(--teal-6)"></div><div class="caption">sm·12</div></div>
+      <div><div style="width:16px;height:16px;background:var(--teal-6)"></div><div class="caption">md·16</div></div>
+      <div><div style="width:24px;height:24px;background:var(--teal-6)"></div><div class="caption">lg·24</div></div>
+      <div><div style="width:32px;height:32px;background:var(--teal-6)"></div><div class="caption">xl·32</div></div>
+      <div><div style="width:48px;height:48px;background:var(--teal-6)"></div><div class="caption">2xl·48</div></div>
+      <div><div style="width:64px;height:64px;background:var(--teal-6)"></div><div class="caption">3xl·64</div></div>
+    </div>
+    <p class="caption">Casualties: 6px, 10px, 14px, 20px, 40px. Each currently appears in a rule beside a token, in the same declaration.</p>
+  </div>
+
+  <h3>Radius <span class="pill bad">8 treatments today</span> <span class="pill good">3 + pill</span></h3>
+  <div class="demo">
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
+      <div style="text-align:center"><div style="width:76px;height:52px;background:var(--surface);border:1px solid var(--border);border-radius:4px"></div><div class="caption">sm · 4px<br>inputs, chips</div></div>
+      <div style="text-align:center"><div style="width:76px;height:52px;background:var(--surface);border:1px solid var(--border);border-radius:8px"></div><div class="caption">md · 8px<br>cards, dialogs</div></div>
+      <div style="text-align:center"><div style="width:76px;height:52px;background:var(--surface);border:1px solid var(--border);border-radius:14px"></div><div class="caption">lg · 14px<br>covers, sheets</div></div>
+      <div style="text-align:center"><div style="width:76px;height:26px;background:var(--surface);border:1px solid var(--border);border-radius:999px"></div><div class="caption">full<br>badges, avatars</div></div>
+    </div>
+    <p class="caption">Retired: 2px, 3px, 6px, <code>12px 12px 4px 4px</code>, <code>0 !important</code>. Four different radii currently describe the same "small box" role.</p>
+  </div>
+
+  <h3>Elevation <span class="pill bad">4 recipes + a parallel Paper system</span></h3>
+  <div class="demo">
+    <div style="display:flex;gap:20px;flex-wrap:wrap">
+      <div style="text-align:center"><div style="width:110px;height:64px;background:var(--surface);border:1px solid var(--border);border-radius:8px"></div><div class="caption">0 · flat<br>the default</div></div>
+      <div style="text-align:center"><div style="width:110px;height:64px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--pw-shadow-1)"></div><div class="caption">1 · resting<br>lifted cards</div></div>
+      <div style="text-align:center"><div style="width:110px;height:64px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--pw-shadow-2)"></div><div class="caption">2 · popover<br>dropdowns, toolbars</div></div>
+      <div style="text-align:center"><div style="width:110px;height:64px;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--pw-shadow-3)"></div><div class="caption">3 · sheet<br>dialogs, drawers</div></div>
+      <div style="text-align:center"><div style="width:110px;height:64px;background:var(--surface);border:1px solid var(--teal-7);border-radius:8px;box-shadow:var(--pw-focus-ring)"></div><div class="caption">focus ring<br><em>its own token</em></div></div>
+    </div>
+    <p class="caption">Shadows are defined per-theme — dark mode needs far more opacity than light to read at all. The current focus ring is smuggled in as <code>box-shadow: 0 0 0 2px teal-6</code> inside the elevation list; it becomes its own thing.</p>
+  </div>
+
+  <h3>Z-index <span class="pill bad">5 unscaled literals — and a real bug</span></h3>
+  <div class="demo">
+    <div style="display:grid;gap:6px;font-size:var(--pw-text-sm)">
+      <div><code>--pw-z-sticky</code> · 10 — pane headers</div>
+      <div><code>--pw-z-popover</code> · 100 — dropdowns, selection toolbar</div>
+      <div><code>--pw-z-overlay</code> · 200 — backdrops</div>
+      <div><code>--pw-z-sheet</code> · 210 — drawers, side sheets</div>
+      <div><code>--pw-z-dialog</code> · 220 — centred dialogs</div>
+      <div><code>--pw-z-drag</code> · 300 — drag ghost</div>
+      <div><code>--pw-z-toast</code> · 400 — transient messages</div>
+    </div>
+    <div class="note"><b>Fixes a live bug.</b> The font dropdown is <code>z-index:100</code>; the mobile sidebar is <code>200</code>. Open a font picker in Typography, then open the sidebar, and the dropdown disappears underneath it. A named scale makes that unrepresentable.</div>
+  </div>
+</section>
+
+<!-- ══════════════ PRIMITIVES ══════════════ -->
+<section id="primitives">
+  <h2>Primitives</h2>
+  <p class="lede">Six components that absorb most of the app. Build these and every page redesign becomes small.</p>
+
+  <h3>Buttons — four tiers</h3>
+  <div class="demo">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="pw-btn pw-btn--primary">Primary</button>
+      <button class="pw-btn pw-btn--default">Default</button>
+      <button class="pw-btn pw-btn--quiet">Quiet</button>
+      <button class="pw-btn pw-btn--danger">Delete</button>
+      <button class="pw-btn pw-btn--default" disabled>Disabled</button>
+    </div>
+    <p class="caption">One primary per surface, and it is the thing you came to do. Today the book page shows <em>Import / Export / Add Chapter</em> as two outlines and a filled — three near-equal calls to action above a list you mostly came to read.</p>
+  </div>
+
+  <h3>Card — one component, accent is the only variant</h3>
+  <div class="demo">
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+      <div class="pw-card pw-card--accent" style="--accent:var(--teal-6)">
+        <div style="font-size:var(--pw-text-sm);font-weight:500">Chapter 4 — The Crossing</div>
+        <div style="font-size:var(--pw-text-xs);color:var(--dimmed);margin-top:2px">2,418 words · 20 min ago</div>
+      </div>
+      <div class="pw-card pw-card--accent" style="--accent:var(--violet-6)">
+        <div style="font-size:var(--pw-text-sm);font-weight:500">Marta</div>
+        <div style="font-size:var(--pw-text-xs);color:var(--dimmed);margin-top:2px">All chapters · 4 notes</div>
+      </div>
+      <div class="pw-card">
+        <div style="font-size:var(--pw-text-xs);color:var(--dimmed);font-style:italic">"but some things shine brighter in the dark"</div>
+        <div style="font-size:var(--pw-text-sm);margin-top:6px">Is this too on the nose?</div>
+      </div>
+    </div>
+    <p class="caption">Chapter, beta reader, and feedback — currently three separately-authored card styles with different radius, padding, border and font size. Here: one component, one shape, accent optional.</p>
+  </div>
+
+  <h3>Section header &amp; pane header</h3>
+  <div class="demo" style="display:grid;grid-template-columns:230px 1fr;gap:var(--pw-space-lg)">
+    <div style="background:var(--deepest);border-radius:var(--pw-radius-md);padding:var(--pw-space-xs)">
+      <div class="pw-section-header">Manuscript <span class="count">12</span></div>
+      <div style="font-size:var(--pw-text-sm);padding:6px 8px;border-radius:var(--pw-radius-sm);background:var(--hairline)">Chapter 1 — The Crossing</div>
+      <div style="font-size:var(--pw-text-sm);padding:6px 8px;color:var(--dimmed)">Chapter 2 — Salt and Debt</div>
+      <div class="pw-section-header" style="margin-top:12px">Notes <span class="count">7</span></div>
+      <div style="font-size:var(--pw-text-sm);padding:6px 8px;color:var(--dimmed)">Characters</div>
+    </div>
+    <div>
+      <div class="pw-pane-header">
+        <h4>Beta readers</h4>
+        <span class="sub">1 active link</span>
+        <span class="actions"><button class="pw-btn pw-btn--primary">Create link</button></span>
+      </div>
+      <p style="font-size:var(--pw-text-sm);color:var(--dimmed)">Share these links with your beta readers. They can read and leave feedback without an account.</p>
+      <p class="caption" style="margin-top:16px">One pane header for all seven panes: display-face title, a quiet subtitle carrying the count or state, actions right, hairline underneath. Replaces seven hand-built headers.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ OVERLAYS ══════════════ -->
+<section id="overlays">
+  <h2>Overlays — tiered by weight</h2>
+  <p class="lede">Nine centred modals currently do three different jobs at one volume. Split into three tools, matched to how much the task costs you.</p>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
+    <div>
+      <div class="demo" style="position:relative;height:210px;overflow:hidden;padding:var(--pw-space-sm)">
+        <div style="font-size:var(--pw-text-sm);color:var(--dimmed)">Chapter 1 — The Crossing</div>
+        <div style="margin-top:8px;padding:6px 8px;border:1px solid var(--teal-7);border-radius:var(--pw-radius-sm);font-size:var(--pw-text-sm);background:var(--surface);box-shadow:var(--pw-focus-ring)">Chapter 2 — Salt and Debt<span style="color:var(--teal-4)">|</span></div>
+        <div style="font-size:var(--pw-text-sm);color:var(--dimmed);margin-top:8px">Chapter 3 — The Well</div>
+        <div style="position:absolute;left:var(--pw-space-sm);bottom:var(--pw-space-sm);right:var(--pw-space-sm);font-size:var(--pw-text-xs);color:var(--dimmed)">↵ to save · Esc to cancel</div>
+      </div>
+      <p class="caption"><b style="color:var(--text)">Tier 1 · In place.</b> Rename edits the row itself. Add chapter appends an empty row with focus in it. No overlay, no context switch. Absorbs 2 of the 9 modals.</p>
+    </div>
+
+    <div>
+      <div class="demo" style="position:relative;height:210px;overflow:hidden;padding:0;display:flex;align-items:center;justify-content:center;background:var(--deepest)">
+        <div style="position:absolute;inset:0;background:rgba(0,0,0,.45)"></div>
+        <div style="position:relative;background:var(--surface);border:1px solid var(--border);border-radius:var(--pw-radius-md);box-shadow:var(--pw-shadow-3);padding:var(--pw-space-md);width:82%">
+          <div style="font-size:var(--pw-text-md);font-weight:600;margin-bottom:6px">Delete "The Well"?</div>
+          <div style="font-size:var(--pw-text-xs);color:var(--dimmed);margin-bottom:14px">3,140 words. This cannot be undone.</div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="pw-btn pw-btn--quiet">Cancel</button>
+            <button class="pw-btn pw-btn--danger" style="border-color:var(--red-6)">Delete</button>
+          </div>
+        </div>
+      </div>
+      <p class="caption"><b style="color:var(--text)">Tier 2 · Dialog.</b> Reserved for destructive or irreversible confirms — delete, restore a version. Small, centred, and rare enough that it still means something. 2 of the 9.</p>
+    </div>
+
+    <div>
+      <div class="demo" style="position:relative;height:210px;overflow:hidden;padding:0;background:var(--deepest)">
+        <div style="padding:var(--pw-space-sm);font-size:var(--pw-text-sm);color:var(--placeholder)">Chapter 1 — The Crossing<br><span style="font-size:var(--pw-text-xs)">2,418 words</span></div>
+        <div style="position:absolute;inset:0;background:rgba(0,0,0,.28)"></div>
+        <div style="position:absolute;right:0;top:0;bottom:0;width:66%;background:var(--surface);border-left:1px solid var(--border);box-shadow:var(--pw-shadow-3);padding:var(--pw-space-md)">
+          <div style="display:flex;align-items:baseline;border-bottom:1px solid var(--hairline);padding-bottom:8px;margin-bottom:12px">
+            <span style="font-family:var(--pw-font-display);font-size:var(--pw-text-lg)">Export</span>
+            <span style="margin-left:auto;color:var(--dimmed);font-size:var(--pw-text-sm)">✕</span>
+          </div>
+          <div style="display:flex;gap:6px;margin-bottom:12px">
+            <span class="pill good">Markdown</span><span class="pill">DOCX</span><span class="pill">EPUB</span>
+          </div>
+          <div style="font-size:var(--pw-text-xs);color:var(--dimmed)">12 of 12 chapters selected</div>
+        </div>
+      </div>
+      <p class="caption"><b style="color:var(--text)">Tier 3 · Side sheet.</b> Long or multi-step work — Import, Export, Book settings, Beta links. Slides from the right, keeps the manuscript visible, and has room to breathe. 5 of the 9.</p>
+    </div>
+  </div>
+
+  <div class="note"><b>Also deletes ~750 lines.</b> The nine modals each re-declare their own <code>Space + Group + Cancel/Confirm</code> footer. One shared wrapper per tier removes the repetition and makes the Create-Beta-Link / Edit-Beta-Link pair (95% identical today) a single component.</div>
+</section>
+
+<!-- ══════════════ NOTES ══════════════ -->
+<section id="notes">
+  <h2>Notes — three treatments</h2>
+  <p class="lede">The most distinctive surface in the app and the one you wanted to see before deciding. Today: a horizontal tree of 220px cards with coloured left bars, drag-and-drop, a cursor-following ghost, and a vertical reflow under 768px.</p>
+
+  <!-- A -->
+  <h3>A · Refined map <span class="pill good">keeps the signature</span></h3>
+  <div class="demo" style="overflow-x:auto">
+    <div style="display:flex;align-items:flex-start;gap:0;min-width:660px;padding:8px 0">
+      <div style="display:flex;flex-direction:column;justify-content:center;align-self:center">
+        <div class="pw-card" style="width:168px;padding:10px 12px">
+          <div style="display:flex;align-items:center;gap:7px">
+            <span style="width:7px;height:7px;border-radius:999px;background:var(--teal-5);flex:none"></span>
+            <span style="font-size:var(--pw-text-sm);font-weight:500">The Salt Road</span>
+          </div>
+          <div style="font-size:var(--pw-text-2xs);color:var(--placeholder);margin-top:3px;padding-left:14px">7 notes</div>
+        </div>
+      </div>
+      <div style="width:28px;align-self:stretch;position:relative">
+        <div style="position:absolute;left:0;top:50%;width:12px;height:1px;background:var(--border)"></div>
+        <div style="position:absolute;left:12px;top:22%;bottom:22%;width:1px;background:var(--border)"></div>
+        <div style="position:absolute;left:12px;top:22%;width:16px;height:1px;background:var(--border)"></div>
+        <div style="position:absolute;left:12px;top:50%;width:16px;height:1px;background:var(--border)"></div>
+        <div style="position:absolute;left:12px;top:78%;width:16px;height:1px;background:var(--border)"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div class="pw-card pw-card--accent" style="--accent:var(--violet-6);width:176px;padding:9px 12px">
+          <div style="font-size:var(--pw-text-sm)">Characters</div>
+          <div style="font-size:var(--pw-text-2xs);color:var(--placeholder);margin-top:2px">3 children</div>
+        </div>
+        <div class="pw-card pw-card--accent" style="--accent:var(--amber-6);width:176px;padding:9px 12px">
+          <div style="font-size:var(--pw-text-sm)">Worldbuilding</div>
+        </div>
+        <div class="pw-card pw-card--accent" style="--accent:var(--teal-6);width:176px;padding:9px 12px">
+          <div style="font-size:var(--pw-text-sm)">Timeline</div>
+        </div>
+      </div>
+      <div style="width:28px;align-self:stretch;position:relative">
+        <div style="position:absolute;left:0;top:16%;width:12px;height:1px;background:var(--border)"></div>
+        <div style="position:absolute;left:12px;top:8%;height:18%;width:1px;background:var(--border)"></div>
+        <div style="position:absolute;left:12px;top:8%;width:16px;height:1px;background:var(--border)"></div>
+        <div style="position:absolute;left:12px;top:26%;width:16px;height:1px;background:var(--border)"></div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;opacity:.82">
+        <div class="pw-card" style="width:160px;padding:7px 11px"><div style="font-size:var(--pw-text-xs)">Marta Venn</div></div>
+        <div class="pw-card" style="width:160px;padding:7px 11px"><div style="font-size:var(--pw-text-xs)">Osrin</div></div>
+        <div class="pw-card" style="width:160px;padding:7px 11px;border-style:dashed;color:var(--placeholder)"><div style="font-size:var(--pw-text-xs)">+ add child</div></div>
+      </div>
+    </div>
+    <p class="caption" style="margin-top:14px">Colour moves from a 3px left bar to a 7px dot at the root and a 2px accent on branches — quieter, and it stops reading as a status indicator. Connectors become real orthogonal hairlines instead of implied space. Depth is shown by shrinking type and fading opacity, so a deep tree stays scannable. Drag shows a drop-line on the connector, not a floating ghost card.</p>
+  </div>
+  <p class="caption"><b style="color:var(--text)">Costs:</b> horizontal scrolling is unavoidable past ~4 levels, and it does not survive a phone — you keep the current vertical reflow as a second layout. <b style="color:var(--text)">Pays:</b> nothing else looks like this, and the spatial memory is real.</p>
+
+  <!-- B -->
+  <h3>B · Vertical outline in the sidebar <span class="pill">most consistent</span></h3>
+  <div class="demo" style="display:grid;grid-template-columns:250px 1fr;gap:var(--pw-space-lg)">
+    <div style="background:var(--deepest);border-radius:var(--pw-radius-md);padding:var(--pw-space-xs);font-size:var(--pw-text-sm)">
+      <div class="pw-section-header">Manuscript <span class="count">12</span></div>
+      <div style="padding:5px 8px;color:var(--dimmed)">Chapter 1 — The Crossing</div>
+      <div style="padding:5px 8px;color:var(--dimmed)">Chapter 2 — Salt and Debt</div>
+      <div class="pw-section-header" style="margin-top:10px">Notes <span class="count">7</span></div>
+      <div style="padding:5px 8px;display:flex;align-items:center;gap:6px"><span style="color:var(--placeholder);font-size:9px">▾</span><span style="width:6px;height:6px;border-radius:999px;background:var(--violet-6)"></span>Characters</div>
+      <div style="padding:5px 8px 5px 28px;color:var(--dimmed)">Marta Venn</div>
+      <div style="padding:5px 8px 5px 28px;background:var(--hairline);border-radius:var(--pw-radius-sm)">Osrin</div>
+      <div style="padding:5px 8px 5px 28px;color:var(--dimmed)">Hesh the factor</div>
+      <div style="padding:5px 8px;display:flex;align-items:center;gap:6px"><span style="color:var(--placeholder);font-size:9px">▸</span><span style="width:6px;height:6px;border-radius:999px;background:var(--amber-6)"></span>Worldbuilding</div>
+      <div style="padding:5px 8px;display:flex;align-items:center;gap:6px"><span style="color:var(--placeholder);font-size:9px">▸</span><span style="width:6px;height:6px;border-radius:999px;background:var(--teal-6)"></span>Timeline</div>
+    </div>
+    <div>
+      <div class="pw-pane-header"><h4>Osrin</h4><span class="sub">under Characters · edited 2 days ago</span></div>
+      <p style="font-family:var(--pw-font-prose);font-size:16px;line-height:var(--pw-lh-prose);max-width:34em;color:var(--dimmed)">Caravan master. Owes the Kell house eleven years of water-debt and has never once said so out loud…</p>
+      <p class="caption" style="margin-top:16px">Notes live in the same tree as chapters. Selecting one opens it in the main pane at prose measure — identical to opening a chapter.</p>
+    </div>
+  </div>
+  <p class="caption"><b style="color:var(--text)">Costs:</b> loses the map. A tree read as a list is just a list. <b style="color:var(--text)">Pays:</b> works identically on phone and native, one navigation model for the whole app, and the note editor becomes the chapter editor with a different title.</p>
+
+  <!-- C -->
+  <h3>C · Dedicated two-pane outline <span class="pill good">the compromise</span></h3>
+  <div class="demo" style="display:grid;grid-template-columns:210px 1fr;gap:0;border-radius:var(--pw-radius-md);overflow:hidden;padding:0;border:1px solid var(--border)">
+    <div style="background:var(--deepest);padding:var(--pw-space-sm);font-size:var(--pw-text-sm);border-right:1px solid var(--border)">
+      <div class="pw-section-header" style="padding-left:0">Notes <span class="count">7</span></div>
+      <div style="padding:5px 6px;display:flex;align-items:center;gap:6px"><span style="color:var(--placeholder);font-size:9px">▾</span><span style="width:6px;height:6px;border-radius:999px;background:var(--violet-6)"></span>Characters</div>
+      <div style="padding:5px 6px 5px 26px;color:var(--dimmed)">Marta Venn</div>
+      <div style="padding:5px 6px 5px 26px;background:var(--hairline);border-radius:var(--pw-radius-sm)">Osrin</div>
+      <div style="padding:5px 6px;display:flex;align-items:center;gap:6px"><span style="color:var(--placeholder);font-size:9px">▸</span><span style="width:6px;height:6px;border-radius:999px;background:var(--amber-6)"></span>Worldbuilding</div>
+      <div style="padding:5px 6px;display:flex;align-items:center;gap:6px"><span style="color:var(--placeholder);font-size:9px">▸</span><span style="width:6px;height:6px;border-radius:999px;background:var(--teal-6)"></span>Timeline</div>
+      <hr class="pw-rule">
+      <div style="font-size:var(--pw-text-xs);color:var(--placeholder)">＋ New note</div>
+    </div>
+    <div style="padding:var(--pw-space-md) var(--pw-space-lg);background:var(--body)">
+      <div style="font-family:var(--pw-font-display);font-size:var(--pw-text-lg)">Osrin</div>
+      <div style="font-size:var(--pw-text-xs);color:var(--dimmed);margin-bottom:12px">Characters › Osrin</div>
+      <p style="font-family:var(--pw-font-prose);font-size:15px;line-height:var(--pw-lh-prose);max-width:34em;color:var(--dimmed)">Caravan master. Owes the Kell house eleven years of water-debt and has never once said so out loud. Walks with the limp only when he thinks nobody is counting.</p>
+    </div>
+  </div>
+  <p class="caption" style="margin-top:14px"><b style="color:var(--text)">Costs:</b> a third column when the main sidebar is also open — 250 + 210 + prose. Needs the manuscript sidebar to collapse when Notes is the active pane. <b style="color:var(--text)">Pays:</b> notes become a real workspace rather than a pane you visit; breadcrumb keeps the hierarchy legible without drawing it; phone degrades cleanly to list→detail.</p>
+
+  <!-- D -->
+  <h3>D · Corkboard canvas <span class="pill">stretch</span></h3>
+  <div class="demo" style="position:relative;height:200px;background:var(--deepest);overflow:hidden">
+    <svg style="position:absolute;inset:0;width:100%;height:100%" aria-hidden="true">
+      <line x1="120" y1="60" x2="290" y2="42" stroke="var(--border)" stroke-width="1"/>
+      <line x1="120" y1="60" x2="255" y2="140" stroke="var(--border)" stroke-width="1"/>
+      <line x1="290" y1="42" x2="470" y2="105" stroke="var(--border)" stroke-width="1" stroke-dasharray="3 3"/>
+    </svg>
+    <div class="pw-card pw-card--accent" style="--accent:var(--violet-6);position:absolute;left:30px;top:40px;width:150px;padding:8px 11px"><div style="font-size:var(--pw-text-sm)">Osrin</div><div style="font-size:var(--pw-text-2xs);color:var(--placeholder)">character</div></div>
+    <div class="pw-card pw-card--accent" style="--accent:var(--amber-6);position:absolute;left:245px;top:22px;width:150px;padding:8px 11px"><div style="font-size:var(--pw-text-sm)">Water-debt</div><div style="font-size:var(--pw-text-2xs);color:var(--placeholder)">concept</div></div>
+    <div class="pw-card pw-card--accent" style="--accent:var(--teal-6);position:absolute;left:210px;top:122px;width:150px;padding:8px 11px"><div style="font-size:var(--pw-text-sm)">The Crossing</div><div style="font-size:var(--pw-text-2xs);color:var(--placeholder)">ch. 4</div></div>
+    <div class="pw-card" style="position:absolute;left:425px;top:86px;width:150px;padding:8px 11px;opacity:.7"><div style="font-size:var(--pw-text-sm)">Kell house</div></div>
+  </div>
+  <p class="caption" style="margin-top:14px">Free positioning, arbitrary links between notes <em>and</em> chapters, pan and zoom. Genuinely different software — closest to what the name "PlotWeb" promises. Largest build by a wide margin, needs its own persistence for positions and edges, and does not exist on a phone. Worth flagging as a later direction rather than part of this pass.</p>
+
+  <h3>Recommendation</h3>
+  <p class="lede" style="margin-bottom:0"><b style="color:var(--text)">C now, D later.</b> C keeps the tree legible, gives notes a real workspace, and degrades to a list on phone and native without a second layout — while A's horizontal map needs two layouts maintained forever and still can't go past four levels. If the map is precious to you, A is defensible and I'll build it properly. B is the cheap answer and I'd only take it if you want notes to stop being a feature.</p>
+</section>
+
+</main>
+
+<script>
+const root = document.documentElement;
+document.getElementById('themebtn').addEventListener('click', e => {
+  const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+  root.dataset.theme = next;
+  e.target.textContent = next === 'dark' ? 'Light mode' : 'Dark mode';
+});
+document.getElementById('fontsel').addEventListener('change', e => {
+  root.dataset.uiFont = e.target.value;
+});
+</script>
+</body>
+</html>
