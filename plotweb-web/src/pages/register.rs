@@ -3,6 +3,7 @@ use rinch_core::use_store;
 use plotweb_common::RegisterRequest;
 
 use crate::api;
+use crate::components::auth_shell::AuthShell;
 use crate::router;
 use crate::store::{AppStore, Route};
 
@@ -66,24 +67,9 @@ pub fn register_page() -> NodeHandle {
     let page = rsx! {
         div {
             class: "auth-page",
-            Paper {
-                shadow: "md",
-                p: "xl",
-                radius: "md",
-                w: "400px",
-
-                Center {
-                    img {
-                        src: crate::platform::asset_src("/assets/logo.png"),
-                        alt: "PlotWeb",
-                        style: "width: 72px; height: 72px;",
-                    }
-                }
-                Space { h: "md" }
-                Title { order: 2, "Create account" }
-                Space { h: "xs" }
-                Text { size: "sm", color: "dimmed", "Start writing with PlotWeb" }
-                Space { h: "lg" }
+            AuthShell {
+                title: "Create account",
+                subtitle: "Start writing with PlotWeb",
 
                 if error.get().is_some() {
                     Alert {
@@ -132,7 +118,8 @@ pub fn register_page() -> NodeHandle {
                     "Create account"
                 }
                 Space { h: "md" }
-                Center {
+                div {
+                    class: "auth-foot",
                     Button {
                         variant: "subtle",
                         onclick: go_login,

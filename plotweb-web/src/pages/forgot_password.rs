@@ -3,6 +3,7 @@ use rinch_core::use_store;
 use plotweb_common::ForgotPasswordRequest;
 
 use crate::api;
+use crate::components::auth_shell::AuthShell;
 use crate::router;
 use crate::store::{AppStore, Route};
 
@@ -47,24 +48,9 @@ pub fn forgot_password_page() -> NodeHandle {
     let page = rsx! {
         div {
             class: "auth-page",
-            Paper {
-                shadow: "md",
-                p: "xl",
-                radius: "md",
-                w: "400px",
-
-                Center {
-                    img {
-                        src: crate::platform::asset_src("/assets/logo.png"),
-                        alt: "PlotWeb",
-                        style: "width: 72px; height: 72px;",
-                    }
-                }
-                Space { h: "md" }
-                Title { order: 2, "Reset your password" }
-                Space { h: "xs" }
-                Text { size: "sm", color: "dimmed", "We'll email you a link to choose a new password" }
-                Space { h: "lg" }
+            AuthShell {
+                title: "Reset your password",
+                subtitle: "We'll email you a link to choose a new password",
 
                 if sent.get() {
                     Alert {
@@ -73,12 +59,10 @@ pub fn forgot_password_page() -> NodeHandle {
                         "If an account exists for that address, a password reset link is on its way. The link expires in 1 hour."
                     }
                     Space { h: "md" }
-                    Center {
-                        Button {
-                            variant: "subtle",
-                            onclick: go_login,
-                            "Back to sign in"
-                        }
+                    Button {
+                        full_width: true,
+                        onclick: go_login,
+                        "Go to sign in"
                     }
                 } else {
                     if error.get().is_some() {
@@ -103,7 +87,8 @@ pub fn forgot_password_page() -> NodeHandle {
                         "Send reset link"
                     }
                     Space { h: "md" }
-                    Center {
+                    div {
+                        class: "auth-foot",
                         Button {
                             variant: "subtle",
                             onclick: go_login,

@@ -159,21 +159,76 @@ h1, h2, h3, h4, h5, h6, .rinch-title {
     align-items: center;
     justify-content: center;
     height: 100dvh;
-    background: linear-gradient(
-        160deg,
-        var(--pw-color-deepest) 0%,
-        var(--rinch-color-body) 50%,
-        var(--pw-color-deep) 100%
-    );
+    background: radial-gradient(90% 70% at 50% 0%, var(--pw-color-deep), var(--rinch-color-body));
+    font-family: var(--pw-font-ui);
 }
 
-.auth-page .rinch-paper {
-    border: 1px solid var(--rinch-color-border);
-    background: var(--rinch-color-surface);
+.auth-card {
+    width: 360px;
+    padding: 34px 32px;
 }
 
-.auth-page h2 {
+.auth-mark {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: var(--pw-space-lg);
+}
+
+.auth-mark h3.rinch-title {
+    font-family: var(--pw-font-display);
+    font-weight: 400;
+    font-size: 22px;
     color: var(--rinch-color-teal-4);
+}
+
+.auth-mark .rinch-text {
+    margin-top: 3px;
+}
+
+.auth-card .rinch-text-input__label,
+.auth-card .rinch-checkbox__label {
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
+}
+
+.auth-card .rinch-text-input__input {
+    font-family: var(--pw-font-ui);
+    font-size: var(--pw-text-sm);
+    border-radius: var(--pw-radius-sm);
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    color: var(--rinch-color-text);
+}
+
+.auth-card .rinch-text-input__input:focus {
+    outline: none;
+    border-color: var(--rinch-color-teal-7);
+    box-shadow: var(--pw-focus-ring);
+}
+
+.auth-page .rinch-alert,
+.auth-card .rinch-btn,
+.auth-card button {
+    font-family: var(--pw-font-ui);
+}
+
+.auth-row {
+    display: flex;
+    align-items: center;
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
+}
+
+.auth-row .sp {
+    flex: 1;
+}
+
+.auth-foot {
+    text-align: center;
+    margin-top: var(--pw-space-md);
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
 }
 
 /* ── Scrollbar ─────────────────────────────────────────── */
@@ -205,7 +260,7 @@ h1, h2, h3, h4, h5, h6, .rinch-title {
 /* ── Auth responsive ───────────────────────────────────── */
 
 @media (max-width: 480px) {
-    .auth-page .rinch-paper {
+    .auth-card {
         width: 100% !important;
         margin: 0 16px;
     }

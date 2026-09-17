@@ -3,6 +3,7 @@ use rinch_core::use_store;
 use plotweb_common::LoginRequest;
 
 use crate::api;
+use crate::components::auth_shell::AuthShell;
 use crate::router;
 use crate::store::{AppStore, Route};
 
@@ -60,24 +61,9 @@ pub fn login_page() -> NodeHandle {
     let page = rsx! {
         div {
             class: "auth-page",
-            Paper {
-                shadow: "md",
-                p: "xl",
-                radius: "md",
-                w: "400px",
-
-                Center {
-                    img {
-                        src: crate::platform::asset_src("/assets/logo.png"),
-                        alt: "PlotWeb",
-                        style: "width: 72px; height: 72px;",
-                    }
-                }
-                Space { h: "md" }
-                Title { order: 2, "Welcome back" }
-                Space { h: "xs" }
-                Text { size: "sm", color: "dimmed", "Sign in to your PlotWeb account" }
-                Space { h: "lg" }
+            AuthShell {
+                title: "Welcome back",
+                subtitle: "Sign in to your PlotWeb account",
 
                 if error.get().is_some() {
                     Alert {
@@ -104,14 +90,14 @@ pub fn login_page() -> NodeHandle {
                     ontoggle: move || password_visible.update(|v| *v = !*v),
                 }
                 Space { h: "md" }
-                Checkbox {
-                    label: "Remember me",
-                    checked_fn: move || remember_me.get(),
-                    onchange: move || remember_me.update(|v| *v = !*v),
-                }
-                Space { h: "xs" }
                 div {
-                    style: "text-align: right;",
+                    class: "auth-row",
+                    Checkbox {
+                        label: "Remember me",
+                        checked_fn: move || remember_me.get(),
+                        onchange: move || remember_me.update(|v| *v = !*v),
+                    }
+                    span { class: "sp" }
                     Button {
                         variant: "subtle",
                         size: "xs",
@@ -126,7 +112,8 @@ pub fn login_page() -> NodeHandle {
                     "Sign in"
                 }
                 Space { h: "md" }
-                Center {
+                div {
+                    class: "auth-foot",
                     Button {
                         variant: "subtle",
                         onclick: go_register,
