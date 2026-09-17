@@ -39,7 +39,10 @@
     </style>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Playwrite+DE+Grund:wght@100..400&family=Macondo+Swash+Caps&display=swap" rel="stylesheet">
+    <!-- Playwrite and Macondo set the book; Source Sans 3 is the application chrome
+         (see --pw-font-ui). The Typography panel restyles book content only, so the
+         chrome face is not user-configurable and has to stay legible at 11px. -->
+    <link href="https://fonts.googleapis.com/css2?family=Playwrite+DE+Grund:wght@100..400&family=Macondo+Swash+Caps&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
     <link data-trunk rel="rust" data-wasm-opt="z" />
     <link data-trunk rel="copy-file" href="favicon.png" />
     <link data-trunk rel="copy-file" href="manifest.webmanifest" />

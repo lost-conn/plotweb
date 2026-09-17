@@ -3,6 +3,7 @@ use rinch_core::use_store;
 use plotweb_common::ResetPasswordRequest;
 
 use crate::api;
+use crate::components::auth_shell::AuthShell;
 use crate::router;
 use crate::store::{AppStore, Route};
 
@@ -59,22 +60,9 @@ pub fn reset_password_page(token: String) -> NodeHandle {
     let page = rsx! {
         div {
             class: "auth-page",
-            Paper {
-                shadow: "md",
-                p: "xl",
-                radius: "md",
-                w: "400px",
-
-                Center {
-                    img {
-                        src: crate::platform::asset_src("/assets/logo.png"),
-                        alt: "PlotWeb",
-                        style: "width: 72px; height: 72px;",
-                    }
-                }
-                Space { h: "md" }
-                Title { order: 2, "Choose a new password" }
-                Space { h: "lg" }
+            AuthShell {
+                title: "Choose a new password",
+                subtitle: "",
 
                 if done.get() {
                     Alert {
@@ -122,7 +110,8 @@ pub fn reset_password_page(token: String) -> NodeHandle {
                         "Reset password"
                     }
                     Space { h: "md" }
-                    Center {
+                    div {
+                        class: "auth-foot",
                         Button {
                             variant: "subtle",
                             onclick: go_login,

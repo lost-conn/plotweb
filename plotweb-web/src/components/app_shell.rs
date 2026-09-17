@@ -3,7 +3,96 @@ use rinch_core::use_store;
 
 use crate::store::{AppStore, Route};
 
+/// The design scales that do not change with the theme.
+///
+/// Split from [`warm_overrides`] because only colour and elevation depend on light/dark;
+/// these are constant, so they are emitted once rather than rebuilt on every toggle.
+///
+/// Each scale replaces a pile of literals that had grown up page by page — at the time
+/// of writing, 10 distinct font sizes, 13 padding values, 8 border-radius treatments and
+/// 5 unscaled z-indexes, with tokens and literals mixed inside single rules. Nothing
+/// consumes these yet; adopting them is the work of the page passes that follow, so this
+/// block is deliberately inert and must not change a single pixel on its own.
+const DESIGN_TOKENS: &str = r#"
+:root {
+  /* ── Type ──
+     Six sizes, each with a job. Previously 11/12/13px all did "small secondary
+     text" duty interchangeably, which is why the same kind of label rendered at
+     three sizes depending on which page you were on. */
+  --pw-text-2xs: 11px;   /* counts, uppercase micro labels */
+  --pw-text-xs:  12px;   /* metadata, captions, timestamps */
+  --pw-text-sm:  13px;   /* dense UI: sidebar, buttons, inputs */
+  --pw-text-md:  15px;   /* default body UI */
+  --pw-text-lg:  19px;   /* pane heading */
+  --pw-text-xl:  26px;   /* page title */
+
+  --pw-lh-tight: 1.25;
+  --pw-lh-ui:    1.45;
+  --pw-lh-prose: 1.7;
+
+  /* ── Space — 4px base. Retires 6, 10, 14, 20 and 40px. ── */
+  --pw-space-3xs: 2px;
+  --pw-space-2xs: 4px;
+  --pw-space-xs:  8px;
+  --pw-space-sm:  12px;
+  --pw-space-md:  16px;
+  --pw-space-lg:  24px;
+  --pw-space-xl:  32px;
+  --pw-space-2xl: 48px;
+  --pw-space-3xl: 64px;
+
+  /* ── Radius ──
+     Three plus a pill, down from eight treatments. Four different radii (3, 4, 6
+     and 8px) were describing the same "small box" role. */
+  --pw-radius-sm:   4px;    /* inputs, chips, toolbar buttons */
+  --pw-radius-md:   8px;    /* cards, panels, dialogs */
+  --pw-radius-lg:   14px;   /* covers, mobile sheets */
+  --pw-radius-full: 999px;
+
+  /* ── Z-index ──
+     Named steps, so the ordering is stated rather than rediscovered. This also
+     fixes a live bug: the font dropdown sat at 100 and the mobile sidebar at 200,
+     so opening the sidebar over an open font picker hid the picker behind it. */
+  --pw-z-sticky:  10;    /* pane headers */
+  --pw-z-popover: 100;   /* dropdowns, selection toolbars */
+  --pw-z-overlay: 200;   /* backdrops */
+  --pw-z-sheet:   210;   /* drawers, side sheets */
+  --pw-z-dialog:  220;   /* centred dialogs */
+  --pw-z-drag:    300;   /* drag ghost */
+  --pw-z-toast:   400;   /* transient messages */
+
+  /* ── Motion ── */
+  --pw-ease:     cubic-bezier(.2, .8, .2, 1);
+  --pw-dur-fast: 120ms;
+  --pw-dur:      200ms;
+  --pw-dur-slow: 320ms;
+
+  /* ── Measure ──
+     Prose sits at roughly 68 characters wherever it appears. The reader already
+     does this at 760px; the editor runs the full width of its pane, which is the
+     one number most worth fixing in the passes that follow. */
+  --pw-measure:  34em;
+  --pw-pane-max: 720px;
+
+  /* ── Fonts ──
+     Macondo and Playwrite keep the book: titles, chapter headings, prose. The UI
+     face is separate because the Typography panel only restyles *book content* —
+     application chrome is not user-configurable, so it has to hold up at 11px. */
+  --pw-font-display: 'Macondo Swash Caps', cursive;
+  --pw-font-prose:   'Playwrite DE Grund', Georgia, 'Times New Roman', serif;
+  --pw-font-ui:      'Source Sans 3', system-ui, -apple-system, sans-serif;
+
+  /* Focus is not elevation. It reads `--rinch-color-body` at use time, so one
+     definition serves both themes. */
+  --pw-focus-ring: 0 0 0 2px var(--rinch-color-body), 0 0 0 4px var(--rinch-color-teal-6);
+}
+"#;
+
 /// Returns a `:root { ... }` CSS block with warm color overrides for the given mode.
+///
+/// Also carries the elevation scale, which cannot live in [`DESIGN_TOKENS`]: a shadow
+/// legible on `#FAF8F5` disappears entirely on `#1C1917`, so dark mode needs several
+/// times the opacity to read at all.
 fn warm_overrides(dark: bool) -> String {
     let font = "--rinch-font-family: 'Playwrite DE Grund', Georgia, 'Times New Roman', serif;";
     if dark {
@@ -17,6 +106,10 @@ fn warm_overrides(dark: bool) -> String {
   --rinch-color-placeholder: #6B6359;
   --pw-color-deep: #1A1714;
   --pw-color-deepest: #14120F;
+  --pw-hairline: rgba(231, 224, 216, 0.09);
+  --pw-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --pw-shadow-2: 0 4px 16px -2px rgba(0, 0, 0, 0.55);
+  --pw-shadow-3: 0 18px 50px -10px rgba(0, 0, 0, 0.7);
 }}")
     } else {
         format!(":root {{
@@ -29,6 +122,10 @@ fn warm_overrides(dark: bool) -> String {
   --rinch-color-placeholder: #A89E94;
   --pw-color-deep: #F3F0EC;
   --pw-color-deepest: #EDE9E3;
+  --pw-hairline: rgba(44, 37, 32, 0.09);
+  --pw-shadow-1: 0 1px 2px rgba(60, 45, 30, 0.07);
+  --pw-shadow-2: 0 4px 16px -2px rgba(60, 45, 30, 0.13);
+  --pw-shadow-3: 0 18px 50px -10px rgba(60, 45, 30, 0.22);
 }}")
     }
 }
@@ -62,21 +159,134 @@ h1, h2, h3, h4, h5, h6, .rinch-title {
     align-items: center;
     justify-content: center;
     height: 100dvh;
-    background: linear-gradient(
-        160deg,
-        var(--pw-color-deepest) 0%,
-        var(--rinch-color-body) 50%,
-        var(--pw-color-deep) 100%
-    );
+    background: radial-gradient(90% 70% at 50% 0%, var(--pw-color-deep), var(--rinch-color-body));
+    font-family: var(--pw-font-ui);
 }
 
-.auth-page .rinch-paper {
-    border: 1px solid var(--rinch-color-border);
-    background: var(--rinch-color-surface);
+.auth-card {
+    width: 360px;
+    padding: 34px 32px;
 }
 
-.auth-page h2 {
+.auth-mark {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: var(--pw-space-lg);
+}
+
+.auth-mark h3.rinch-title {
+    font-family: var(--pw-font-display);
+    font-weight: 400;
+    font-size: 22px;
     color: var(--rinch-color-teal-4);
+}
+
+.auth-mark .rinch-text {
+    margin-top: 3px;
+}
+
+/* PasswordInput is a separate component with its own block, not a variant of
+   TextInput — so every one of these selectors has to name both. Styling only the
+   text-input half left the password fields on login, register and reset-password
+   rendering in the book's handwriting face at 14px, beside a 13px Source Sans
+   username box. */
+.auth-card .rinch-text-input__label,
+.auth-card .rinch-password-input__label,
+.auth-card .rinch-checkbox__label {
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
+}
+
+/* TextInput draws its own border on the input; PasswordInput draws it on a
+   wrapper that also holds the reveal toggle. Giving the password *input* a
+   border too nests a box inside a box and visually detaches the eye icon, so
+   the two take the chrome at different levels: the field itself for TextInput,
+   the wrapper for PasswordInput. */
+.auth-card .rinch-text-input__input,
+.auth-card .rinch-password-input__wrapper {
+    border-radius: var(--pw-radius-sm);
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+}
+
+.auth-card .rinch-text-input__input,
+.auth-card .rinch-password-input__input {
+    font-family: var(--pw-font-ui);
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-text);
+}
+
+.auth-card .rinch-password-input__input {
+    background: transparent;
+    border: none;
+}
+
+.auth-card .rinch-text-input__input:focus,
+.auth-card .rinch-password-input__wrapper:focus-within {
+    outline: none;
+    border-color: var(--rinch-color-teal-7);
+    box-shadow: var(--pw-focus-ring);
+}
+
+.auth-card .rinch-password-input__input:focus {
+    outline: none;
+}
+
+.auth-page .rinch-alert,
+.auth-card .rinch-btn,
+.auth-card button {
+    font-family: var(--pw-font-ui);
+}
+
+/* Alert ships a light-mode palette with a hardcoded pale background, so on a dark
+   page it lands as a bright white-blue slab. It is also always blue here: the call
+   sites ask for `color: "teal"`, which rinch's AlertColor does not parse, so it
+   falls back. Rather than chase a colour name that happens to parse, the auth
+   alerts are restated in tokens — quiet block, accent on the left edge, which is
+   the same treatment feedback quotes get elsewhere in the design. */
+.auth-card .rinch-alert {
+    background: var(--pw-color-deep);
+    border: 1px solid var(--rinch-color-border);
+    border-left: 2px solid var(--rinch-color-teal-7);
+    border-radius: var(--pw-radius-sm);
+    color: var(--rinch-color-text);
+}
+
+.auth-card .rinch-alert--red {
+    border-left-color: var(--rinch-color-red-6);
+}
+
+/* Rinch colours these from `.rinch-alert--blue .rinch-alert__title`, which ties
+   this rule on specificity and wins on document order. Matching the alert class
+   as well outweighs it without reaching for !important. */
+.auth-page .auth-card .rinch-alert .rinch-alert__wrapper,
+.auth-page .auth-card .rinch-alert .rinch-alert__message {
+    color: var(--rinch-color-dimmed);
+    font-size: var(--pw-text-xs);
+}
+
+.auth-page .auth-card .rinch-alert .rinch-alert__title {
+    color: var(--rinch-color-text);
+    font-size: var(--pw-text-sm);
+}
+
+.auth-row {
+    display: flex;
+    align-items: center;
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
+}
+
+.auth-row .sp {
+    flex: 1;
+}
+
+.auth-foot {
+    text-align: center;
+    margin-top: var(--pw-space-md);
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
 }
 
 /* ── Scrollbar ─────────────────────────────────────────── */
@@ -108,9 +318,22 @@ h1, h2, h3, h4, h5, h6, .rinch-title {
 /* ── Auth responsive ───────────────────────────────────── */
 
 @media (max-width: 480px) {
-    .auth-page .rinch-paper {
+    .auth-card {
         width: 100% !important;
         margin: 0 16px;
+    }
+}
+
+/* ── Reduced motion ────────────────────────────────────── */
+
+/* The motion tokens exist so that movement is deliberate; this makes it optional.
+   Affects only users who have asked the OS for less animation. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
     }
 }
 "#;
@@ -482,6 +705,7 @@ pub fn app_shell() -> NodeHandle {
 
     rsx! {
         Fragment {
+            style { {DESIGN_TOKENS} }
             style { {|| warm_overrides(store.dark_mode.get())} }
             style { {APP_SHELL_CSS} }
 

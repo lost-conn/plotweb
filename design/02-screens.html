@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PlotWeb — Screens v1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Playwrite+DE+Grund:wght@100..400&family=Macondo+Swash+Caps&family=Source+Sans+3:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════ TOKENS (agreed in 01-language.html) ═══════════ */
+:root{
+  --teal-3:#63e6be;--teal-4:#38d9a9;--teal-5:#20c997;--teal-6:#12b886;
+  --teal-7:#0ca678;--teal-8:#099268;--teal-9:#087f5b;
+  --violet-6:#7950f2;--red-6:#e03131;--amber-6:#f08c00;
+
+  --pw-text-2xs:11px;--pw-text-xs:12px;--pw-text-sm:13px;
+  --pw-text-md:15px;--pw-text-lg:19px;--pw-text-xl:26px;
+  --pw-lh-tight:1.25;--pw-lh-ui:1.45;--pw-lh-prose:1.7;
+
+  --pw-space-3xs:2px;--pw-space-2xs:4px;--pw-space-xs:8px;--pw-space-sm:12px;
+  --pw-space-md:16px;--pw-space-lg:24px;--pw-space-xl:32px;--pw-space-2xl:48px;
+
+  --pw-radius-sm:4px;--pw-radius-md:8px;--pw-radius-lg:14px;--pw-radius-full:999px;
+  --pw-z-sticky:10;--pw-z-popover:100;--pw-z-overlay:200;--pw-z-sheet:210;--pw-z-dialog:220;
+  --pw-ease:cubic-bezier(.2,.8,.2,1);
+  --pw-dur-fast:120ms;--pw-dur:200ms;--pw-dur-slow:320ms;
+  --pw-measure:34em;--pw-pane-max:720px;
+
+  --pw-font-display:'Macondo Swash Caps',cursive;
+  --pw-font-prose:'Playwrite DE Grund',Georgia,serif;
+  --pw-font-ui:'Source Sans 3',system-ui,sans-serif;
+}
+[data-theme="dark"]{
+  --body:#1C1917;--surface:#262220;--text:#E7E0D8;--dimmed:#9C9489;
+  --border:#3D3733;--placeholder:#6B6359;--deep:#1A1714;--deepest:#14120F;
+  --hairline:rgba(231,224,216,.09);
+  --pw-shadow-1:0 1px 2px rgba(0,0,0,.4);
+  --pw-shadow-2:0 4px 16px -2px rgba(0,0,0,.55);
+  --pw-shadow-3:0 18px 50px -10px rgba(0,0,0,.7);
+}
+[data-theme="light"]{
+  --body:#FAF8F5;--surface:#FFFFFF;--text:#2C2520;--dimmed:#8C8278;
+  --border:#E0D8CF;--placeholder:#A89E94;--deep:#F3F0EC;--deepest:#EDE9E3;
+  --hairline:rgba(44,37,32,.09);
+  --pw-shadow-1:0 1px 2px rgba(60,45,30,.07);
+  --pw-shadow-2:0 4px 16px -2px rgba(60,45,30,.13);
+  --pw-shadow-3:0 18px 50px -10px rgba(60,45,30,.22);
+}
+:root{--pw-focus-ring:0 0 0 2px var(--body),0 0 0 4px var(--teal-6)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--deepest);color:var(--text);font-family:var(--pw-font-ui);
+  font-size:var(--pw-text-md);line-height:var(--pw-lh-ui);-webkit-font-smoothing:antialiased}
+
+/* ═══════════ DOC CHROME ═══════════ */
+.docbar{position:sticky;top:0;z-index:500;display:flex;align-items:center;gap:20px;
+  padding:10px 20px;background:var(--deepest);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.docbar b{font-family:var(--pw-font-display);font-weight:400;font-size:var(--pw-text-lg)}
+.docbar nav{display:flex;gap:14px;font-size:var(--pw-text-sm);flex-wrap:wrap}
+.docbar nav a{color:var(--dimmed);text-decoration:none}
+.docbar nav a:hover{color:var(--teal-4)}
+.docbar .sp{flex:1}
+.btnlike{font:inherit;font-size:var(--pw-text-xs);background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--pw-radius-sm);padding:4px 8px;cursor:pointer}
+.doc{max-width:1300px;margin:0 auto;padding:36px 20px 120px}
+.screen{margin-bottom:64px;scroll-margin-top:70px}
+.screen > h2{font-family:var(--pw-font-display);font-weight:400;font-size:var(--pw-text-xl);margin-bottom:4px}
+.screen > .lede{color:var(--dimmed);font-size:var(--pw-text-sm);max-width:78ch;margin-bottom:16px}
+.frame{border:1px solid var(--border);border-radius:var(--pw-radius-md);overflow:hidden;
+  background:var(--body);box-shadow:var(--pw-shadow-2)}
+.frame-label{font-size:var(--pw-text-2xs);letter-spacing:.07em;text-transform:uppercase;
+  color:var(--placeholder);padding:6px 10px;background:var(--deepest);border-bottom:1px solid var(--border)}
+.why{margin-top:14px;font-size:var(--pw-text-sm);color:var(--dimmed);max-width:88ch}
+.why b{color:var(--text);font-weight:600}
+.why ul{margin:8px 0 0 18px}
+.why li{margin-bottom:5px}
+.flag{color:var(--amber-6);font-weight:600}
+
+/* ═══════════ PRIMITIVES ═══════════ */
+.pw-btn{font:inherit;font-size:var(--pw-text-sm);font-weight:500;border-radius:var(--pw-radius-sm);
+  padding:7px 14px;cursor:pointer;border:1px solid transparent;background:transparent;color:var(--text);
+  display:inline-flex;align-items:center;gap:6px;
+  transition:background var(--pw-dur-fast) var(--pw-ease),border-color var(--pw-dur-fast) var(--pw-ease),color var(--pw-dur-fast) var(--pw-ease)}
+.pw-btn--primary{background:var(--teal-7);color:#fff;border-color:var(--teal-7)}
+.pw-btn--primary:hover{background:var(--teal-6);border-color:var(--teal-6)}
+.pw-btn--default{border-color:var(--border)}
+.pw-btn--default:hover{border-color:var(--dimmed)}
+.pw-btn--quiet{color:var(--dimmed)}
+.pw-btn--quiet:hover{background:var(--hairline);color:var(--text)}
+.pw-btn--icon{padding:6px;color:var(--dimmed);border-radius:var(--pw-radius-sm)}
+.pw-btn--icon:hover{background:var(--hairline);color:var(--text)}
+.pw-section-header{display:flex;align-items:center;gap:8px;font-size:var(--pw-text-2xs);
+  font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dimmed);padding:8px 8px 4px}
+.pw-section-header .count{margin-left:auto;font-weight:400;letter-spacing:0;color:var(--placeholder)}
+.pw-pane-header{display:flex;align-items:baseline;gap:12px;padding-bottom:12px;
+  margin-bottom:24px;border-bottom:1px solid var(--hairline)}
+.pw-pane-header h4{font-family:var(--pw-font-display);font-weight:400;font-size:var(--pw-text-lg)}
+.pw-pane-header .sub{font-size:var(--pw-text-xs);color:var(--dimmed)}
+.pw-pane-header .actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+/* ═══════════════════════════════════════════════════════════
+   SCREEN 1 · DASHBOARD — richer shelf
+   ═══════════════════════════════════════════════════════════ */
+.dash{height:640px;display:flex;flex-direction:column;background:var(--body)}
+.dash-top{display:flex;align-items:center;gap:10px;padding:12px 24px;
+  background:var(--deep);border-bottom:1px solid var(--border)}
+.dash-top .logo{width:22px;height:22px;border-radius:var(--pw-radius-sm);
+  background:linear-gradient(140deg,var(--teal-5),var(--teal-8))}
+.dash-top .name{font-family:var(--pw-font-display);font-size:var(--pw-text-lg)}
+.dash-body{flex:1;overflow-y:auto;padding:32px 40px}
+.shelf{display:flex;gap:28px;align-items:flex-start;flex-wrap:wrap}
+
+.bk{width:180px;cursor:pointer;position:relative}
+.bk-jacket{position:relative;width:180px;height:252px;border-radius:2px var(--pw-radius-md) var(--pw-radius-md) 2px;
+  overflow:hidden;background:var(--surface);box-shadow:var(--pw-shadow-1);
+  transition:transform var(--pw-dur) var(--pw-ease),box-shadow var(--pw-dur) var(--pw-ease)}
+.bk:hover .bk-jacket{transform:translateY(-5px);box-shadow:var(--pw-shadow-3)}
+.bk-spine{position:absolute;left:0;top:0;bottom:0;width:5px;
+  background:linear-gradient(180deg,var(--teal-6),var(--teal-9));
+  box-shadow:inset -1px 0 2px rgba(0,0,0,.35)}
+.bk--shared .bk-spine{background:linear-gradient(180deg,var(--violet-6),#5b34c9)}
+/* generated jacket for books with no cover art */
+.bk-plate{position:absolute;inset:0;padding:30px 18px 26px 24px;display:flex;
+  flex-direction:column;align-items:center;justify-content:center;text-align:center;
+  background:radial-gradient(120% 80% at 50% 0%,var(--surface),var(--deep))}
+.bk-plate::before{content:'';position:absolute;inset:9px 9px 9px 13px;
+  border:1px solid var(--hairline);border-radius:2px;pointer-events:none}
+.bk-plate .t{font-family:var(--pw-font-display);font-size:18px;line-height:1.25}
+.bk-plate .orn{width:26px;height:1px;background:var(--border);margin:14px 0 0}
+.bk-plate .a{position:absolute;left:22px;right:16px;bottom:24px;
+  font-size:var(--pw-text-2xs);letter-spacing:.14em;text-transform:uppercase;color:var(--placeholder)}
+.bk-cover{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.bk-actions{position:absolute;top:8px;right:8px;opacity:0;transition:opacity var(--pw-dur-fast) var(--pw-ease)}
+.bk:hover .bk-actions{opacity:1}
+.bk-meta{padding-top:10px}
+.bk-meta .ttl{font-size:var(--pw-text-sm);font-weight:600;line-height:1.3}
+.bk-meta .st{font-size:var(--pw-text-xs);color:var(--dimmed);margin-top:2px}
+.bk-meta .ed{font-size:var(--pw-text-2xs);color:var(--placeholder);margin-top:3px}
+.bk-new{width:180px;height:252px;border:1px dashed var(--border);border-radius:var(--pw-radius-md);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  color:var(--placeholder);cursor:pointer;font-size:var(--pw-text-sm);
+  transition:border-color var(--pw-dur-fast) var(--pw-ease),color var(--pw-dur-fast) var(--pw-ease)}
+.bk-new:hover{border-color:var(--teal-7);color:var(--teal-4)}
+.shelf-rule{display:flex;align-items:center;gap:12px;margin:34px 0 18px}
+.shelf-rule span{font-size:var(--pw-text-2xs);letter-spacing:.08em;text-transform:uppercase;color:var(--dimmed)}
+.shelf-rule i{flex:1;height:1px;background:var(--hairline)}
+
+/* ═══════════════════════════════════════════════════════════
+   SCREEN 2/3 · BOOK WORKSPACE
+   ═══════════════════════════════════════════════════════════ */
+.ws{height:600px;display:flex;background:var(--body);position:relative;overflow:hidden}
+.ws-side{width:250px;min-width:250px;background:var(--deep);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  transition:opacity var(--pw-dur-slow) var(--pw-ease),transform var(--pw-dur-slow) var(--pw-ease)}
+.ws-book{display:flex;align-items:center;gap:10px;padding:12px;border-bottom:1px solid var(--hairline)}
+.ws-book .mini{width:26px;height:36px;border-radius:1px var(--pw-radius-sm) var(--pw-radius-sm) 1px;
+  background:linear-gradient(150deg,var(--surface),var(--deepest));border-left:3px solid var(--teal-7);flex:none}
+.ws-book .t{font-family:var(--pw-font-display);font-size:var(--pw-text-md);line-height:1.15}
+.ws-book .s{font-size:var(--pw-text-2xs);color:var(--placeholder)}
+.ws-nav{flex:1;overflow-y:auto;padding:4px 6px}
+.ch{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--pw-radius-sm);
+  font-size:var(--pw-text-sm);color:var(--dimmed);cursor:pointer;position:relative}
+.ch:hover{background:var(--hairline);color:var(--text)}
+.ch.on{background:var(--hairline);color:var(--text)}
+.ch.on::before{content:'';position:absolute;left:-6px;top:6px;bottom:6px;width:2px;
+  background:var(--teal-6);border-radius:0 2px 2px 0}
+.ch .dot{width:5px;height:5px;border-radius:999px;flex:none}
+.ch .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch .wc{font-size:var(--pw-text-2xs);color:var(--placeholder);font-variant-numeric:tabular-nums}
+/* tools demoted to a footer strip */
+.ws-tools{border-top:1px solid var(--hairline);padding:8px 10px;display:flex;align-items:center;gap:2px}
+.ws-tools .sp{flex:1}
+.tool{position:relative;padding:6px;border-radius:var(--pw-radius-sm);color:var(--dimmed);cursor:pointer;
+  font-size:14px;line-height:1;display:flex;transition:background var(--pw-dur-fast) var(--pw-ease)}
+.tool:hover{background:var(--hairline);color:var(--text)}
+.tool[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;
+  transform:translateX(-50%);background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--pw-radius-sm);box-shadow:var(--pw-shadow-2);padding:3px 7px;
+  font-size:var(--pw-text-2xs);white-space:nowrap;color:var(--text);z-index:var(--pw-z-popover)}
+.tool .badge{position:absolute;top:1px;right:1px;min-width:13px;height:13px;border-radius:999px;
+  background:var(--teal-7);color:#fff;font-size:9px;display:flex;align-items:center;justify-content:center;padding:0 3px}
+
+.ws-main{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0}
+.ws-scroll{flex:1;overflow-y:auto;padding:28px 40px}
+.ws-pane{max-width:var(--pw-pane-max);margin:0 auto}
+
+/* chapter list — rows, not cards */
+.crow{display:flex;align-items:center;gap:12px;padding:11px 10px;border-bottom:1px solid var(--hairline);
+  cursor:pointer;position:relative}
+.crow:hover{background:var(--hairline)}
+.crow .n{width:22px;font-size:var(--pw-text-xs);color:var(--placeholder);font-variant-numeric:tabular-nums;text-align:right}
+.crow .t{flex:1;font-size:var(--pw-text-md);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.crow .m{font-size:var(--pw-text-xs);color:var(--dimmed);font-variant-numeric:tabular-nums}
+.crow .acts{display:flex;gap:2px;opacity:0;transition:opacity var(--pw-dur-fast) var(--pw-ease)}
+.crow:hover .acts{opacity:1}
+.crow .grip{color:var(--placeholder);cursor:grab;opacity:0;font-size:13px}
+.crow:hover .grip{opacity:1}
+
+/* ── EDITOR ── */
+.ed{flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0;position:relative}
+.ed-top{display:flex;align-items:center;gap:12px;padding:10px 20px;border-bottom:1px solid var(--hairline);
+  transition:opacity var(--pw-dur-slow) var(--pw-ease)}
+.ed-top .back{color:var(--dimmed);cursor:pointer;font-size:16px}
+.ed-title{font-family:var(--pw-font-display);font-size:var(--pw-text-lg);border:none;background:none;
+  color:var(--text);font-weight:400;outline:none;flex:1;min-width:0;padding:2px 4px;border-radius:var(--pw-radius-sm)}
+.ed-title:hover{background:var(--hairline)}
+.ed-status{display:flex;align-items:center;gap:14px;font-size:var(--pw-text-xs);color:var(--dimmed);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+.ed-status .saved{display:flex;align-items:center;gap:5px}
+.ed-status .saved i{width:5px;height:5px;border-radius:999px;background:var(--teal-6)}
+.ed-canvas{flex:1;overflow-y:auto;padding:40px 24px 120px}
+.ed-doc{max-width:var(--pw-measure);margin:0 auto;font-family:var(--pw-font-prose);
+  font-size:16px;line-height:var(--pw-lh-prose);outline:none}
+.ed-doc h2{font-family:var(--pw-font-display);font-weight:400;font-size:24px;margin-bottom:18px;line-height:1.2}
+.ed-doc p{margin-bottom:14px}
+.ed-doc p:last-child{margin-bottom:0}
+/* selection toolbar replaces the permanent formatting bar */
+.ed-seltool{position:absolute;left:50%;top:150px;transform:translateX(-50%);display:flex;gap:1px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--pw-radius-sm);
+  box-shadow:var(--pw-shadow-2);padding:3px;z-index:var(--pw-z-popover)}
+.ed-seltool button{font:inherit;font-size:var(--pw-text-sm);background:none;border:none;color:var(--dimmed);
+  cursor:pointer;padding:4px 8px;border-radius:2px;min-width:26px}
+.ed-seltool button:hover{background:var(--hairline);color:var(--text)}
+/* footer status replaces chrome that used to sit permanently on screen */
+.ed-foot{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:16px;
+  padding:8px 20px;font-size:var(--pw-text-xs);color:var(--placeholder);
+  background:linear-gradient(to top,var(--body) 55%,transparent);
+  transition:opacity var(--pw-dur-slow) var(--pw-ease)}
+.ed-foot .sp{flex:1}
+/* feedback rail — only present when it has something to say */
+.ed-rail{width:290px;min-width:290px;border-left:1px solid var(--border);background:var(--deep);
+  display:flex;flex-direction:column;transition:margin-right var(--pw-dur-slow) var(--pw-ease),opacity var(--pw-dur-slow) var(--pw-ease)}
+.ed-rail-head{display:flex;align-items:center;padding:10px 14px;border-bottom:1px solid var(--hairline);
+  font-size:var(--pw-text-sm);font-weight:600}
+.ed-rail-head .c{margin-left:auto;font-size:var(--pw-text-2xs);color:var(--placeholder);font-weight:400}
+.ed-rail-body{flex:1;overflow-y:auto;padding:10px}
+.fb{border:1px solid var(--border);background:var(--surface);border-radius:var(--pw-radius-md);
+  padding:10px 12px;margin-bottom:8px}
+.fb .q{font-size:var(--pw-text-xs);color:var(--dimmed);font-style:italic;
+  border-left:2px solid var(--teal-8);padding-left:8px;margin-bottom:6px}
+.fb .c{font-size:var(--pw-text-sm)}
+.fb .w{font-size:var(--pw-text-2xs);color:var(--placeholder);margin-top:6px}
+/* the writing state */
+.ws.is-writing .ws-side{opacity:0;pointer-events:none}
+.ws.is-writing .ed-top{opacity:0;pointer-events:none}
+.ws.is-writing .ed-foot{opacity:0}
+/* Both rails fade WITHOUT collapsing their width — the prose column must not
+   move under the cursor mid-sentence. Space is reserved, ink is removed. */
+.ws.is-writing .ed-rail{opacity:0;pointer-events:none}
+.ws.is-writing .ed-seltool{opacity:0;pointer-events:none}
+.wtoggle{position:absolute;right:12px;bottom:10px;z-index:var(--pw-z-popover)}
+
+/* ═══════════════════════════════════════════════════════════
+   SCREEN 4 · READER — its own quieter language
+   ═══════════════════════════════════════════════════════════ */
+.rd{height:620px;display:flex;flex-direction:column;background:var(--body);position:relative;overflow:hidden}
+.rd-top{display:flex;align-items:center;gap:14px;padding:12px 22px;font-size:var(--pw-text-xs);
+  color:var(--dimmed);transition:opacity var(--pw-dur-slow) var(--pw-ease)}
+.rd-top .bk{font-family:var(--pw-font-display);font-size:var(--pw-text-sm);color:var(--text)}
+.rd-top .sp{flex:1}
+.rd-stage{flex:1;display:flex;align-items:center;justify-content:center;position:relative;padding:0 64px;min-height:0}
+.rd-page{max-width:var(--pw-measure);width:100%;font-family:var(--pw-font-prose);font-size:17px;
+  line-height:1.85;max-height:100%;overflow:hidden}
+.rd-page h2{font-family:var(--pw-font-display);font-weight:400;font-size:26px;margin-bottom:22px;line-height:1.2}
+/* Ragged right, not justified: at a 34em measure a handwriting face opens
+   visible rivers between words. Revisit only if the prose face changes. */
+.rd-page p{margin-bottom:16px}
+.rd-turn{position:absolute;top:0;bottom:0;width:64px;display:flex;align-items:center;justify-content:center;
+  color:var(--placeholder);cursor:pointer;font-size:22px;opacity:.35;
+  transition:opacity var(--pw-dur-fast) var(--pw-ease),background var(--pw-dur-fast) var(--pw-ease)}
+.rd-turn:hover{opacity:1;background:var(--hairline)}
+.rd-turn.l{left:0}.rd-turn.r{right:0}
+.rd-foot{padding:10px 22px 14px;transition:opacity var(--pw-dur-slow) var(--pw-ease)}
+.rd-prog{height:2px;background:var(--hairline);border-radius:999px;overflow:hidden;margin-bottom:8px}
+.rd-prog i{display:block;height:100%;width:38%;background:var(--teal-7)}
+.rd-folio{display:flex;align-items:center;font-size:var(--pw-text-2xs);color:var(--placeholder);
+  letter-spacing:.06em;font-variant-numeric:tabular-nums}
+.rd-folio .sp{flex:1}
+/* feedback surfaces on selection; margin marks otherwise */
+.rd-mark{background:linear-gradient(transparent 84%,var(--teal-8) 84%);cursor:pointer;padding-bottom:1px;
+  transition:background var(--pw-dur-fast) var(--pw-ease)}
+.rd-mark:hover{background:linear-gradient(transparent 84%,var(--teal-6) 84%)}
+.rd-pop{position:absolute;left:50%;top:86px;transform:translateX(-50%);width:270px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--pw-radius-md);box-shadow:var(--pw-shadow-3);
+  padding:10px;z-index:var(--pw-z-popover)}
+.rd-pop textarea{font:inherit;font-size:var(--pw-text-sm);width:100%;height:52px;resize:none;
+  background:var(--body);color:var(--text);border:1px solid var(--border);
+  border-radius:var(--pw-radius-sm);padding:6px 8px;outline:none}
+.rd-pop .row{display:flex;gap:6px;justify-content:flex-end;margin-top:8px}
+.rd-contents{position:absolute;left:0;top:0;bottom:0;width:250px;background:var(--deep);
+  border-right:1px solid var(--border);padding:14px 10px;z-index:var(--pw-z-sheet);box-shadow:var(--pw-shadow-3)}
+
+/* ═══════════════════════════════════════════════════════════
+   SCREEN 5 · AUTH
+   ═══════════════════════════════════════════════════════════ */
+.auth{height:480px;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(90% 70% at 50% 0%,var(--deep),var(--body))}
+.auth-card{width:360px;padding:34px 32px}
+.auth-mark{display:flex;flex-direction:column;align-items:center;margin-bottom:22px}
+.auth-mark .g{width:34px;height:34px;border-radius:var(--pw-radius-md);
+  background:linear-gradient(140deg,var(--teal-5),var(--teal-8));margin-bottom:14px}
+.auth-mark h3{font-family:var(--pw-font-display);font-weight:400;font-size:22px}
+.auth-mark p{font-size:var(--pw-text-xs);color:var(--dimmed);margin-top:3px}
+.pw-field{display:block;margin-bottom:14px}
+.pw-label{display:block;font-size:var(--pw-text-xs);color:var(--dimmed);margin-bottom:4px}
+.pw-input{font:inherit;font-size:var(--pw-text-sm);width:100%;background:var(--surface);color:var(--text);
+  border:1px solid var(--border);border-radius:var(--pw-radius-sm);padding:8px 10px;outline:none}
+.pw-input::placeholder{color:var(--placeholder)}
+.pw-input:focus{border-color:var(--teal-7);box-shadow:var(--pw-focus-ring)}
+.auth-row{display:flex;align-items:center;font-size:var(--pw-text-xs);color:var(--dimmed);margin-bottom:18px}
+.auth-row .sp{flex:1}
+.auth-row a{color:var(--teal-4);text-decoration:none}
+.auth-foot{text-align:center;margin-top:16px;font-size:var(--pw-text-xs);color:var(--dimmed)}
+.auth-foot a{color:var(--teal-4);text-decoration:none}
+</style>
+</head>
+<body>
+
+<div class="docbar">
+  <b>PlotWeb</b>
+  <nav>
+    <a href="#dash">Dashboard</a>
+    <a href="#chapters">Book · chapters</a>
+    <a href="#editor">Editor</a>
+    <a href="#reader">Reader</a>
+    <a href="#auth">Auth</a>
+  </nav>
+  <span class="sp"></span>
+  <button class="btnlike" id="themebtn">Light mode</button>
+</div>
+
+<div class="doc">
+
+<!-- ════════════ DASHBOARD ════════════ -->
+<section class="screen" id="dash">
+  <h2>Dashboard — the shelf, earning its space</h2>
+  <p class="lede">Same metaphor, but a book with no cover art stops being a blank rectangle with a teal stripe. It gets a generated jacket: title set in the display face, an inset hairline frame, a rule, and the author line — a real book object rather than a placeholder.</p>
+
+  <div class="frame">
+    <div class="frame-label">Dashboard · 1280 × 640</div>
+    <div class="dash">
+      <div class="dash-top">
+        <div class="logo"></div>
+        <div class="name">PlotWeb</div>
+        <span style="flex:1"></span>
+        <button class="pw-btn pw-btn--icon" title="Theme">◐</button>
+        <span style="font-size:var(--pw-text-sm);color:var(--dimmed)">design</span>
+        <button class="pw-btn pw-btn--icon" title="Sign out">⇥</button>
+      </div>
+      <div class="dash-body">
+        <div class="shelf">
+          <div class="bk">
+            <div class="bk-jacket">
+              <div class="bk-plate">
+                <div class="t">The Salt Road</div>
+                <div class="orn"></div>
+                <div class="a">Lost Connection</div>
+              </div>
+              <div class="bk-spine"></div>
+              <div class="bk-actions"><button class="pw-btn pw-btn--icon" style="background:var(--surface)">⋯</button></div>
+            </div>
+            <div class="bk-meta">
+              <div class="ttl">The Salt Road</div>
+              <div class="st">51,800 words · 12 chapters</div>
+              <div class="ed">edited 20 minutes ago</div>
+            </div>
+          </div>
+
+          <div class="bk">
+            <div class="bk-jacket">
+              <div class="bk-plate">
+                <div class="t">Nine Winters in Kell</div>
+                <div class="orn"></div>
+                <div class="a">Lost Connection</div>
+              </div>
+              <div class="bk-spine"></div>
+            </div>
+            <div class="bk-meta">
+              <div class="ttl">Nine Winters in Kell</div>
+              <div class="st">17,940 words · 6 chapters</div>
+              <div class="ed">edited 3 days ago</div>
+            </div>
+          </div>
+
+          <div class="bk">
+            <div class="bk-jacket">
+              <div class="bk-plate">
+                <div class="t">The Glassmaker's Daughter</div>
+                <div class="orn"></div>
+                <div class="a">Lost Connection</div>
+              </div>
+              <div class="bk-spine"></div>
+            </div>
+            <div class="bk-meta">
+              <div class="ttl">The Glassmaker's Daughter</div>
+              <div class="st">4,100 words · 2 chapters</div>
+              <div class="ed">edited last month</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="bk-new"><span style="font-size:19px">＋</span>New book</div>
+          </div>
+        </div>
+
+        <div class="shelf-rule"><span>Shared with me</span><i></i></div>
+        <div class="shelf">
+          <div class="bk bk--shared">
+            <div class="bk-jacket">
+              <div class="bk-plate">
+                <div class="t">The Weight of Tides</div>
+                <div class="orn"></div>
+                <div class="a">A. Fen</div>
+              </div>
+              <div class="bk-spine"></div>
+            </div>
+            <div class="bk-meta">
+              <div class="ttl">The Weight of Tides</div>
+              <div class="st">by A. Fen</div>
+              <div class="ed">3 chapters unread</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="why">
+    <b>What changed and why</b>
+    <ul>
+      <li>The jacket fills all 252px instead of leaving ~190px blank. Title, rule, author — generated, so it looks intentional on day one with zero uploaded art.</li>
+      <li>Spine moved from a flat <code>::before</code> bar to a gradient with an inner shadow, and the radius is asymmetric (2px at the spine, 8px at the fore-edge) so it reads as a physical book.</li>
+      <li>Meta moved <em>below</em> the jacket rather than floating over its bottom edge, and now carries word count, chapter count, and last-edited. Currently the card shows word count above the title and nothing else.</li>
+      <li>Shared books keep the violet spine but get a "3 chapters unread" line, which is the only thing you actually want to know about a book someone shared with you. <span class="flag">Needs read-progress on the shared side — the one model addition kept.</span></li>
+      <li>Delete moved out of a hover-only naked trash icon into a <code>⋯</code> menu — the current one is a single misclick from destroying a manuscript.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════ BOOK / CHAPTERS ════════════ -->
+<section class="screen" id="chapters">
+  <h2>Book workspace — content up, tools down</h2>
+  <p class="lede">The sidebar becomes what it should always have been: the manuscript. Typography, Beta readers and History drop to an icon strip along the foot, because you open them roughly once a week and they currently carry the same visual weight as the chapter you are writing.</p>
+
+  <div class="frame">
+    <div class="frame-label">Book · chapters pane · 1280 × 600</div>
+    <div class="ws">
+      <div class="ws-side">
+        <div class="ws-book">
+          <div class="mini"></div>
+          <div>
+            <div class="t">The Salt Road</div>
+            <div class="s">51,800 words</div>
+          </div>
+        </div>
+        <div class="ws-nav">
+          <div class="pw-section-header">Manuscript <span class="count">12</span></div>
+          <div class="ch"><span class="nm">1 · The Crossing</span><span class="wc">3.1k</span></div>
+          <div class="ch"><span class="nm">2 · Salt and Debt</span><span class="wc">4.4k</span></div>
+          <div class="ch on"><span class="nm">3 · The Well</span><span class="wc">2.9k</span></div>
+          <div class="ch"><span class="nm">4 · What Osrin Owes</span><span class="wc">5.2k</span></div>
+          <div class="ch"><span class="nm">5 · The Factor's House</span><span class="wc">1.8k</span></div>
+          <div class="ch"><span class="nm">6 · Nightwatch</span><span class="wc">940</span></div>
+          <div class="pw-section-header" style="margin-top:10px">Notes <span class="count">7</span></div>
+          <div class="ch"><span class="dot" style="background:var(--violet-6)"></span><span class="nm">Characters</span></div>
+          <div class="ch"><span class="dot" style="background:var(--amber-6)"></span><span class="nm">Worldbuilding</span></div>
+          <div class="ch"><span class="dot" style="background:var(--teal-6)"></span><span class="nm">Timeline</span></div>
+        </div>
+        <div class="ws-tools">
+          <span class="tool" data-tip="Typography">Aa</span>
+          <span class="tool" data-tip="Beta readers">☺<span class="badge">4</span></span>
+          <span class="tool" data-tip="History">↺</span>
+          <span class="tool" data-tip="Preview as reader">▷</span>
+          <span class="sp"></span>
+          <span class="tool" data-tip="Theme">◐</span>
+          <span class="tool" data-tip="All books">⌂</span>
+        </div>
+      </div>
+      <div class="ws-main">
+        <div class="ws-scroll">
+          <div class="ws-pane">
+            <div class="pw-pane-header">
+              <h4>Manuscript</h4>
+              <span class="sub">12 chapters · 51,800 words</span>
+              <span class="actions">
+                <button class="pw-btn pw-btn--quiet">⋯</button>
+                <button class="pw-btn pw-btn--primary">＋ Add chapter</button>
+              </span>
+            </div>
+            <div>
+              <div class="crow"><span class="grip">⠿</span><span class="n">1</span><span class="t">The Crossing</span><span class="m">3,140</span><span class="acts"><button class="pw-btn pw-btn--icon">✎</button><button class="pw-btn pw-btn--icon">⋯</button></span></div>
+              <div class="crow"><span class="grip">⠿</span><span class="n">2</span><span class="t">Salt and Debt</span><span class="m">4,402</span><span class="acts"><button class="pw-btn pw-btn--icon">✎</button><button class="pw-btn pw-btn--icon">⋯</button></span></div>
+              <div class="crow"><span class="grip">⠿</span><span class="n">3</span><span class="t">The Well</span><span class="m">2,918</span><span class="acts"><button class="pw-btn pw-btn--icon">✎</button><button class="pw-btn pw-btn--icon">⋯</button></span></div>
+              <div class="crow"><span class="grip">⠿</span><span class="n">4</span><span class="t">What Osrin Owes</span><span class="m">5,204</span><span class="acts"><button class="pw-btn pw-btn--icon">✎</button><button class="pw-btn pw-btn--icon">⋯</button></span></div>
+              <div class="crow"><span class="grip">⠿</span><span class="n">5</span><span class="t">The Factor's House</span><span class="m">1,806</span><span class="acts"><button class="pw-btn pw-btn--icon">✎</button><button class="pw-btn pw-btn--icon">⋯</button></span></div>
+              <div class="crow"><span class="grip">⠿</span><span class="n">6</span><span class="t">Nightwatch</span><span class="m">940</span><span class="acts"><button class="pw-btn pw-btn--icon">✎</button><button class="pw-btn pw-btn--icon">⋯</button></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="why">
+    <b>What changed and why</b>
+    <ul>
+      <li><b>Chapters became rows, not cards.</b> Six <code>Paper</code> cards with 16px padding and gaps show six chapters in the space a list shows fifteen. Hairline-separated rows scale to a 40-chapter novel; cards do not.</li>
+      <li><b>One primary action.</b> Import and Export move behind <code>⋯</code> (and open as side sheets). Today <em>Import / Export / Add Chapter</em> are three near-equal buttons above a list you mostly came to read.</li>
+      <li><b>Tools became a footer strip</b> with tooltips and a count badge on Beta readers. Five flat text labels become four icons, and the sidebar's vertical space goes to the manuscript.</li>
+      <li><b>Word counts in the sidebar</b> — currently only the main list has them, so the nav you actually use is the one with less information.</li>
+      <li>Drag handle replaces the up/down chevron pair. Reordering a 40-chapter book by clicking ▲ thirty times is not reordering.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════ EDITOR ════════════ -->
+<section class="screen" id="editor">
+  <h2>Editor — measured column, chrome that retreats</h2>
+  <p class="lede"><b style="color:var(--text)">This one is live. Click into the prose and type</b> — the sidebar, header, footer and feedback rail all fade. Move the mouse or press Esc to bring them back. Select a few words to see the formatting toolbar that replaces the permanent one.</p>
+
+  <div class="frame">
+    <div class="frame-label">Editor · 1280 × 600 · interactive</div>
+    <div class="ws" id="edws">
+      <div class="ws-side">
+        <div class="ws-book">
+          <div class="mini"></div>
+          <div><div class="t">The Salt Road</div><div class="s">51,800 words</div></div>
+        </div>
+        <div class="ws-nav">
+          <div class="pw-section-header">Manuscript <span class="count">12</span></div>
+          <div class="ch"><span class="nm">1 · The Crossing</span><span class="wc">3.1k</span></div>
+          <div class="ch"><span class="nm">2 · Salt and Debt</span><span class="wc">4.4k</span></div>
+          <div class="ch on"><span class="nm">3 · The Well</span><span class="wc">2.9k</span></div>
+          <div class="ch"><span class="nm">4 · What Osrin Owes</span><span class="wc">5.2k</span></div>
+          <div class="ch"><span class="nm">5 · The Factor's House</span><span class="wc">1.8k</span></div>
+          <div class="pw-section-header" style="margin-top:10px">Notes <span class="count">7</span></div>
+          <div class="ch"><span class="dot" style="background:var(--violet-6)"></span><span class="nm">Characters</span></div>
+        </div>
+        <div class="ws-tools">
+          <span class="tool" data-tip="Typography">Aa</span>
+          <span class="tool" data-tip="Beta readers">☺<span class="badge">4</span></span>
+          <span class="tool" data-tip="History">↺</span>
+          <span class="tool" data-tip="Preview as reader">▷</span>
+          <span class="sp"></span>
+          <span class="tool" data-tip="Theme">◐</span>
+          <span class="tool" data-tip="All books">⌂</span>
+        </div>
+      </div>
+
+      <div class="ed">
+        <div class="ed-top">
+          <span class="back">‹</span>
+          <input class="ed-title" value="The Well">
+          <span class="ed-status">
+            <span>2,918 words</span>
+            <span class="saved"><i></i> Saved</span>
+          </span>
+        </div>
+        <div class="ed-seltool" id="seltool" style="display:none">
+          <button><b>B</b></button><button><i>I</i></button><button style="text-decoration:underline">U</button>
+          <button style="text-decoration:line-through">S</button>
+          <span style="width:1px;background:var(--border);margin:2px 3px"></span>
+          <button>H2</button><button>”</button><button>🔗</button>
+        </div>
+        <div class="ed-canvas">
+          <div class="ed-doc" contenteditable="true" id="edoc" spellcheck="false">
+            <h2>The Well</h2>
+            <p>The evening sun cast long shadows across the cobblestone streets. She adjusted her coat and stepped into the alley, where the scent of old books and rain-soaked stone hung in the air.</p>
+            <p>Nothing in the caravan moved for a long moment. Then the lead camel shifted its weight, and the whole line breathed again — a hundred animals remembering at once that they were still walking.</p>
+            <p>He had counted the water skins twice already. Counting them a third time would not make more of them, and he knew it, and he counted them again anyway.</p>
+            <p>“How far,” Marta said. It was not a question, which was how she asked most things.</p>
+          </div>
+        </div>
+        <div class="ed-foot">
+          <span>Chapter 3 of 12</span>
+          <span class="sp"></span>
+          <span>2,918 words · 412 today</span>
+        </div>
+      </div>
+
+      <div class="ed-rail">
+        <div class="ed-rail-head">Feedback <span class="c">4 unresolved</span></div>
+        <div class="ed-rail-body">
+          <div class="fb">
+            <div class="q">“Counting them a third time would not make more of them”</div>
+            <div class="c">This is the best line in the chapter.</div>
+            <div class="w">Marta · 2 days ago</div>
+          </div>
+          <div class="fb">
+            <div class="q">“the whole line breathed again”</div>
+            <div class="c">Lovely, but you use “breathed” again on the next page.</div>
+            <div class="w">Marta · 2 days ago</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="pw-btn pw-btn--default wtoggle" id="wtoggle" style="background:var(--surface)">Simulate typing</button>
+    </div>
+  </div>
+
+  <div class="why">
+    <b>What changed and why</b>
+    <ul>
+      <li><b>A measure.</b> Prose is capped at <code>34em</code> ≈ 68 characters and centred. Today it runs the full ~890px of the pane — roughly 110 characters, well past the point where your eye loses the line return. This is the single biggest defect in the app, and the reader already gets it right at 760px.</li>
+      <li><b>The formatting toolbar is gone</b> until you select text. Sixteen buttons sit on screen permanently right now, for operations that only mean anything with a selection.</li>
+      <li><b>The feedback rail is only mounted when it has content.</b> Today it holds 300px open to say "No feedback for this chapter." With it gone, the writing pane gets that width back.</li>
+      <li><b>Word count and save state moved to a footer</b> that fades with everything else — visible when you look, invisible when you write. The "Saved / Saved on this device" distinction keeps its dot, since that one genuinely matters.</li>
+      <li><b>Collapse on typing</b> fades sidebar, header, footer and rail together over 320ms. Returns on pointer move or Esc. Nothing is removed that you can't get back in one gesture — which is the condition for this being calming rather than alarming.</li>
+      <li><b>The chrome fades but does not collapse its width.</b> First version slid the rail out and the prose column jumped sideways mid-sentence. Space stays reserved, only ink is removed, so the line you are writing never moves under the cursor. Worth stating explicitly because the obvious implementation gets it wrong.</li>
+      <li>Chapter title is edited in place in the header rather than through a modal, and no longer needs five <code>!important</code>s to escape the framework's input styling.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════ READER ════════════ -->
+<section class="screen" id="reader">
+  <h2>Reader — a finished book, not a workshop</h2>
+  <p class="lede">The only surface an outsider ever sees. It shares tokens with the studio and nothing else: no permanent sidebar, no permanent feedback rail, no visible furniture competing with the prose. <b style="color:var(--text)">Click the highlighted phrase</b> to see how feedback surfaces.</p>
+
+  <div class="frame">
+    <div class="frame-label">Reader · 1280 × 620 · interactive</div>
+    <div class="rd" id="rd">
+      <div class="rd-top">
+        <span class="pw-btn pw-btn--icon" id="rdtoc" style="cursor:pointer">☰</span>
+        <span class="bk">The Salt Road</span>
+        <span style="color:var(--placeholder)">·</span>
+        <span>The Well</span>
+        <span class="sp"></span>
+        <span>Reading as Marta</span>
+        <span class="pw-btn pw-btn--icon">🔖</span>
+        <span class="pw-btn pw-btn--icon">☰</span>
+      </div>
+
+      <div class="rd-stage">
+        <div class="rd-turn l">‹</div>
+        <div class="rd-page">
+          <h2>The Well</h2>
+          <p>The evening sun cast long shadows across the cobblestone streets. She adjusted her coat and stepped into the alley, where the scent of old books and rain-soaked stone hung in the air. Somewhere behind her a shutter went, and then went again, and then stopped.</p>
+          <p>Nothing in the caravan moved for a long moment. Then the lead camel shifted its weight, and the whole line breathed again — a hundred animals remembering at once that they were still walking, that the walking had not in fact ended while they stood there.</p>
+          <p>He had counted the water skins twice already. <span class="rd-mark" id="rdmark">Counting them a third time would not make more of them</span>, and he knew it, and he counted them again anyway.</p>
+          <p>“How far,” Marta said. It was not a question, which was how she asked most things, and it was the reason he had hired her in the first place and the reason he now regretted it.</p>
+        </div>
+        <div class="rd-turn r">›</div>
+      </div>
+
+      <div class="rd-foot">
+        <div class="rd-prog"><i></i></div>
+        <div class="rd-folio">
+          <span>THE WELL</span>
+          <span class="sp"></span>
+          <span>4 / 11</span>
+          <span class="sp"></span>
+          <span>CH 3 OF 12</span>
+        </div>
+      </div>
+
+      <div class="rd-pop" id="rdpop" style="display:none">
+        <div style="font-size:var(--pw-text-xs);color:var(--dimmed);font-style:italic;border-left:2px solid var(--teal-8);padding-left:8px;margin-bottom:8px">“Counting them a third time would not make more of them”</div>
+        <div style="font-size:var(--pw-text-sm);margin-bottom:8px">This is the best line in the chapter.</div>
+        <textarea placeholder="Reply…"></textarea>
+        <div class="row">
+          <button class="pw-btn pw-btn--quiet" id="rdpopclose">Close</button>
+          <button class="pw-btn pw-btn--primary">Reply</button>
+        </div>
+      </div>
+
+      <div class="rd-contents" id="rdtocpanel" style="display:none">
+        <div class="pw-section-header">Contents <span class="count">12</span></div>
+        <div class="ch"><span class="nm">1 · The Crossing</span></div>
+        <div class="ch"><span class="nm">2 · Salt and Debt</span></div>
+        <div class="ch on"><span class="nm">3 · The Well</span></div>
+        <div class="ch"><span class="nm">4 · What Osrin Owes</span></div>
+        <div class="ch"><span class="nm">5 · The Factor's House</span></div>
+        <div style="position:absolute;left:10px;right:10px;bottom:12px">
+          <div class="pw-section-header">Your notes <span class="count">4</span></div>
+          <div class="ch"><span class="nm" style="font-size:var(--pw-text-xs)">“…would not make more of them”</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="why">
+    <b>What changed and why</b>
+    <ul>
+      <li><b>The 260px sidebar and 320px rail both go away.</b> A beta reader navigates twice — once to pick a chapter, once to leave a note. Neither justifies 580px of permanent furniture around the thing they came to read.</li>
+      <li><b>Contents is a panel on demand</b>, and it carries their own notes at the foot — which is what a reader wants to return to, and there is currently nowhere to see it.</li>
+      <li><b>Existing feedback shows as an underline in the text</b>, not a card in a list. Click it and the note opens where the words are. The current design makes you read the quote in the rail and hunt for it in the prose.</li>
+      <li><b>The folio replaces the page bar.</b> Chapter name, page, position in the book, set at 11px letterspaced under a 2px progress line. The current pagebar puts two chevrons and "1 / 1" in a bordered strip.</li>
+      <li><b>Page turns move to the margins.</b> 64px hit targets down both edges at 35% opacity, full on hover — the gesture is already there as arrow keys and swipe, so the visible control can be nearly invisible.</li>
+      <li>17px at 1.85 — book setting rather than UI setting, against the editor's 16/1.7. <span class="flag">I tried justified-with-hyphenation first and reverted it:</span> a 34em measure set in a handwriting face opens obvious rivers between words. Worth revisiting only if the prose face ever changes.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ════════════ AUTH ════════════ -->
+<section class="screen" id="auth">
+  <h2>Auth — one component, four pages</h2>
+  <p class="lede">Login, register, forgot-password and reset-password are currently the same 400px card copy-pasted four times. One component, four contents.</p>
+
+  <div class="frame">
+    <div class="frame-label">Sign in · 1280 × 480</div>
+    <div class="auth">
+      <div class="auth-card">
+        <div class="auth-mark">
+          <div class="g"></div>
+          <h3>Welcome back</h3>
+          <p>Sign in to your PlotWeb account</p>
+        </div>
+        <label class="pw-field"><span class="pw-label">Username</span><input class="pw-input" placeholder="Your username"></label>
+        <label class="pw-field"><span class="pw-label">Password</span><input class="pw-input" type="password" placeholder="Your password"></label>
+        <div class="auth-row">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox"> Remember me</label>
+          <span class="sp"></span>
+          <a href="#">Forgot password?</a>
+        </div>
+        <button class="pw-btn pw-btn--primary" style="width:100%;justify-content:center;padding:9px">Sign in</button>
+        <div class="auth-foot">No account yet? <a href="#">Register</a></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="why">
+    <b>What changed and why</b>
+    <ul>
+      <li><b>The card loses its border and shadow.</b> Nothing is behind it to separate from — the panel was doing no work. A soft radial wash carries the depth instead of a box.</li>
+      <li>Width 400 → 360, and the logo 72px → 34px. A sign-in form is not a landing page.</li>
+      <li>"Remember me" and "Forgot password?" share one row instead of stacking a checkbox above a right-aligned inline-styled link — that link is currently the only inline <code>style:</code> attribute across all four auth pages.</li>
+      <li><span class="flag">Consistency fix:</span> forgot-password ends on a subtle "Back to sign in", reset-password ends on a full-width primary "Go to sign in". Same moment, two different weights. One component settles it.</li>
+    </ul>
+  </div>
+</section>
+
+</div>
+
+<script>
+const root=document.documentElement;
+document.getElementById('themebtn').addEventListener('click',e=>{
+  const n=root.dataset.theme==='dark'?'light':'dark';
+  root.dataset.theme=n;e.target.textContent=n==='dark'?'Light mode':'Dark mode';
+});
+
+/* ── Editor: collapse-on-typing ── */
+const ws=document.getElementById('edws'), edoc=document.getElementById('edoc'),
+      seltool=document.getElementById('seltool'), wt=document.getElementById('wtoggle');
+let idle;
+function writing(on){
+  ws.classList.toggle('is-writing',on);
+  wt.textContent = on ? 'Chrome hidden — move mouse' : 'Simulate typing';
+}
+edoc.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){writing(false);return;}
+  writing(true); seltool.style.display='none';
+  clearTimeout(idle); idle=setTimeout(()=>writing(false),2500);
+});
+ws.addEventListener('mousemove',()=>{ if(ws.classList.contains('is-writing')) writing(false); });
+wt.addEventListener('click',()=>writing(!ws.classList.contains('is-writing')));
+document.addEventListener('selectionchange',()=>{
+  const s=document.getSelection();
+  if(!s.rangeCount||s.isCollapsed||!edoc.contains(s.anchorNode)){seltool.style.display='none';return;}
+  const r=s.getRangeAt(0).getBoundingClientRect(), f=ws.getBoundingClientRect();
+  seltool.style.display='flex';
+  seltool.style.left=(r.left-f.left+r.width/2)+'px';
+  seltool.style.top=Math.max(8,r.top-f.top-44)+'px';
+});
+
+/* ── Reader: feedback popover + contents ── */
+const pop=document.getElementById('rdpop');
+document.getElementById('rdmark').addEventListener('click',e=>{
+  const r=e.target.getBoundingClientRect(), f=document.getElementById('rd').getBoundingClientRect();
+  pop.style.display='block';
+  pop.style.left=(r.left-f.left+r.width/2)+'px';
+  // Flip above the phrase when there isn't room below it.
+  const h=pop.offsetHeight, below=r.bottom-f.top+10;
+  pop.style.top = (below+h > f.height-12) ? Math.max(8,r.top-f.top-h-10)+'px' : below+'px';
+});
+document.getElementById('rdpopclose').addEventListener('click',()=>pop.style.display='none');
+const toc=document.getElementById('rdtocpanel');
+document.getElementById('rdtoc').addEventListener('click',()=>{
+  toc.style.display = toc.style.display==='none' ? 'block' : 'none';
+});
+</script>
+</body>
+</html>
