@@ -2,8 +2,11 @@
 //! chapter-body-save machinery it and the editor pane share.
 
 use rinch::prelude::*;
-// Reached only from inside the `web_only!` block below; unused natively.
-#[cfg(target_arch = "wasm32")]
+// `web_sys`/`wasm_bindgen` types compile on both targets (only *calling into
+// the browser* panics off-wasm, per `crate::platform`'s docs) — `JsCast` is
+// used both inside and outside the `web_only!` block below, so unlike the
+// wasm32-gated import this file used to have, this one is used on native too
+// (to no-op safely once `crate::platform::document()` answers `None`).
 use wasm_bindgen::JsCast;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{Chapter, SaveReceipt, UpdateChapterRequest};
@@ -313,23 +316,130 @@ pub(in crate::pages::book) fn do_switch_chapter_inner(
     );
 }
 
+/// The chapters pane only ever has one row in edit mode at a time (an
+/// existing chapter's rename, or the draft row from "Add chapter"), so both
+/// share this one stable id rather than a per-chapter id — there is never a
+/// collision, and it gives this helper (and the Escape handler below it) a
+/// single, simple target.
+const INLINE_TITLE_INPUT_ID: &str = "chapter-inline-title";
+
+/// Focus the just-mounted inline chapter-title input (cursor lands at the end
+/// of its text — the browser default for a focused, already-valued input),
+/// and wire real `keydown` (Enter commits, Escape cancels) and `blur`
+/// (commits) listeners.
+///
+/// None of the three can be an rsx event prop on a raw element. `oninput` /
+/// `onchange` / `onclick` (via `data-rid`) are the only ones rinch-web's
+/// delegator gives a raw HTML element a real DOM listener for; `onsubmit` on
+/// a raw element is not one of them despite compiling — the macro accepts
+/// any `on`-prefixed name and falls through to `data-rid`, so an `onsubmit:`
+/// prop on a plain `<input>` silently becomes a second `onclick`, not an
+/// Enter handler (only rinch's own `TextInput` component wires `onsubmit` to
+/// `data-onsubmit`, inside its own `Component::render()` — not something the
+/// generic macro does for any element). `onblur`/`onkeydown` don't exist as
+/// rsx event props at all. So all three are wired directly with real DOM
+/// listeners here instead, which only exist on the web backend (`web_only!`
+/// is the only safe home for a `wasm_bindgen::closure::Closure` — see that
+/// module's docs on why a runtime guard isn't enough). On native, this whole
+/// function is therefore a no-op beyond the focus call — a known gap with no
+/// working commit/cancel path for this input at all there yet.
+///
+/// Called from an effect watching `editing_chapter_id`/`pending_new_chapter`
+/// (see `render`, below) rather than directly from the pencil/"Add chapter"
+/// click handlers: the sidebar's own "+" (see `mod.rs`) only sets
+/// `pending_new_chapter` and switches pane, so an effect is the one place
+/// that covers every entry point without each one re-scheduling the same
+/// tick-then-focus dance. Still needs `set_timeout(0, ..)` even from an
+/// effect — the input doesn't exist until the reactive `if` branch that
+/// renders it has actually mounted, which happens synchronously after the
+/// signal set but the effect body runs as part of that same update.
+fn focus_inline_input(on_commit: impl Fn() + 'static + Copy, on_cancel: impl Fn() + 'static + Copy) {
+    // Both closures are only actually invoked from inside the `web_only!`
+    // block below, which compiles to nothing on native — without this,
+    // `on_commit`/`on_cancel` would be unused params there.
+    let _ = (&on_commit, &on_cancel);
+
+    // `web_sys` types are unconditional deps (compile on both targets — only
+    // *calling into the browser* panics off-wasm, per `crate::platform`'s
+    // docs), and `crate::platform::document()` is `None` on native, so this
+    // branch is simply never entered there. Only the `Closure`s below need
+    // `web_only!`.
+    if let Some(doc) = crate::platform::document() {
+        if let Ok(Some(el)) = doc.query_selector(&format!("#{INLINE_TITLE_INPUT_ID}")) {
+            if let Some(html_el) = el.dyn_ref::<web_sys::HtmlElement>() {
+                html_el.focus().ok();
+            }
+        }
+    }
+    crate::web_only! {
+        // Enter and Escape both resolve the field and must suppress the blur
+        // their own `.blur()`/focus-loss is about to cause — otherwise Enter
+        // would commit and then immediately commit again (empty, post-clear)
+        // via the blur listener below, and Escape would cancel then
+        // re-commit the just-discarded text the same way. Shared between all
+        // three closures so whichever already ran marks it for the others.
+        let resolved = std::rc::Rc::new(std::cell::Cell::new(false));
+
+        let resolved_for_keydown = resolved.clone();
+        let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+            let is_enter = event.key() == "Enter" && !event.shift_key() && !event.is_composing();
+            let is_escape = event.key() == "Escape";
+            if !is_enter && !is_escape {
+                return;
+            }
+            event.prevent_default();
+            resolved_for_keydown.set(true);
+            if is_enter {
+                on_commit();
+            } else {
+                on_cancel();
+            }
+            if let Some(el) = crate::platform::document()
+                .and_then(|d| d.active_element())
+                .and_then(|e| e.dyn_into::<web_sys::HtmlElement>().ok())
+            {
+                el.blur().ok();
+            }
+        }) as Box<dyn FnMut(_)>);
+
+        let resolved_for_blur = resolved.clone();
+        let blur = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::FocusEvent| {
+            if !resolved_for_blur.replace(false) {
+                on_commit();
+            }
+        }) as Box<dyn FnMut(_)>);
+
+        if let Some(doc) = crate::platform::document() {
+            if let Ok(Some(el)) = doc.query_selector(&format!("#{INLINE_TITLE_INPUT_ID}")) {
+                el.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
+                el.add_event_listener_with_callback("blur", blur.as_ref().unchecked_ref()).ok();
+            }
+        }
+        keydown.forget();
+        blur.forget();
+    }
+}
+
 /// Render the Chapters pane (CSS toggle, always in DOM).
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-pub(in crate::pages::book) fn render<OC, RC, DC, OCO, DCO>(
+pub(in crate::pages::book) fn render<OC, OCO, RC, DC, DCO, AC, SRC>(
     __scope: &mut RenderScope,
     state: BookState,
     store: AppStore,
     open_chapter: OC,
     reorder_chapter: RC,
-    delete_chapter: DC,
+    request_delete_chapter: DC,
+    add_chapter: AC,
+    save_rename_chapter: SRC,
 ) -> NodeHandle
 where
     OC: Fn(String) -> OCO + 'static + Copy,
     RC: Fn(String, usize) + 'static + Copy,
-    DC: Fn(String) -> DCO + 'static + Copy,
-    OCO: Fn() + 'static,
+    DC: Fn(String, String, u64) -> DCO + 'static + Copy,
     DCO: Fn() + 'static,
+    AC: Fn(String) + 'static + Copy,
+    SRC: Fn(String, String) + 'static + Copy,
+    OCO: Fn() + 'static,
 {
     let BookState {
         active_pane,
@@ -343,11 +453,9 @@ where
         export_loading,
         export_error,
         show_export_modal,
-        new_chapter_title,
-        show_chapter_modal,
-        rename_chapter_id,
-        rename_chapter_title,
-        show_rename_chapter_modal,
+        editing_chapter_id,
+        editing_chapter_title,
+        pending_new_chapter,
         dragging_chapter_id,
         chapter_drop_target,
         show_chapters_menu,
@@ -356,6 +464,55 @@ where
 
     let chapter_count = move || store.chapters.get().len();
     let total_words = move || store.chapters.get().iter().map(|c| c.word_count).sum::<u64>();
+
+    // Cancel whatever inline edit is in progress — the existing-row rename, or
+    // the not-yet-created draft row from "Add chapter". Escape's handler.
+    let cancel_inline_edit = move || {
+        editing_chapter_id.set(None);
+        pending_new_chapter.set(false);
+        editing_chapter_title.set(String::new());
+    };
+
+    // Commit the draft row from "Add chapter": create the chapter for real.
+    let commit_new_chapter = move || {
+        let title = editing_chapter_title.get();
+        editing_chapter_title.set(String::new());
+        pending_new_chapter.set(false);
+        add_chapter(title);
+    };
+
+    // Commit an existing row's inline rename.
+    let commit_rename = move |cid: String| {
+        let title = editing_chapter_title.get();
+        editing_chapter_title.set(String::new());
+        editing_chapter_id.set(None);
+        save_rename_chapter(cid, title);
+    };
+
+    // Blur's handler doesn't know which of the two edit modes is live — the
+    // effect below wires it once for whichever the DOM currently has.
+    let commit_whichever_is_active = move || {
+        if let Some(cid) = editing_chapter_id.get() {
+            commit_rename(cid);
+        } else if pending_new_chapter.get() {
+            commit_new_chapter();
+        }
+    };
+
+    // Focus the inline title input whenever a row enters edit mode — covers
+    // both entry points (this pane's own pencil/"Add chapter", and the
+    // sidebar's "+", which only sets `pending_new_chapter` and switches pane
+    // from `mod.rs`) with one reactive rule instead of duplicating the
+    // schedule-a-tick-then-focus dance at every call site. Fires once, right
+    // after the `if` branch that renders the input mounts it, since the
+    // input doesn't exist in the DOM until this same signal-set is applied.
+    __scope.create_effect(move || {
+        if editing_chapter_id.get().is_some() || pending_new_chapter.get() {
+            rinch_core::set_timeout(0, move || {
+                focus_inline_input(commit_whichever_is_active, cancel_inline_edit);
+            });
+        }
+    });
 
     rsx! {
         div {
@@ -427,8 +584,9 @@ where
                     Button {
                         size: "sm",
                         onclick: move || {
-                            new_chapter_title.set(String::new());
-                            show_chapter_modal.set(true);
+                            editing_chapter_id.set(None);
+                            editing_chapter_title.set(String::new());
+                            pending_new_chapter.set(true);
                         },
                         {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
                         "Add chapter"
@@ -488,10 +646,27 @@ where
                                 {render_tabler_icon(__scope, TablerIcon::GripVertical, TablerIconStyle::Outline)}
                             }
                             span { class: "n", {format!("{}", _i + 1)} }
-                            span {
-                                class: "t",
-                                onclick: open_chapter(cid.get()),
-                                {move || ctitle.get()}
+                            // Tier 1 (design/01-language.html#overlays): renaming edits
+                            // the row in place instead of opening a dialog. A reactive
+                            // node swap has to be an `if`/`match` in the macro (a
+                            // closure returning a node renders as its Debug text here).
+                            if editing_chapter_id.get().as_deref() == Some(cid.get().as_str()) {
+                                input {
+                                    id: "chapter-inline-title",
+                                    class: "t crow-edit-input",
+                                    value: {move || editing_chapter_title.get()},
+                                    oninput: move |v: String| editing_chapter_title.set(v),
+                                    // Enter/Escape/blur are wired by
+                                    // `focus_inline_input` with real DOM listeners —
+                                    // see its doc comment for why a raw element's
+                                    // `onsubmit:`/`onblur:` rsx props can't do this.
+                                }
+                            } else {
+                                span {
+                                    class: "t",
+                                    onclick: open_chapter(cid.get()),
+                                    {move || ctitle.get()}
+                                }
                             }
                             span { class: "m", {format_word_count_full(cwords)} }
                             span { class: "acts",
@@ -499,9 +674,9 @@ where
                                     variant: "subtle",
                                     size: "sm",
                                     onclick: move || {
-                                        rename_chapter_id.set(cid.get());
-                                        rename_chapter_title.set(ctitle.get());
-                                        show_rename_chapter_modal.set(true);
+                                        pending_new_chapter.set(false);
+                                        editing_chapter_title.set(ctitle.get());
+                                        editing_chapter_id.set(Some(cid.get()));
                                     },
                                     {render_tabler_icon(
                                         __scope,
@@ -513,7 +688,7 @@ where
                                     variant: "subtle",
                                     color: "red",
                                     size: "sm",
-                                    onclick: delete_chapter(cid.get()),
+                                    onclick: request_delete_chapter(cid.get(), ctitle.get(), cwords),
                                     {render_tabler_icon(
                                         __scope,
                                         TablerIcon::Trash,
@@ -521,6 +696,30 @@ where
                                     )}
                                 }
                             }
+                        }
+                    }
+
+                    // Tier 1: the draft row appended by "Add chapter" — an empty
+                    // title field with focus already in it, instead of a dialog
+                    // asking for a title up front.
+                    if pending_new_chapter.get() {
+                        div {
+                            key: "pending-new-chapter",
+                            class: "crow",
+                            span { class: "grip" }
+                            span { class: "n", {format!("{}", chapter_count() + 1)} }
+                            input {
+                                id: "chapter-inline-title",
+                                class: "t crow-edit-input",
+                                placeholder: "Chapter title",
+                                value: {move || editing_chapter_title.get()},
+                                oninput: move |v: String| editing_chapter_title.set(v),
+                                // Enter/Escape/blur come from `focus_inline_input`'s
+                                // real DOM listeners — see the rename row's comment
+                                // above for why rsx props can't do this here.
+                            }
+                            span { class: "m" }
+                            span { class: "acts" }
                         }
                     }
                 }
