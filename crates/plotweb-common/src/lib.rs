@@ -320,6 +320,15 @@ pub struct SharedBook {
     pub author_username: String,
     #[serde(default)]
     pub cover_image: Option<String>,
+    /// Chapters this link can actually reach (respects `max_chapter_index` /
+    /// `pinned_commit`). `None` if it could not be computed.
+    #[serde(default)]
+    pub chapter_count: Option<i64>,
+    /// `chapter_count` minus how far into the accessible list `last_chapter_id`
+    /// reaches, clamped at 0. `None` if it could not be computed; everything is
+    /// unread when there is no `last_chapter_id` yet.
+    #[serde(default)]
+    pub unread_count: Option<i64>,
 }
 
 // ── Import ──

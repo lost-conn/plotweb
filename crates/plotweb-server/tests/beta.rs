@@ -48,6 +48,64 @@ async fn reader_can_read_allowed_chapter_but_not_restricted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shared_books_reports_read_progress() {
+    let mut app = TestApp::new().await;
+
+    // Author with a book and three chapters, no max_chapter_index (all reachable).
+    app.register("author", "password123").await;
+    let book = app.create_book("Shared Novel").await;
+    let ch1 = app.create_chapter(&book, "Chapter One").await;
+    let _ch2 = app.create_chapter(&book, "Chapter Two").await;
+    let ch3 = app.create_chapter(&book, "Chapter Three").await;
+
+    // Attach the link to "reader" at creation so /api/shared-books has something
+    // to list once we log in as them.
+    let link = app
+        .post(
+            &format!("/api/books/{book}/beta-links"),
+            &json!({ "reader_name": "Reader", "username": "author" }),
+        )
+        .await;
+    assert_eq!(link.status, StatusCode::CREATED, "{}", link.json);
+    let token = link.json["token"].as_str().unwrap().to_string();
+
+    // No progress yet → everything unread.
+    let shared = app.get("/api/shared-books").await;
+    assert_eq!(shared.status, StatusCode::OK, "{}", shared.json);
+    let entry = &shared.json.as_array().unwrap()[0];
+    assert_eq!(entry["chapter_count"], 3);
+    assert_eq!(entry["unread_count"], 3);
+
+    // Progress partway (read through chapter 1 of 3) → 2 remain.
+    let prog = app
+        .put(
+            &format!("/api/beta/{token}/progress"),
+            &json!({ "chapter_id": ch1, "page": 0 }),
+        )
+        .await;
+    assert_eq!(prog.status, StatusCode::OK, "{}", prog.json);
+
+    let shared = app.get("/api/shared-books").await;
+    let entry = &shared.json.as_array().unwrap()[0];
+    assert_eq!(entry["chapter_count"], 3);
+    assert_eq!(entry["unread_count"], 2);
+
+    // Progress at the final chapter → 0 remain.
+    let prog = app
+        .put(
+            &format!("/api/beta/{token}/progress"),
+            &json!({ "chapter_id": ch3, "page": 0 }),
+        )
+        .await;
+    assert_eq!(prog.status, StatusCode::OK, "{}", prog.json);
+
+    let shared = app.get("/api/shared-books").await;
+    let entry = &shared.json.as_array().unwrap()[0];
+    assert_eq!(entry["chapter_count"], 3);
+    assert_eq!(entry["unread_count"], 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_feedback_roundtrip() {
     let mut app = TestApp::new().await;
     let (book, ch1, _ch2, token) = setup_beta(&mut app).await;

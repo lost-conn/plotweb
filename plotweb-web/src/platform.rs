@@ -93,6 +93,29 @@ pub fn document() -> Option<web_sys::Document> {
     None
 }
 
+// ── Clock ────────────────────────────────────────────────────────────────────
+
+/// Current time as UTC seconds since the epoch. `updated_at` timestamps are
+/// always `chrono::Utc::now()`-formatted server-side, so relative-time display
+/// (dashboard "edited N minutes ago") compares against this rather than a local
+/// wall clock that might be in a different timezone.
+///
+/// wasm has no `SystemTime::now()` (it panics — no clock syscall in the
+/// sandbox), so this reaches for `js_sys::Date::now()` there instead.
+#[cfg(target_arch = "wasm32")]
+pub fn now_epoch_secs() -> i64 {
+    (js_sys::Date::now() / 1000.0) as i64
+}
+
+/// Native: the real wall clock via `SystemTime`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn now_epoch_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 // ── Bundled assets ───────────────────────────────────────────────────────────
 
 /// Resolve a `/assets/...` reference into something the active image loader can read.

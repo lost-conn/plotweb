@@ -457,6 +457,56 @@ async fn reader_can_access_chapter(
     }
 }
 
+/// Chapter count and unread count for a beta link, for the dashboard's shared
+/// shelf. Mirrors the accessible-chapter-list logic in `reader_view`: the
+/// chapters this link can actually reach, respecting `max_chapter_index` and
+/// `pinned_commit`.
+///
+/// `unread_count` is `chapter_count` minus (the 0-based index of
+/// `last_chapter_id` within that list, plus 1), clamped at 0. If
+/// `last_chapter_id` is absent *or* no longer resolves in the accessible list
+/// (deleted/renumbered chapter), everything is treated as unread rather than
+/// panicking or going negative.
+async fn read_progress_for_link(
+    state: &AppState,
+    link: &crate::rhype::RhypeObject,
+    book_id: &str,
+) -> (Option<i64>, Option<i64>) {
+    let max_chapter_index = link.i64("max_chapter_index");
+    let pinned_commit = link.string("pinned_commit");
+
+    let chapters = if let Some(ref commit) = pinned_commit {
+        state.books.list_chapters_at_commit(book_id, commit).await
+    } else {
+        state.books.list_chapters(book_id).await
+    };
+    let Ok(chapters) = chapters else {
+        return (None, None);
+    };
+
+    let mut accessible: Vec<_> = chapters
+        .into_iter()
+        .filter(|ch| max_chapter_index.map(|max| ch.sort_order <= max).unwrap_or(true))
+        .collect();
+    accessible.sort_by_key(|c| c.sort_order);
+
+    let chapter_count = accessible.len() as i64;
+    let last_chapter_id = link.string("last_chapter_id").filter(|cid| !cid.is_empty());
+
+    let unread_count = match last_chapter_id {
+        Some(cid) => match accessible.iter().position(|c| c.id == cid) {
+            // Read through index `idx` (0-based) → idx + 1 chapters read.
+            Some(idx) => (chapter_count - (idx as i64 + 1)).max(0),
+            // Stale/renumbered last_chapter_id that no longer resolves: fall
+            // back to "all unread" rather than guessing or going negative.
+            None => chapter_count,
+        },
+        None => chapter_count,
+    };
+
+    (Some(chapter_count), Some(unread_count))
+}
+
 /// Update the reader's last-read position (auto last-page). Idempotent.
 pub async fn reader_update_progress(
     State(state): State<AppState>,
@@ -1099,6 +1149,8 @@ pub async fn list_shared_books(
             .unwrap_or_default();
         let cover_image = rewrite_cover_for_beta(cover_image, &token);
 
+        let (chapter_count, unread_count) = read_progress_for_link(&state, &link, &book_id).await;
+
         shared.push(SharedBook {
             book_title,
             book_description: description,
@@ -1106,6 +1158,8 @@ pub async fn list_shared_books(
             reader_name,
             author_username,
             cover_image,
+            chapter_count,
+            unread_count,
         });
     }
 
