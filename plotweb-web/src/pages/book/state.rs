@@ -69,6 +69,16 @@ pub(super) struct BookState {
     /// Inline chapter title save timer
     pub chapter_title_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
 
+    // ── Chapters pane: drag-to-reorder + the `⋯` overflow menu ──────
+    /// The chapter id currently being dragged, `None` when no drag is active.
+    /// Mirrors `dragging_note_id` (see `panes/notes.rs`) — same native-drag
+    /// approach, applied to a flat list instead of a tree.
+    pub dragging_chapter_id: Signal<Option<String>>,
+    /// Row index the dragged chapter would land on if dropped now.
+    pub chapter_drop_target: Signal<Option<usize>>,
+    /// Whether the chapters pane header's `⋯` (Import/Export) menu is open.
+    pub show_chapters_menu: Signal<bool>,
+
     // ── Typography state ─────────────────────────────────────────
     pub font_settings: Signal<FontSettings>,
     /// Debounce handle for font-settings saves, written by the reactive Typography
@@ -183,6 +193,10 @@ impl BookState {
             rename_chapter_id: Signal::new(String::new()),
             rename_chapter_title: Signal::new(String::new()),
             chapter_title_save_timer_id: Signal::new(None),
+
+            dragging_chapter_id: Signal::new(None),
+            chapter_drop_target: Signal::new(None),
+            show_chapters_menu: Signal::new(false),
 
             font_settings: Signal::new(FontSettings::default()),
             font_save_timer_id: Signal::new(None),

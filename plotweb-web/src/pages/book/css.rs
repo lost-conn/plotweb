@@ -432,6 +432,12 @@ pub(super) const NOTES_CSS: &str = r#"
 "#;
 
 /// CSS for the book workspace layout.
+///
+/// Stage 4b (`design/02-screens.html` `#chapters`): content up, tools down.
+/// The sidebar's `.ws-*` classes are the mockup's own names; `.sidebar-*`
+/// class names on the DOM nodes themselves predate this pass and are kept so
+/// this diff doesn't also have to touch every call site that toggles
+/// `.active`/`.open`.
 pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
 .book-workspace {
     display: flex;
@@ -441,94 +447,95 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
 .book-sidebar {
     width: 250px;
     min-width: 250px;
-    padding: var(--rinch-spacing-md) var(--rinch-spacing-md) var(--rinch-spacing-sm);
-    border-right: 1px solid var(--rinch-color-border);
     background: var(--pw-color-deep);
-    overflow-y: auto;
+    border-right: 1px solid var(--rinch-color-border);
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
 
-.book-sidebar-title {
-    padding: 4px var(--rinch-spacing-xs);
-    margin-bottom: var(--rinch-spacing-xs);
-    font-weight: 700;
-    font-size: 16px;
-    color: var(--rinch-color-text);
+/* ── Book header: mini jacket + title + word count ──── */
+
+.ws-book {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: var(--pw-space-sm);
+    border-bottom: 1px solid var(--pw-hairline);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.ws-book-mini {
+    width: 26px;
+    height: 36px;
+    min-width: 26px;
+    border-radius: 1px var(--pw-radius-sm) var(--pw-radius-sm) 1px;
+    background: linear-gradient(150deg, var(--rinch-color-surface), var(--pw-color-deepest));
+    border-left: 3px solid var(--rinch-color-teal-7);
+    box-shadow: var(--pw-shadow-1);
+}
+
+.ws-book-title {
+    font-family: var(--pw-font-display);
+    font-size: var(--pw-text-md);
+    line-height: 1.15;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-family: 'Macondo Swash Caps', cursive;
-    display: flex;
-    align-items: center;
-    gap: 4px;
+}
+
+.ws-book-words {
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-placeholder);
+    margin-top: 2px;
 }
 
 .book-sidebar-nav {
     flex: 1;
-    padding-top: var(--rinch-spacing-xs);
-}
-
-.sidebar-section-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 6px var(--rinch-spacing-xs);
-    margin-top: var(--rinch-spacing-sm);
-    cursor: pointer;
-    color: var(--rinch-color-dimmed);
-    font-size: 12px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    transition: color 0.15s;
-}
-
-.sidebar-section-header:hover {
-    color: var(--rinch-color-text);
-}
-
-.sidebar-section-header.active {
-    color: var(--rinch-color-teal-4);
+    overflow-y: auto;
+    padding: var(--pw-space-2xs) var(--pw-space-2xs) var(--pw-space-xs);
 }
 
 .sidebar-chapter-list {
     display: flex;
     flex-direction: column;
     gap: 1px;
-    padding: 4px 0;
+    padding: var(--pw-space-3xs) 0 var(--pw-space-2xs);
 }
 
 .sidebar-chapter-item {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 6px 8px 6px 16px;
-    border-radius: var(--rinch-radius-sm);
+    gap: var(--pw-space-xs);
+    padding: 6px var(--pw-space-xs);
+    border-radius: var(--pw-radius-sm);
     cursor: pointer;
-    font-size: 14px;
-    color: var(--rinch-color-text);
-    transition: background 0.12s ease;
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-dimmed);
+    position: relative;
+    transition: background var(--pw-dur-fast) var(--pw-ease), color var(--pw-dur-fast) var(--pw-ease);
 }
 
 .sidebar-chapter-item:hover {
-    background: var(--rinch-color-border);
+    background: var(--pw-hairline);
+    color: var(--rinch-color-text);
 }
 
 .sidebar-chapter-item.active {
-    background: var(--rinch-color-teal-9);
-    color: var(--rinch-color-teal-3);
+    background: var(--pw-hairline);
+    color: var(--rinch-color-text);
 }
 
-.sidebar-chapter-actions {
-    display: flex;
-    gap: 1px;
-    opacity: 0;
-    transition: opacity 0.15s;
-}
-
-.sidebar-chapter-item:hover .sidebar-chapter-actions {
-    opacity: 1;
+.sidebar-chapter-item.active::before {
+    content: '';
+    position: absolute;
+    left: -6px;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    background: var(--rinch-color-teal-6);
+    border-radius: 0 2px 2px 0;
 }
 
 .sidebar-chapter-name {
@@ -538,19 +545,74 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
     text-overflow: ellipsis;
 }
 
-.book-sidebar-footer {
-    padding: var(--rinch-spacing-sm) var(--rinch-spacing-xs);
-    margin-top: var(--rinch-spacing-sm);
-    border-top: 1px solid var(--rinch-color-border);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+.sidebar-chapter-wc {
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-placeholder);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
 }
 
-.book-sidebar-footer-row {
+/* ── Tools footer strip ──────────────────────────────── */
+
+.ws-tools {
+    border-top: 1px solid var(--pw-hairline);
+    padding: var(--pw-space-xs) var(--pw-space-sm);
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.ws-tools .sp {
+    flex: 1;
+}
+
+.tool {
+    position: relative;
+    padding: 6px;
+    border-radius: var(--pw-radius-sm);
+    color: var(--rinch-color-dimmed);
+    cursor: pointer;
+    display: flex;
+    transition: background var(--pw-dur-fast) var(--pw-ease), color var(--pw-dur-fast) var(--pw-ease);
+}
+
+.tool:hover {
+    background: var(--pw-hairline);
+    color: var(--rinch-color-text);
+}
+
+.tool[data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    box-shadow: var(--pw-shadow-2);
+    padding: 3px 7px;
+    font-size: var(--pw-text-2xs);
+    white-space: nowrap;
+    color: var(--rinch-color-text);
+    z-index: var(--pw-z-popover);
+}
+
+.tool .badge {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    min-width: 13px;
+    height: 13px;
+    border-radius: 999px;
+    background: var(--rinch-color-teal-7);
+    color: #fff;
+    font-size: 9px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 3px;
 }
 
 .book-main-pane {
@@ -564,64 +626,115 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
 .book-main-scroll {
     flex: 1;
     overflow-y: auto;
-    padding: 40px 48px;
+    padding: var(--pw-space-xl) var(--pw-space-2xl);
 }
 
-/* ── Chapters pane ──────────────────────────────────── */
+/* ── Chapters pane: hairline rows, not cards ─────────── */
 
 .chapters-pane {
-    max-width: 720px;
+    max-width: var(--pw-pane-max);
     margin: 0 auto;
 }
 
-.chapters-pane-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: var(--rinch-spacing-md);
-}
-
-.chapter-list {
+.chapters-menu {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    min-width: 140px;
 }
 
-.chapter-item {
+.chapters-menu-item {
+    display: flex;
+    align-items: center;
+    gap: var(--pw-space-xs);
+    font: inherit;
+    font-size: var(--pw-text-sm);
+    background: transparent;
+    border: none;
+    border-radius: var(--pw-radius-sm);
+    padding: 7px var(--pw-space-sm);
+    color: var(--rinch-color-text);
     cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease;
-    border: 1px solid transparent;
-    background: var(--rinch-color-surface);
+    text-align: left;
+    transition: background var(--pw-dur-fast) var(--pw-ease);
 }
 
-.chapter-item:hover {
-    background: var(--rinch-color-border);
-    border-color: var(--rinch-color-border);
+.chapters-menu-item:hover {
+    background: var(--pw-hairline);
 }
 
-.chapter-item-content {
+.chapter-rows {
+    display: flex;
+    flex-direction: column;
+}
+
+.crow {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: var(--pw-space-sm);
+    padding: 11px var(--pw-space-xs);
+    border-bottom: 1px solid var(--pw-hairline);
+    cursor: pointer;
+    position: relative;
 }
 
-.chapter-item-left {
+.crow:hover {
+    background: var(--pw-hairline);
+}
+
+.crow.dragging {
+    opacity: 0.4;
+}
+
+.crow.drop-target {
+    box-shadow: inset 0 2px 0 var(--rinch-color-teal-6);
+}
+
+.crow .grip {
+    color: var(--rinch-color-placeholder);
+    cursor: grab;
+    opacity: 0;
     display: flex;
-    align-items: center;
-    gap: var(--rinch-spacing-sm);
+    transition: opacity var(--pw-dur-fast) var(--pw-ease);
+}
+
+.crow:hover .grip {
+    opacity: 1;
+}
+
+.crow .n {
+    width: 22px;
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-placeholder);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.crow .t {
     flex: 1;
-    cursor: pointer;
-    padding: 2px 0;
+    font-size: var(--pw-text-md);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
-.chapter-item-actions {
+.crow .m {
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+
+.crow .acts {
     display: flex;
     gap: 2px;
-    opacity: 0.4;
-    transition: opacity 0.15s ease;
+    opacity: 0;
+    flex-shrink: 0;
+    transition: opacity var(--pw-dur-fast) var(--pw-ease);
 }
 
-.chapter-item:hover .chapter-item-actions {
+.crow:hover .acts {
     opacity: 1;
 }
 
