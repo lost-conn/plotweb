@@ -92,3 +92,64 @@ pub fn document() -> Option<web_sys::Document> {
 pub fn document() -> Option<web_sys::Document> {
     None
 }
+
+// ── Bundled assets ───────────────────────────────────────────────────────────
+
+/// Resolve a `/assets/...` reference into something the active image loader can read.
+///
+/// On the web these are URLs, served out of `dist/assets/` (trunk's `copy-dir`).
+/// On desktop there is no origin to resolve them against, and rinch's default
+/// `FileImageLoader` reads `src` straight off the **filesystem**, relative to the
+/// process working directory — so a bare `/assets/logo.png` is looked up at the
+/// filesystem root and fails (`No such file or directory`). Every native launch
+/// logged that warning and rendered the login/dashboard logo as a broken image.
+///
+/// Native resolution order:
+/// 1. `$XDG_DATA_HOME/plotweb/assets/<name>` (what `scripts/install-desktop.sh`
+///    populates) — an installed copy, so the app does not depend on the checkout.
+/// 2. The source tree the binary was built from, for `cargo run` during development.
+///
+/// Deliberately a **local file** rather than `{server}/assets/...`: the logo has to
+/// render on a device that started with no network, which an HTTP fetch would not.
+pub fn asset_src(path: &str) -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        path.to_string()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let name = path.trim_start_matches('/').trim_start_matches("assets/");
+
+        if let Some(dir) = native_asset_dir() {
+            let installed = dir.join(name);
+            if installed.is_file() {
+                return installed.to_string_lossy().into_owned();
+            }
+        }
+        // Fall back to the checkout this binary was built from. Absent on any other
+        // machine, where the image simply fails to load exactly as it does today.
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+/// The per-user directory holding installed assets, mirroring `local_store`'s
+/// document dir (`$XDG_DATA_HOME/plotweb/...`, else `$HOME/.local/share/plotweb/...`).
+#[cfg(not(target_arch = "wasm32"))]
+fn native_asset_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("plotweb").join("assets"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return Some(PathBuf::from(home).join(".local/share/plotweb/assets"));
+        }
+    }
+    None
+}

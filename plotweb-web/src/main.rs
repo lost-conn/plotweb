@@ -160,10 +160,34 @@ pub fn start() {
     log::info!("PlotWeb mounted");
 }
 
+/// The desktop application id.
+///
+/// Must match the basename of the installed desktop entry
+/// (`~/.local/share/applications/dev.lostconnection.plotweb.desktop`, written by
+/// `scripts/install-desktop.sh`). That match is the whole mechanism by which a
+/// Wayland compositor finds the app's icon and groups its window: Wayland has no
+/// protocol for a client to hand over a window icon, so the taskbar looks up the
+/// surface's `app_id` in the desktop-entry database. Change one, change the other.
+#[cfg(not(target_arch = "wasm32"))]
+const APP_ID: &str = "dev.lostconnection.plotweb";
+
 /// Desktop entry: run a native window via rinch's shell (winit/wgpu).
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    rinch::run_with_theme("PlotWeb", 1200, 800, app, theme_props());
+    // `icon` covers X11/Windows, which take the bytes directly; `app_id` covers
+    // Wayland, which resolves the icon through the desktop entry (see `APP_ID`).
+    // Window *position* is deliberately not restored: Wayland gives clients no way
+    // to place their own surface, and rinch exposes no accessor for the live window
+    // size either, so there is nothing to save at exit.
+    let props = rinch::WindowProps {
+        title: "PlotWeb".into(),
+        width: 1200,
+        height: 800,
+        icon: Some(include_bytes!("../assets/icon.png")),
+        app_id: Some(APP_ID.to_string()),
+        ..Default::default()
+    };
+    rinch::run_with_window_props(app, props, Some(theme_props()));
 }
 
 #[cfg(target_arch = "wasm32")]
