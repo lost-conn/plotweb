@@ -466,12 +466,17 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
     flex-shrink: 0;
 }
 
+/* Same trap as the dashboard jacket: the gradient ends at --pw-color-deepest,
+   which is darker than the sidebar it sits on, and a 0.4-alpha black shadow is
+   invisible on #1A1714. Without the hairline this reads as a stray vertical
+   line rather than a book. */
 .ws-book-mini {
     width: 26px;
     height: 36px;
     min-width: 26px;
     border-radius: 1px var(--pw-radius-sm) var(--pw-radius-sm) 1px;
     background: linear-gradient(150deg, var(--rinch-color-surface), var(--pw-color-deepest));
+    border: 1px solid var(--rinch-color-border);
     border-left: 3px solid var(--rinch-color-teal-7);
     box-shadow: var(--pw-shadow-1);
 }
