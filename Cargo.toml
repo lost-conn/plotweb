@@ -1,6 +1,11 @@
 [workspace]
 members = ["crates/*"]
-exclude = ["plotweb-web"]
+# `.claude` holds git worktrees of this same repo. Without excluding it, cargo
+# walking up from `.claude/worktrees/<name>/plotweb-web` passes that checkout's own
+# root — which excludes `plotweb-web` by its own relative path, so the walk
+# continues — and lands here, where the nested path is neither a member nor
+# excluded, and the build is refused.
+exclude = ["plotweb-web", ".claude"]
 resolver = "2"
 
 [workspace.package]
