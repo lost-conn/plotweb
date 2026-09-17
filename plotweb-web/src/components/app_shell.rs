@@ -186,31 +186,89 @@ h1, h2, h3, h4, h5, h6, .rinch-title {
     margin-top: 3px;
 }
 
+/* PasswordInput is a separate component with its own block, not a variant of
+   TextInput — so every one of these selectors has to name both. Styling only the
+   text-input half left the password fields on login, register and reset-password
+   rendering in the book's handwriting face at 14px, beside a 13px Source Sans
+   username box. */
 .auth-card .rinch-text-input__label,
+.auth-card .rinch-password-input__label,
 .auth-card .rinch-checkbox__label {
     font-size: var(--pw-text-xs);
     color: var(--rinch-color-dimmed);
 }
 
-.auth-card .rinch-text-input__input {
-    font-family: var(--pw-font-ui);
-    font-size: var(--pw-text-sm);
+/* TextInput draws its own border on the input; PasswordInput draws it on a
+   wrapper that also holds the reveal toggle. Giving the password *input* a
+   border too nests a box inside a box and visually detaches the eye icon, so
+   the two take the chrome at different levels: the field itself for TextInput,
+   the wrapper for PasswordInput. */
+.auth-card .rinch-text-input__input,
+.auth-card .rinch-password-input__wrapper {
     border-radius: var(--pw-radius-sm);
     background: var(--rinch-color-surface);
     border: 1px solid var(--rinch-color-border);
+}
+
+.auth-card .rinch-text-input__input,
+.auth-card .rinch-password-input__input {
+    font-family: var(--pw-font-ui);
+    font-size: var(--pw-text-sm);
     color: var(--rinch-color-text);
 }
 
-.auth-card .rinch-text-input__input:focus {
+.auth-card .rinch-password-input__input {
+    background: transparent;
+    border: none;
+}
+
+.auth-card .rinch-text-input__input:focus,
+.auth-card .rinch-password-input__wrapper:focus-within {
     outline: none;
     border-color: var(--rinch-color-teal-7);
     box-shadow: var(--pw-focus-ring);
+}
+
+.auth-card .rinch-password-input__input:focus {
+    outline: none;
 }
 
 .auth-page .rinch-alert,
 .auth-card .rinch-btn,
 .auth-card button {
     font-family: var(--pw-font-ui);
+}
+
+/* Alert ships a light-mode palette with a hardcoded pale background, so on a dark
+   page it lands as a bright white-blue slab. It is also always blue here: the call
+   sites ask for `color: "teal"`, which rinch's AlertColor does not parse, so it
+   falls back. Rather than chase a colour name that happens to parse, the auth
+   alerts are restated in tokens — quiet block, accent on the left edge, which is
+   the same treatment feedback quotes get elsewhere in the design. */
+.auth-card .rinch-alert {
+    background: var(--pw-color-deep);
+    border: 1px solid var(--rinch-color-border);
+    border-left: 2px solid var(--rinch-color-teal-7);
+    border-radius: var(--pw-radius-sm);
+    color: var(--rinch-color-text);
+}
+
+.auth-card .rinch-alert--red {
+    border-left-color: var(--rinch-color-red-6);
+}
+
+/* Rinch colours these from `.rinch-alert--blue .rinch-alert__title`, which ties
+   this rule on specificity and wins on document order. Matching the alert class
+   as well outweighs it without reaching for !important. */
+.auth-page .auth-card .rinch-alert .rinch-alert__wrapper,
+.auth-page .auth-card .rinch-alert .rinch-alert__message {
+    color: var(--rinch-color-dimmed);
+    font-size: var(--pw-text-xs);
+}
+
+.auth-page .auth-card .rinch-alert .rinch-alert__title {
+    color: var(--rinch-color-text);
+    font-size: var(--pw-text-sm);
 }
 
 .auth-row {
