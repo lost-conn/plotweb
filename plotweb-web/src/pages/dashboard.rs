@@ -331,7 +331,7 @@ pub fn dashboard_page() -> NodeHandle {
                 div {
                     style: "display: flex; align-items: center; gap: 10px;",
                     img {
-                        src: "/assets/logo.png",
+                        src: crate::platform::asset_src("/assets/logo.png"),
                         alt: "PlotWeb",
                         style: "width: 28px; height: 28px;",
                     }

@@ -67,7 +67,7 @@ pub fn reset_password_page(token: String) -> NodeHandle {
 
                 Center {
                     img {
-                        src: "/assets/logo.png",
+                        src: crate::platform::asset_src("/assets/logo.png"),
                         alt: "PlotWeb",
                         style: "width: 72px; height: 72px;",
                     }
