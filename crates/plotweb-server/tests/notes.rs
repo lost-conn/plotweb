@@ -173,9 +173,12 @@ async fn a_span_an_entity_mark_and_an_event_parent_round_trip_through_the_canoni
     assert!(structure.note_entities.contains(&vess));
     assert_eq!(structure.note_event_parents.get(&vess), Some(&siege));
     let links = structure.note_links.get(&vess).expect("link edges");
-    assert_eq!(links.refs, vec!["Vess".to_string()]);
+    let texts = |edges: &[plotweb_common::NoteLink]| -> Vec<String> {
+        edges.iter().map(|e| e.text.clone()).collect()
+    };
+    assert_eq!(texts(&links.refs), vec!["Vess".to_string()]);
     assert_eq!(links.tags, vec!["siege".to_string()]);
-    assert_eq!(links.mentions, vec!["Karel".to_string()]);
+    assert_eq!(texts(&links.mentions), vec!["Karel".to_string()]);
 
     // Survives a restart: the facets are stored, not held in memory.
     app.restart().await;
@@ -327,4 +330,95 @@ async fn the_event_parent_is_independent_of_the_tree_parent() {
         structure.root_order.contains(&vess),
         "the note is still exactly where the author filed it"
     );
+}
+
+// ── Notes revamp, card 2: what a sigil points at ─────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mention_records_whether_it_found_a_chapter_or_a_note() {
+    // `@` reaches both, so the edge has to say which — a reader that worked it out
+    // from the id would have to search two lists and would answer differently once a
+    // title moved between them. Decided on write, stored, and never derived again.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book = app.create_book("Novel").await;
+    app.cut_over(&book).await;
+
+    let chapter = app.create_chapter(&book, "Three Doors").await;
+    let karel = create_note(&mut app, &book, "Karel").await;
+    let siege = create_note(&mut app, &book, "The siege").await;
+
+    // A token cannot hold a space, so the editor writes the title's spaces as `-` and
+    // resolution folds both sides back together.
+    let upd = app
+        .put(
+            &format!("/api/books/{book}/notes/{siege}"),
+            &json!({
+                "content": doc_body("@Three-Doors dramatises it. $Karel was there. @Nobody was not."),
+            }),
+        )
+        .await;
+    assert_eq!(upd.status, StatusCode::OK, "{}", upd.json);
+
+    let expect = |links: &plotweb_common::NoteLinks| {
+        assert_eq!(
+            links.mentions,
+            vec![
+                plotweb_common::NoteLink {
+                    text: "Three-Doors".into(),
+                    target: plotweb_common::LinkTarget::Chapter,
+                    id: Some(chapter.clone()),
+                },
+                // A name nothing answers to is still an edge: the author may be
+                // pointing at something they have not written yet, and dropping it
+                // would lose the intent instead of showing it as missing.
+                plotweb_common::NoteLink::unresolved("Nobody"),
+            ]
+        );
+        assert_eq!(
+            links.refs,
+            vec![plotweb_common::NoteLink {
+                text: "Karel".into(),
+                target: plotweb_common::LinkTarget::Note,
+                id: Some(karel.clone()),
+            }]
+        );
+    };
+
+    expect(
+        canonical_structure(&app, &book)
+            .note_links
+            .get(&siege)
+            .expect("link edges"),
+    );
+
+    // Served on the note itself, so the editor's rail draws the graph from the notes
+    // list rather than opening every `note:{id}` document.
+    let got = app.get(&format!("/api/books/{book}/notes/{siege}")).await;
+    assert_eq!(got.json["links"]["mentions"][0]["target"], "chapter");
+    assert_eq!(got.json["links"]["mentions"][0]["id"], chapter);
+    assert_eq!(
+        got.json["links"]["mentions"][1], "Nobody",
+        "an unresolved note edge stays the bare string it has always been"
+    );
+    assert_eq!(got.json["links"]["refs"][0]["id"], karel);
+
+    // And it survives a restart, which is the only proof that the kind was stored
+    // rather than recomputed on the way out.
+    app.restart().await;
+    app.login("author", "password123").await;
+    expect(
+        canonical_structure(&app, &book)
+            .note_links
+            .get(&siege)
+            .expect("link edges after restart"),
+    );
+    let list = app.get(&format!("/api/books/{book}/notes")).await;
+    let listed = list.json["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == siege.as_str())
+        .expect("the siege");
+    assert_eq!(listed["links"]["mentions"][0]["target"], "chapter");
 }

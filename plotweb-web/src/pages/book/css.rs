@@ -343,10 +343,233 @@ pub(super) const NOTES_CSS: &str = r#"
     align-items: center;
     gap: 8px;
 }
+/* "Notes here" — the `@` edges pointing at the open chapter, read from the
+   manuscript side. Fades with the rest of the chrome while typing, so it is
+   reference material between sessions rather than something beside the prose. */
+.chapter-backlinks {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 20px 8px;
+    flex-shrink: 0;
+    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
+}
+.editor-layout.is-writing .chapter-backlinks {
+    opacity: 0;
+    pointer-events: none;
+}
+.chapter-backlinks-label {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--rinch-color-dimmed);
+}
+.chapter-backlink {
+    background: transparent;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: 999px;
+    padding: 1px 9px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--rinch-color-text);
+    cursor: pointer;
+}
+.chapter-backlink:hover {
+    border-color: var(--rinch-color-teal-6);
+}
+
+.note-editor-split {
+    flex: 1;
+    display: flex;
+    align-items: stretch;
+    min-height: 0;
+}
 .note-editor-body {
     flex: 1;
     overflow-y: auto;
     padding: 24px;
+    min-width: 0;
+}
+
+/* ── Facet strip ──────────────────────────────────────────────────────────
+   Event and entity are not exclusive, so they read as two independent marks
+   rather than a segmented control, which would imply picking one. */
+.note-facets {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+.note-facet {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--rinch-color-border);
+    font-size: 12px;
+    color: var(--rinch-color-dimmed);
+    background: transparent;
+    user-select: none;
+}
+.note-facet.is-button {
+    cursor: pointer;
+}
+.note-facet.is-button:hover {
+    border-color: var(--rinch-color-teal-6);
+}
+.note-facet.is-on {
+    color: var(--rinch-color-text);
+    border-color: var(--rinch-color-teal-6);
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 12%, transparent);
+}
+.note-facet-glyph {
+    font-size: 11px;
+    line-height: 1;
+}
+.note-facet-span {
+    font-size: 12px;
+    color: var(--rinch-color-dimmed);
+    margin-left: auto;
+}
+
+/* ── Context rail ─────────────────────────────────────────────────────────
+   Beside the prose, not over it: the rail is reference material, and a panel
+   that covered what was being written would read as a dialog. */
+.note-rail {
+    width: 240px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: 24px 16px;
+    border-left: 1px solid var(--rinch-color-border);
+    font-size: 13px;
+}
+.note-rail-group {
+    margin-bottom: 20px;
+}
+.note-rail-heading {
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--rinch-color-dimmed);
+    margin-bottom: 6px;
+}
+.note-rail-empty {
+    color: var(--rinch-color-dimmed);
+    font-size: 12px;
+    font-style: italic;
+}
+.note-rail-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 3px 6px;
+    margin: 0 -6px;
+    border-radius: var(--rinch-radius-sm);
+}
+.note-rail-row.is-openable {
+    cursor: pointer;
+}
+.note-rail-row.is-openable:hover {
+    background: var(--rinch-color-surface-hover, rgba(127, 127, 127, 0.12));
+}
+.note-rail-glyph {
+    color: var(--rinch-color-dimmed);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+.note-rail-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.note-rail-missing {
+    font-size: 11px;
+    color: var(--rinch-color-dimmed);
+    font-style: italic;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.note-rail-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.note-rail-tag {
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--rinch-color-border);
+    font-size: 11px;
+    color: var(--rinch-color-dimmed);
+}
+
+/* ── Sigil completion menu ────────────────────────────────────────────────
+   Fixed, so it is placed from the caret's viewport coordinates without caring
+   which scroll container the editor sits in. */
+.sigil-menu {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 9000;
+    min-width: 200px;
+    max-width: 320px;
+    padding: 4px;
+    border-radius: var(--rinch-radius-sm);
+    border: 1px solid var(--rinch-color-border);
+    background: var(--rinch-color-body, var(--rinch-color-surface));
+    box-shadow: var(--pw-shadow-3, 0 8px 24px rgba(0, 0, 0, 0.18));
+}
+.sigil-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: var(--rinch-radius-sm);
+    cursor: pointer;
+    /* rinch fires onclick on pointerdown, so a finger that drifts a pixel must
+       not start a text selection instead of choosing the row. */
+    user-select: none;
+    touch-action: manipulation;
+}
+.sigil-row:hover,
+.sigil-row.selected {
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 16%, transparent);
+}
+.sigil-row-glyph {
+    color: var(--rinch-color-dimmed);
+    font-size: 11px;
+    width: 12px;
+    flex-shrink: 0;
+}
+.sigil-row-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sigil-row-kind {
+    font-size: 11px;
+    color: var(--rinch-color-dimmed);
+    flex-shrink: 0;
+}
+
+/* Phone: the rail stacks under the prose rather than squeezing it to nothing,
+   and the menu takes the width it needs to stay readable. */
+@media (max-width: 900px) {
+    .note-editor-split {
+        flex-direction: column;
+    }
+    .note-rail {
+        width: auto;
+        border-left: none;
+        border-top: 1px solid var(--rinch-color-border);
+        padding: 16px 24px;
+    }
+    .sigil-menu {
+        max-width: calc(100vw - 32px);
+    }
 }
 .note-color-picker {
     display: flex;

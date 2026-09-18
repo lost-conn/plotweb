@@ -10,10 +10,15 @@ use crate::auth::AuthSession;
 use crate::routes::verify_book_ownership;
 use crate::AppState;
 
-/// A note as git holds it. The one adaptation, so a facet cannot reach the list and
-/// miss the single-note read.
-fn git_note(book_id: &str, n: plotweb_git::note::NoteData) -> Note {
+/// A note as git holds it, with its link index derived from the body git holds.
+///
+/// The one adaptation, so a facet cannot reach the list and miss the single-note read.
+/// Edges are derived rather than stored (see `plotweb_common::note_links`), and this is
+/// the non-cut-over path — a cut-over read overlays the canonical structure's copy on
+/// top, because git's body lags it by the mirror's debounce.
+fn git_note(book_id: &str, n: plotweb_git::note::NoteData, index: &LinkIndex) -> Note {
     Note {
+        links: extract_note_links_in(&n.content, index),
         id: n.id,
         book_id: book_id.to_string(),
         title: n.title,
@@ -68,6 +73,7 @@ pub async fn list(
                                 relative: structure.note_relatives.get(id).cloned(),
                                 is_entity: structure.note_entities.contains(id),
                                 event_parent: structure.note_event_parents.get(id).cloned(),
+                                links: structure.note_links.get(id).cloned().unwrap_or_default(),
                             }
                         })
                         .collect();
@@ -78,17 +84,20 @@ pub async fn list(
                     };
                     (listed, tree)
                 }
-                None => (
+                None => {
+                    let index = crate::structure::read_link_index(&state.books, &book_id).await;
+                    (
                     notes
                         .into_iter()
-                        .map(|n| git_note(&book_id, n))
+                        .map(|n| git_note(&book_id, n, &index))
                         .collect(),
                     NoteTree {
                         root_order: tree.root_order,
                         children: tree.children,
                         collapsed: tree.collapsed,
                     },
-                ),
+                )
+                }
             };
             let resp = NotesResponse { notes, tree };
             (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
@@ -133,7 +142,8 @@ pub async fn get(
                 super::CutoverRead::Git => n.content.clone(),
                 super::CutoverRead::Canonical(content) => content,
             };
-            let mut note = git_note(&book_id, n);
+            let index = crate::structure::read_link_index(&state.books, &book_id).await;
+            let mut note = git_note(&book_id, n, &index);
             note.content = content;
             // Facets are structure, so for a cut-over book they come from the canonical
             // document — git's copy of them lags by the mirror's debounce exactly as its
@@ -144,6 +154,7 @@ pub async fn get(
                 note.relative = structure.note_relatives.get(id).cloned();
                 note.is_entity = structure.note_entities.contains(id);
                 note.event_parent = structure.note_event_parents.get(id).cloned();
+                note.links = structure.note_links.get(id).cloned().unwrap_or_default();
             }
             (StatusCode::OK, Json(serde_json::to_value(note).unwrap()))
         }
@@ -193,9 +204,9 @@ pub async fn create(
     {
         Ok(n) => {
             super::apply_cutover_structure(&state, &book_id, &[]).await;
-            // A new note is lore — no span, no entity mark, no event parent. Facets
-            // only ever arrive by a later edit.
-            let note = git_note(&book_id, n);
+            // A new note is lore — no span, no entity mark, no event parent, and an
+            // empty body, so no edges either. Facets only ever arrive by a later edit.
+            let note = git_note(&book_id, n, &LinkIndex::new());
             (
                 StatusCode::CREATED,
                 Json(serde_json::to_value(note).unwrap()),

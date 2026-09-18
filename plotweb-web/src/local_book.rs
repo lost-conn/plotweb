@@ -502,6 +502,7 @@ fn write_note_facets(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note]) {
     let relatives = ensure_obj(doc, notes_obj, "relatives", ObjType::Map);
     let entities = ensure_obj(doc, notes_obj, "entities", ObjType::Map);
     let event_parents = ensure_obj(doc, notes_obj, "event_parents", ObjType::Map);
+    let links = ensure_obj(doc, notes_obj, "links", ObjType::Map);
 
     let with = |f: &dyn Fn(&Note) -> bool| -> Vec<String> {
         notes.iter().filter(|n| f(n)).map(|n| n.id.clone()).collect()
@@ -510,11 +511,18 @@ fn write_note_facets(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note]) {
     retain_keys(doc, &relatives, &with(&|n| n.relative.is_some()));
     retain_keys(doc, &entities, &with(&|n| n.is_entity));
     retain_keys(doc, &event_parents, &with(&|n| n.event_parent.is_some()));
-    // The link index is derived from the body, and a full note list carries bodies only
-    // for notes this device has actually loaded. Rebuilding the map from that would
-    // erase the edges of every note the author has not opened, so the map is left alone
-    // here and maintained per note by `note_meta`, which is called with the body it just
-    // saved.
+    // The link index now rides on the note itself (`Note::links`, derived server-side
+    // from the body the server holds), so a full note list can seed it — without which
+    // a device that has only ever fetched would project an empty index over a perfectly
+    // good one and show a rail with nothing in it.
+    //
+    // Only the keys of notes that no longer exist are dropped. An entry is **not**
+    // removed just because the incoming note carries no edges: on a cut-over book the
+    // server derives its copy from git, which lags the canonical body by the mirror's
+    // debounce, so an empty answer there is as likely to mean "not seen yet" as "no
+    // edges". Emptying is the job of `note_links`, which runs beside the save that
+    // emptied it, holding the body that did.
+    retain_keys(doc, &links, &notes.iter().map(|n| n.id.clone()).collect::<Vec<_>>());
 
     for n in notes {
         let id = n.id.as_str();
@@ -540,6 +548,11 @@ fn write_note_facets(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note]) {
         }
         if let Some(parent) = &n.event_parent {
             put_if_changed(doc, &event_parents, id, parent.as_str());
+        }
+        if !n.links.is_empty()
+            && let Ok(json) = serde_json::to_string(&n.links)
+        {
+            put_if_changed(doc, &links, id, &json);
         }
     }
 }
@@ -600,7 +613,7 @@ pub fn note_meta(book_id: &str, note_id: &str, title: Option<&str>, color: Optio
 /// no edges, and leaving the old entry would keep a character in a scene they were
 /// written out of.
 pub fn note_links(book_id: &str, note_id: &str, content: &str) {
-    let links = plotweb_common::extract_note_links(content);
+    let links = plotweb_common::extract_note_links_in(content, &link_index(book_id));
     with_book(book_id, |doc| {
         let notes_obj = ensure_obj(doc, &ROOT, "notes", ObjType::Map);
         let links_obj = ensure_obj(doc, &notes_obj, "links", ObjType::Map);
@@ -613,6 +626,34 @@ pub fn note_links(book_id: &str, note_id: &str, content: &str) {
             }
         }
     });
+}
+
+/// The titles a `@` or `$` in this book can name, read out of the open document.
+///
+/// Both note titles and chapter titles, because `@` reaches a chapter as well as a note
+/// and the edge records which it found. The document is the right source rather than
+/// `AppStore`: it is what this device and its peers have actually done, and a rename
+/// that has not round-tripped through REST yet is still in here.
+pub fn link_index(book_id: &str) -> plotweb_common::LinkIndex {
+    let mut index = plotweb_common::LinkIndex::new();
+    BOOK.with(|b| {
+        let slot = b.borrow();
+        let Some(state) = slot.as_ref().filter(|s| s.book_id == book_id) else {
+            return;
+        };
+        let doc = &state.doc;
+        let note_titles = get_obj(doc, &ROOT, "notes")
+            .and_then(|notes| get_obj(doc, &notes, "titles"))
+            .map(|o| read_map_strings(doc, &o))
+            .unwrap_or_default();
+        let chapter_titles = get_obj(doc, &ROOT, "chapter_titles")
+            .map(|o| read_map_strings(doc, &o))
+            .unwrap_or_default();
+        index = plotweb_common::LinkIndex::new()
+            .with_notes(note_titles.iter())
+            .with_chapters(chapter_titles.iter());
+    });
+    index
 }
 
 /// Targeted facet write for one note: span, relative constraint, entity mark and
@@ -798,6 +839,11 @@ pub fn project_notes(store: AppStore) {
         let event_parents = get_obj(doc, &notes_obj, "event_parents")
             .map(|o| read_map_strings(doc, &o))
             .unwrap_or_default();
+        // The link index, from the same document and for the same reason: the context
+        // rail draws the graph from the note list alone, and re-deriving it here would
+        // mean holding every note's body in memory.
+        let links: HashMap<String, plotweb_common::NoteLinks> =
+            read_json_map(doc, &notes_obj, "links");
         let mut entities: std::collections::HashSet<String> = std::collections::HashSet::new();
         if let Some(entities_obj) = get_obj(doc, &notes_obj, "entities") {
             for key in doc.keys(&entities_obj) {
@@ -823,6 +869,12 @@ pub fn project_notes(store: AppStore) {
             n.relative = relatives.get(&n.id).cloned();
             n.is_entity = entities.contains(&n.id);
             n.event_parent = event_parents.get(&n.id).cloned();
+            // Unlike the facets above, an absent entry does **not** clear: the index
+            // is derived, and a device that has not written one yet should show the
+            // server's rather than nothing at all.
+            if let Some(l) = links.get(&n.id) {
+                n.links = l.clone();
+            }
         }
         // Notes that exist in the doc's tree but have no REST record came from another
         // device via sync — materialize them, same reasoning as chapters above.
@@ -852,6 +904,7 @@ pub fn project_notes(store: AppStore) {
                 relative: relatives.get(&id).cloned(),
                 is_entity: entities.contains(&id),
                 event_parent: event_parents.get(&id).cloned(),
+                links: links.get(&id).cloned().unwrap_or_default(),
             });
         }
         store.notes.set(notes);
@@ -1097,6 +1150,7 @@ mod tests {
             relative: None,
             is_entity: false,
             event_parent: None,
+            links: plotweb_common::NoteLinks::default(),
         }
     }
 
@@ -1355,7 +1409,12 @@ mod tests {
             relatives.get("n3").map(|r| r.relation),
             Some(TimeRelation::After)
         );
-        assert_eq!(links.get("n3").map(|l| l.refs.clone()), Some(vec!["Vess".to_string()]));
+        assert_eq!(
+            links
+                .get("n3")
+                .map(|l| l.refs.iter().map(|e| e.text.clone()).collect::<Vec<_>>()),
+            Some(vec!["Vess".to_string()])
+        );
         assert_eq!(links.get("n3").map(|l| l.tags.clone()), Some(vec!["siege".to_string()]));
 
         // The two hierarchies, side by side and disagreeing on purpose.

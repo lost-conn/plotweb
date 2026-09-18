@@ -10,8 +10,10 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use crate::pages::editor_utils;
 use crate::rinch_backend::Editor;
 
+use super::super::sigils;
 use super::super::state::BookState;
 use super::super::BookPane;
+use crate::store::AppStore;
 use super::super::feedback::editor_feedback_item;
 
 /// Char-safe truncation for log messages (byte-slicing panics on multibyte UTF-8).
@@ -403,9 +405,19 @@ fn byte_offset_to_node(node_offsets: &[(usize, usize)], byte_offset: usize) -> (
 
 /// Render the Editor pane (CSS toggle, always in DOM — preserves undo history).
 #[allow(clippy::too_many_arguments)]
-pub(in crate::pages::book) fn render<GB, ST, SC, SA, AR, RF, DF, ARO, RFO, DFO>(
+/// The notes whose bodies `@` the chapter currently open.
+fn notes_on_this_chapter(state: BookState, store: AppStore) -> Vec<sigils::RailLink> {
+    let BookPane::Editor(chapter_id) = state.active_pane.get() else {
+        return Vec::new();
+    };
+    sigils::notes_mentioning_chapter(&chapter_id, &store.notes.get())
+}
+
+pub(in crate::pages::book) fn render<GB, ST, SC, SA, AR, RF, DF, ARO, RFO, DFO, ON>(
     __scope: &mut RenderScope,
     state: BookState,
+    store: AppStore,
+    open_note: ON,
     book_id: String,
     saved_here_only: impl Fn() -> bool + Copy + 'static,
     go_back_to_chapters: GB,
@@ -424,6 +436,7 @@ where
     AR: Fn(String) -> ARO + 'static + Copy,
     RF: Fn(String) -> RFO + 'static + Copy,
     DF: Fn(String) -> DFO + 'static + Copy,
+    ON: Fn(String) + 'static + Copy,
     ARO: Fn() + 'static,
     RFO: Fn() + 'static,
     DFO: Fn() + 'static,
@@ -517,13 +530,34 @@ where
                 }
             }
 
-            // Formatting toolbar: no selection-driven popover (see the doc
-            // comment on `editor_toolbar` in editor_utils.rs — rinch's
-            // `EditorHandle` exposes no selection-change signal or screen-space
-            // selection rect to anchor one against, and a guessed popover
-            // position is worse than a toolbar). It fades with the rest of the
-            // chrome instead via the shared `is-writing` class.
+            // Formatting toolbar: no selection-driven popover — see the doc comment
+            // on `editor_toolbar` in editor_utils.rs. Anchoring to the caret *is*
+            // possible (the note editor's sigil menu does it); what rinch has no
+            // notification for is a selection changing, which is exactly the moment a
+            // selection popover would need to appear. The toolbar fades with the rest
+            // of the chrome instead, via the shared `is-writing` class.
             {editor_utils::editor_toolbar(__scope, chapter_handle.get(), book_id.clone(), schedule_chapter_autosave)}
+
+            // Which notes say this chapter dramatises them — the `@` edges read from
+            // the manuscript side. Mounted only when there are any, on the same
+            // reasoning as the feedback rail below: a chapter nothing points at should
+            // not hold a row open to say so.
+            if !notes_on_this_chapter(state, store).is_empty() {
+                div { class: "chapter-backlinks",
+                    span { class: "chapter-backlinks-label", "Notes here" }
+                    for link in notes_on_this_chapter(state, store) {
+                        button {
+                            key: {link.id.clone().unwrap_or_default()},
+                            class: "chapter-backlink",
+                            onclick: {
+                                let id = link.id.clone().unwrap_or_default();
+                                move || open_note(id.clone())
+                            },
+                            {link.label.clone()}
+                        }
+                    }
+                }
+            }
 
             div {
                 style: "display: flex; flex: 1; overflow: hidden; position: relative;",

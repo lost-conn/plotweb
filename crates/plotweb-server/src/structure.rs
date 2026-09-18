@@ -7,7 +7,7 @@
 //! slightly differently, the shadow pass would report a divergence the reconciler could
 //! never resolve — so the adaptation lives here, once.
 
-use plotweb_common::extract_note_links;
+use plotweb_common::{extract_note_links_in, LinkIndex};
 use plotweb_crdt::{BookStructureInput, NoteEntry};
 use plotweb_git::note::{NoteData, NotesTreeJson};
 use plotweb_git::{BookData, BookStore, ChapterData};
@@ -22,6 +22,7 @@ pub fn structure_input(
     notes: &[NoteData],
     tree: &NotesTreeJson,
 ) -> BookStructureInput {
+    let index = link_index(chapters, notes);
     BookStructureInput {
         title: book.title.clone(),
         description: book.description.clone(),
@@ -35,8 +36,19 @@ pub fn structure_input(
         root_order: tree.root_order.clone(),
         children: tree.children.clone(),
         collapsed: tree.collapsed.clone(),
-        notes: notes.iter().map(note_entry).collect(),
+        notes: notes.iter().map(|n| note_entry(n, &index)).collect(),
     }
+}
+
+/// The titles a `@` or `$` in any of this book's notes can name.
+///
+/// Chapters are in here because `@` reaches them: a note can point at the chapter that
+/// dramatises it, and the edge records which of the two it found. Notes are added first
+/// so they win a shared title (see `LinkIndex`).
+fn link_index(chapters: &[ChapterData], notes: &[NoteData]) -> LinkIndex {
+    LinkIndex::new()
+        .with_notes(notes.iter().map(|n| (&n.id, &n.title)))
+        .with_chapters(chapters.iter().map(|c| (&c.id, &c.title)))
 }
 
 /// One note, with its link index derived from its body.
@@ -48,7 +60,7 @@ pub fn structure_input(
 /// mirror's debounce — the client writes its own index into its local document beside
 /// the REST save (`local_book::note_meta`), which is what closes that gap for the device
 /// doing the typing.
-fn note_entry(n: &NoteData) -> NoteEntry {
+fn note_entry(n: &NoteData, index: &LinkIndex) -> NoteEntry {
     NoteEntry {
         id: n.id.clone(),
         title: n.title.clone(),
@@ -57,8 +69,20 @@ fn note_entry(n: &NoteData) -> NoteEntry {
         relative: n.relative.clone(),
         is_entity: n.is_entity,
         event_parent: n.event_parent.clone(),
-        links: extract_note_links(&n.content),
+        links: extract_note_links_in(&n.content, index),
     }
+}
+
+/// The titles a sigil in this book's notes can name, fetched.
+///
+/// Only the **non**-cut-over read paths need this: a cut-over book's edges are already
+/// resolved in the canonical structure document, and re-deriving them here would read
+/// git's lagging copy of the body. Returns an empty index when the book is unreadable,
+/// which leaves every token unresolved rather than mis-resolved.
+pub async fn read_link_index(books: &BookStore, book_id: &str) -> LinkIndex {
+    let chapters = books.list_chapters(book_id).await.unwrap_or_default();
+    let notes = books.list_notes(book_id).await.unwrap_or_default().0;
+    link_index(&chapters, &notes)
 }
 
 /// The same thing, fetched. `None` when the book has no readable `book.json` — there is

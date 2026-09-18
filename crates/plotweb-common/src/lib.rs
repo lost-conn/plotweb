@@ -362,7 +362,10 @@ pub struct ImportChapter {
 pub mod note_links;
 pub mod note_time;
 
-pub use note_links::{extract_note_links, note_plain_text, NoteLinks};
+pub use note_links::{
+    extract_note_links, extract_note_links_in, fold_token, note_plain_text, token_for_title,
+    LinkIndex, LinkTarget, NoteLink, NoteLinks,
+};
 pub use note_time::{RelativeTime, TimePoint, TimeRelation, TimeSpan, TICKS_PER_BASE_UNIT};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -396,6 +399,12 @@ pub struct Note {
     /// overlapping, because two events can coincide without one containing the other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_parent: Option<String>,
+    /// What this note's body points at — derived from the body on every write, never
+    /// authored. Served alongside the note so the editor's context rail, and later the
+    /// timeline, can draw the graph from the notes list alone rather than opening
+    /// every `note:{id}` document. See [`note_links`].
+    #[serde(default, skip_serializing_if = "NoteLinks::is_empty")]
+    pub links: NoteLinks,
 }
 
 fn is_false(b: &bool) -> bool {

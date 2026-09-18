@@ -944,8 +944,21 @@ mod tests {
         input.notes[1].event_parent = Some("n3".into());
         input.notes[1].links = NoteLinks {
             tags: vec!["cast".into()],
-            mentions: vec!["Karel".into()],
-            refs: vec!["Vess".into()],
+            // A chapter mention and an unresolved one, so the round trip has to carry
+            // the target kind and the id, not just the token.
+            mentions: vec![
+                plotweb_common::NoteLink {
+                    text: "Three-Doors".into(),
+                    target: plotweb_common::LinkTarget::Chapter,
+                    id: Some("c1".into()),
+                },
+                plotweb_common::NoteLink::unresolved("Karel"),
+            ],
+            refs: vec![plotweb_common::NoteLink {
+                text: "Vess".into(),
+                target: plotweb_common::LinkTarget::Note,
+                id: Some("n2".into()),
+            }],
         };
         input.notes[2].relative = Some(RelativeTime {
             relation: plotweb_common::TimeRelation::After,

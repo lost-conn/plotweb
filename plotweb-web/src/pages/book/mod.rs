@@ -23,6 +23,7 @@ mod feedback;
 mod modals;
 mod panes;
 mod sidebar;
+pub(crate) mod sigils;
 mod state;
 
 use state::BookState;
@@ -1111,11 +1112,22 @@ pub fn book_page(book_id: String) -> NodeHandle {
         bail_if_stale!();
         if matches!(active_pane.get(), BookPane::NoteEditor(_)) {
             schedule_note_save();
+            // A sigil only ever arrives by being typed, so the edit notification is
+            // also the completion menu's trigger — rinch has no selection-change
+            // callback, and this is the one moment it would need.
+            panes::note_editor::refresh_sigil_menu(state, store);
         }
     });
 
+    // Jump from the chapter editor's "Notes here" strip to the note that named it —
+    // the same load the notes tree does, so the note arrives with its body attached.
+    let open_note_by_id = move |note_id: String| {
+        panes::note_editor::open_note_by_id(state, store, note_id);
+    };
+
     let go_back_to_notes = move || {
         // Save before navigating back
+        panes::note_editor::close_sigil_menu(state);
         save_note_content();
         active_pane.set(BookPane::Notes);
         // Refresh notes list
@@ -1403,6 +1415,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     {panes::editor::render(
                         __scope,
                         state,
+                        store,
+                        open_note_by_id,
                         book_id.clone(),
                         saved_here_only,
                         go_back_to_chapters,
@@ -1438,6 +1452,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     {panes::note_editor::render(
                         __scope,
                         state,
+                        store,
                         book_id.clone(),
                         saved_here_only,
                         go_back_to_notes,

@@ -166,6 +166,18 @@ pub(super) struct BookState {
     pub note_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
     pub note_editor_title: Signal<String>,
     pub note_editor_color: Signal<Option<String>>,
+    /// The sigil token the caret is sitting at the end of, and where the caret is, so
+    /// the completion menu can hang off it. `None` closes the menu — which is also what
+    /// typing a space does, since the token ends there.
+    pub sigil_active: Signal<Option<super::sigils::ActiveSigil>>,
+    pub sigil_caret: Signal<Option<crate::pages::editor_utils::CaretAnchor>>,
+    pub sigil_rows: Signal<Vec<super::sigils::Completion>>,
+    /// Which row Enter would take. Reset to 0 whenever the rows change, so a keystroke
+    /// that narrows the list cannot leave the highlight pointing past the end.
+    pub sigil_highlight: Signal<usize>,
+    /// The document handle `caret_anchor` needs, captured from the render scope — an
+    /// event handler has no render scope of its own to ask.
+    pub sigil_doc: Signal<Option<crate::pages::editor_utils::DocRef>>,
     pub dragging_note_id: Signal<Option<String>>,
     pub drop_target: Signal<Option<(Option<String>, usize)>>,
     /// Floating drag ghost, positioned from ondragmove (see render_note_card).
@@ -270,6 +282,11 @@ impl BookState {
             note_save_timer_id: Signal::new(None),
             note_editor_title: Signal::new(String::new()),
             note_editor_color: Signal::new(None),
+            sigil_active: Signal::new(None),
+            sigil_caret: Signal::new(None),
+            sigil_rows: Signal::new(Vec::new()),
+            sigil_highlight: Signal::new(0),
+            sigil_doc: Signal::new(None),
             dragging_note_id: Signal::new(None),
             drop_target: Signal::new(None),
             ghost_visible: Signal::new(false),

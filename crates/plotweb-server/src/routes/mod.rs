@@ -318,7 +318,12 @@ pub async fn apply_cutover_structure_with_note_body(
         eprintln!("[cutover] book:{book_id}: no readable structure in git, nothing applied");
         return;
     };
-    let links = plotweb_common::extract_note_links(content);
+    // Resolved against the same titles `structure_input` used, so this note's edges
+    // name chapters and notes exactly as every other note's do.
+    let index = plotweb_common::LinkIndex::new()
+        .with_notes(input.notes.iter().map(|n| (&n.id, &n.title)))
+        .with_chapters(input.chapters.iter().map(|(id, title)| (id, title)));
+    let links = plotweb_common::extract_note_links_in(content, &index);
     match input.notes.iter_mut().find(|n| n.id == note_id) {
         Some(note) => note.links = links,
         // git has never heard of this note (created on a device, not yet mirrored).
