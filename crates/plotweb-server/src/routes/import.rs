@@ -148,6 +148,11 @@ pub async fn confirm(
         .await
     {
         Ok(chapters) => {
+            // Import writes git directly, like every other structure-changing route, so
+            // a cut-over book has to be told: its chapter list is read from the canonical
+            // `book:` document, which would otherwise never learn about the new chapters
+            // and the whole imported manuscript would be invisible in the UI.
+            super::apply_cutover_structure(&state, &book_id, &[]).await;
             let chapters: Vec<Chapter> = chapters
                 .into_iter()
                 .map(|ch| Chapter {
