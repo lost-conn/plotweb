@@ -625,8 +625,17 @@ where
                                 }
                                 cls
                             }},
-                            draggable: "true",
-                            ondragstart: move || dragging_chapter_id.set(Some(cid.get())),
+                            // The row is a drop target but NOT itself draggable: rinch
+                            // drops clicks on interactive descendants of a
+                            // `draggable="true"` element when the drag never activates,
+                            // because the deferred pointerup is dispatched against the
+                            // draggable ancestor rather than the original pointerdown
+                            // target. With the whole row draggable, the rename and
+                            // delete buttons inside it were simply dead.
+                            //
+                            // Dragging by the handle alone is the better interaction
+                            // anyway — it matches the mockup and stops a text selection
+                            // across a title from turning into a drag.
                             ondragover: move || {
                                 chapter_drop_target.set(Some(_i));
                             },
@@ -637,12 +646,15 @@ where
                                 dragging_chapter_id.set(None);
                                 chapter_drop_target.set(None);
                             },
-                            ondragend: move || {
-                                dragging_chapter_id.set(None);
-                                chapter_drop_target.set(None);
-                            },
 
-                            span { class: "grip",
+                            span {
+                                class: "grip",
+                                draggable: "true",
+                                ondragstart: move || dragging_chapter_id.set(Some(cid.get())),
+                                ondragend: move || {
+                                    dragging_chapter_id.set(None);
+                                    chapter_drop_target.set(None);
+                                },
                                 {render_tabler_icon(__scope, TablerIcon::GripVertical, TablerIconStyle::Outline)}
                             }
                             span { class: "n", {format!("{}", _i + 1)} }
