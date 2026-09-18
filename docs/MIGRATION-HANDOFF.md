@@ -8,14 +8,19 @@
 ## TL;DR
 
 PlotWeb is migrating from **git-backed storage** to **local-first Automerge CRDTs**
-(offline-first, multi-device). The client local-first layer is built for all four
-doc types; the git→Automerge migration has been **audited clean and backfilled on
-production**, with git untouched throughout. **Nothing Automerge is live yet** — the
-canonical store is staged but unread. The remaining work is the *sync engine* and the
-*cutover* (make Automerge authoritative), each reversible.
+(offline-first, multi-device). Phases A–E are **done and live**: the canonical store is
+authoritative, sync carries every edit, and git is a **live mirror** kept current by the
+debounced `mirror` pass. Only **phase F (retire git)** remains, and it is the one
+hard-to-reverse step.
 
-Production is on **v16**, healthy. Real data: 4 books, **92/92 docs audit-clean**,
-**92 Automerge blobs backfilled**.
+**Cutover is complete (2026-09-18): `PLOTWEB_CUTOVER_BOOKS=*` — every book reads from the
+canonical store.** It ran on two pilot books from 2026-09-03 and was widened after a clean
+soak. Production is on **v66**, healthy: 9 books, 2 users, 151 documents, shadow verdict
+*clean* (151/151 agree with git, 0 diverged, 0 unreadable, 0 without a canonical copy).
+
+**Still reversible in one restart.** Unset the variable, `jkbase restart --force`, and every
+book is git-authoritative again in ~30s — at *current* content, because git has been
+mirroring throughout. That stays true only until phase F.
 
 ---
 
@@ -124,7 +129,16 @@ deploy, no shell — so the boot hook is the only way to resolve a divergence wh
 divergences actually are. Runs between the backfill and the shadow pass. Anything
 unrecognised is treated as a dry run; a typo must not rewrite prose. Turn it off after.
 
-**Cutting a book over** (phase E, `PLOTWEB_CUTOVER_BOOKS=<book-id>[,<book-id>]` + restart):
+**The boot flags after full cutover.** `PLOTWEB_AUDIT_ON_BOOT` and
+`PLOTWEB_BACKFILL_ON_BOOT` have done their job and should be off. The backfill projects
+*git into canonical*, which under `*` aims a writer at the store that is now the source of
+truth; the only thing keeping that safe is its ownership guard (`synced_at.is_some()` →
+skip, `backfill.rs:159`), and nothing else needs it any more — import, restore and every
+structure-changing route write the canonical copy themselves. Leave
+`PLOTWEB_SHADOW_ON_BOOT` on: it is read-only and it is the instrument that says whether
+canonical and git still agree, which is the question phase F rests on.
+
+**Cutting a book over** (phase E, `PLOTWEB_CUTOVER_BOOKS=<book-id>[,<book-id>]` or `*` + restart):
 that book's chapter/note bodies are read from the canonical store and REST writes land in
 both it and git. An **absent** or unreadable canonical copy falls back to git; a readable
 one is served even if git disagrees, because under sync git is routinely up to the
@@ -192,11 +206,12 @@ drive** proving local beats a divergent server.
 
 ## Next steps (the work to pick up)
 
-The canonical Automerge store is **staged but unread**. Everything below is where Automerge
-*goes live* — weightier than the additive work so far; open each with a written design.
+The canonical Automerge store is **live and authoritative for every book**. Items 1–5 below
+are done; item 6 (retire git) is all that is left, and it is the only step that cannot be
+undone with a restart. Open it with a written design.
 
-1. **Sync engine (the big one).** → **designed in `docs/sync-engine-design.md`; slices 0–1
-   are built.** The forks are settled there (book-scoped periodic HTTP, real heads-based
+1. ~~**Sync engine (the big one).**~~ **DONE — all slices built.** Designed in
+   `docs/sync-engine-design.md`. The forks are settled there (book-scoped periodic HTTP, real heads-based
    protocol, session-cookie auth, canonical store = the backfilled `PLOTWEB_CRDT_DIR`).
    Landed: the Phase-0 spike relay is gone (it was live, unauthenticated, and unbounded),
    and `POST /api/books/{book_id}/sync/{doc_id}` + `POST /api/sync/user` now run the real
@@ -207,10 +222,17 @@ The canonical Automerge store is **staged but unread**. Everything below is wher
    implies sync, per book**, and `PLOTWEB_SYNC` / `localStorage["plotweb_sync"]` is an
    override — `"1"` on everywhere, `"0"` off everywhere. Proven natively with two app instances: a chapter
    added on one device appears in the other's open book **in place**.
-   Next: slice 2 (upstream rinch `EditorHandle` sync pass-through — the CRDT has the
-   methods, the handle doesn't expose them), then slice 4 (chapter/note bodies, which
-   needs slice 2). **Read §D8 before writing that client code**: client and server seeded
-   their docs independently, so a naive first merge duplicates content.
+   Slices 2 and 4 landed after that: the upstream rinch `EditorHandle` sync pass-through
+   (rinch PR #182) exposed the collab session's protocol methods, and chapter/note **bodies**
+   now sync through that seam while the body is open — remote changes are integrated
+   *through the attached session* so the model is rebuilt and re-projected, never loaded
+   behind the session's back (which is what the chapter-crosstalk bug did).
+   §D8 is handled by a **provenance handshake** before a body's first exchange
+   (`establish_body_provenance`, `plotweb-web/src/sync.rs`): a body seeded from REST shares
+   no history with the canonical copy, and Automerge merges disjoint histories by
+   *concatenation*, so exactly one side must take the other wholesale first — we `adopt`
+   (claiming a still-provisional backfill copy) or fall through to an ordinary exchange,
+   which merges and so preserves anything typed since the last push.
 2. ~~**`user:` index backfill.**~~ **DONE** — `backfill::run_user_backfill` enumerates
    `Book` rows from rhypedb, groups by owner (same git fallbacks as `books::list`), and
    emits one `user:{id}` blob each. **No downtime needed**: the boot hook
@@ -233,7 +255,44 @@ The canonical Automerge store is **staged but unread**. Everything below is wher
    changes made on a device are mirrored into git. Deletion follows §D7 in both
    directions. The `book:`/`user:` disjoint-history check now exists too
    (`sync::histories_are_disjoint`), so §D8 is enforced for both CRDTs.
-5. **Phase F — retire git.** Last, manual, with a backup/tag. The one hard-to-reverse step.
+5. ~~**Phase E — widen the cutover.**~~ **DONE (2026-09-18)** — `PLOTWEB_CUTOVER_BOOKS=*`,
+   all 9 books, both users. Pre-flight found one real defect, fixed in `9330a1c` (PR #64):
+   `import/confirm` wrote git without calling `apply_cutover_structure`, so an imported
+   manuscript landed on disk and was **invisible** in a cut-over book. It hid because
+   `cutover_structure` degrades to git when it finds no canonical copy — a book that never
+   had one looks fine — so the regression test seeds the canonical document *before*
+   importing. Every other structure-changing route was already correct.
+
+6. **Phase F — retire git.** Last, manual, with a backup/tag. The one hard-to-reverse step.
+
+   **What still reads git** (surveyed 2026-09-18 — this is the actual scope, and it is
+   larger than "stop writing the repos"). Everything below is *unconditional* git access
+   with no cutover branch at all, so it works today only because git is a live mirror:
+
+   - **Version history** — `routes/history.rs`: `list` (:38), `list_chapters` (:62),
+     `get_chapter` (:101), `diff` (:170). Four of five endpoints are pure git reads.
+     `restore` (:141) is the exception — it already calls `apply_cutover_restore`.
+   - **Export** — `routes/export.rs`: `get_book` (:63) and `list_chapters` (:74). Exported
+     content comes straight from git, never through `cutover_body`.
+   - **Beta-reader views** — `routes/beta.rs`, essentially the whole reader surface:
+     `reader_view` (:324), `reader_chapter` (:403), `reader_can_access_chapter` (:450),
+     `read_progress_for_link` (:479), `reader_create_feedback` (:670),
+     `list_shared_books` (:1145), plus pinned-commit HEAD resolution in `create_link`
+     (:142) / `update_link` (:227). Pinned commits are a *git concept*; phase F has to
+     decide what a pinned snapshot means in a CRDT world.
+   - **Sync membership** — `routes/sync.rs::doc_type_in_book` (:477), documented in-file as
+     a pre-cutover shortcut that must move to the canonical `book:` document. Consequence
+     today: a chapter created on a device is unsyncable until the mirror lands it in git
+     (30s–5min).
+
+   None of these can simply have their git calls deleted. Each needs a canonical-store
+   equivalent, or an explicit decision to drop or redesign the feature. Version history is
+   the genuinely hard one: git gives commit-level history for free and the CRDT does not
+   expose an equivalent today.
+
+   Sequencing that follows from the above: close the four surfaces *first*, while git is
+   still a live mirror and every step is reversible. Only then tag/back up the repos and
+   stop writing them.
 
 **Also worth landing** (would remove Option-3's compromise): extend `rinch-editor-collab`'s
 projection to **inline atoms** (`hard_break`/`image`/`horizontal_rule`) — upstream rinch PR,
