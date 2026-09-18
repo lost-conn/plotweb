@@ -51,6 +51,14 @@ pub(super) struct BookState {
     /// through the schedulers), cleared when a document loads and after a save lands.
     pub chapter_dirty: Signal<bool>,
     pub note_dirty: Signal<bool>,
+    /// The note id whose content is currently loaded in the note editor model — the
+    /// note-side twin of `loaded_chapter_id`, and needed for the same reason: one
+    /// editor model is reused for every note, so save-on-leave must confirm the model
+    /// holds the note it is about to write before writing it. Set by both note-open
+    /// paths (`panes::notes`' card click and `panes::note_editor::open_note_by_id`),
+    /// and cleared the moment a load is started so a flush landing mid-switch can't
+    /// write the outgoing note's text under the incoming note's id.
+    pub loaded_note_id: Signal<Option<String>>,
     pub auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
 
     /// True while the author is actively typing in the chapter editor — sidebar,
@@ -213,6 +221,7 @@ impl BookState {
             loaded_chapter_id: Signal::new(None),
             chapter_dirty: Signal::new(false),
             note_dirty: Signal::new(false),
+            loaded_note_id: Signal::new(None),
             auto_save_timer_id: Signal::new(None),
 
             editor_writing: Signal::new(false),

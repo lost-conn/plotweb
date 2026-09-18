@@ -38,23 +38,28 @@ async function typeInNote(page: Page, text: string) {
 }
 
 /**
- * Leave the note editor the way the UI intends: the back arrow in its topbar, which
- * saves the body before navigating (`go_back_to_notes`). The sidebar's "Notes" entry
- * is *not* equivalent — it does not flush the note editor — so a spec that relies on
- * the body having been written must come back this way.
+ * Leave the note editor by the back arrow in its topbar (`go_back_to_notes`).
+ *
+ * This used to be the *only* exit that saved the note body, so this spec was routed
+ * through it deliberately. Every exit flushes now (see `pages/book/flush.rs` and
+ * `notes-flush-on-exit.spec.ts`); the helper stays for the places genuinely testing
+ * the back arrow.
  */
 async function backToNotes(page: Page) {
   await page.locator(".note-editor-topbar-left .rinch-action-icon").first().click();
   await expect(page.locator(".notes-pane-header")).toBeVisible();
 }
 
-/** Open a note from the notes tree by title and wait for its editor. */
+/**
+ * Open a note from the notes tree by title and wait for its editor.
+ *
+ * Goes out through the sidebar's "Notes" entry whether or not a note is already open.
+ * That is the exit that was broken, and these specs lean on the previous note's body
+ * having been saved — the rail's edges are derived from it — so every hop here now
+ * exercises the sidebar flush rather than detouring around it.
+ */
 async function openNote(page: Page, title: string) {
-  if (await page.locator(".note-editor-pane .note-editor-topbar").isVisible()) {
-    await backToNotes(page);
-  } else {
-    await openNotesPane(page);
-  }
+  await openNotesPane(page);
   await page.locator(".notes-tree .note-card-title", { hasText: title }).click();
   await expect(page.locator(".note-editor-pane")).toBeVisible();
   await page.locator(NOTE_EDITOR).waitFor({ state: "visible", timeout: 15_000 });

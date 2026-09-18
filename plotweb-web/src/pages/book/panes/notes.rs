@@ -148,6 +148,7 @@ fn render_note_card(
         note_editor_color,
         note_handle,
         note_dirty,
+        loaded_note_id,
         dragging_note_id,
         drop_target,
         ghost_visible,
@@ -243,6 +244,15 @@ fn render_note_card(
                     onclick: move || {
                         let n = nid.get();
                         let bid = bid_signal.get();
+                        // Opening another note ends the current note's editing session,
+                        // so it is an exit like any other: write out the pending
+                        // debounced edit while the pane still names the note the model
+                        // holds. Must happen before the fetch below, because by the time
+                        // its callback runs the pane has moved on and the edit is gone.
+                        super::super::flush::flush_pending_edits(state, store);
+                        // A load is now in flight: until it lands the model still holds
+                        // the *outgoing* note, so no save may name the incoming one.
+                        loaded_note_id.set(None);
                         api::get::<Note>(
                             &format!("/api/books/{}/notes/{}", bid, n),
                             move |result| {
@@ -255,6 +265,7 @@ fn render_note_card(
                                 // Legacy-tolerant: DocNode JSON if it parses, else the
                                 // legacy raw-HTML path (notes were stored as HTML).
                                 note_dirty.set(false);
+                                loaded_note_id.set(Some(n.clone()));
                                 let handle = note_handle.get();
                                 editor_utils::load_note_content(&handle, &note.content);
                                 handle.set_dark_mode(store.dark_mode.get());

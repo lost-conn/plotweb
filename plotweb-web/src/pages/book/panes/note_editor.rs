@@ -466,12 +466,22 @@ pub(in crate::pages::book) fn open_note_by_id(
         .map(|b| b.id)
         .unwrap_or_default();
     let url = format!("/api/books/{}/notes/{}", book_id, note_id);
+    // Following a rail link or a "Notes here" chip leaves the note currently open, so it
+    // flushes like every other exit — before the fetch, while the pane still names the
+    // note whose text the model holds.
+    super::super::flush::flush_pending_edits(state, store);
+    // A load is in flight; the model still holds the outgoing note until it lands.
+    state.loaded_note_id.set(None);
     api::get::<Note>(&url, move |result| {
         let Ok(note) = result else { return };
         state.note_editor_title.set(note.title.clone());
         state.note_editor_color.set(note.color.clone());
         close_sigil_menu(state);
         state.active_pane.set(BookPane::NoteEditor(note.id.clone()));
+        // Opening a note is the one moment it is known-clean: the model now holds
+        // exactly what the server sent.
+        state.note_dirty.set(false);
+        state.loaded_note_id.set(Some(note.id.clone()));
         let handle = state.note_handle.get();
         crate::pages::editor_utils::load_note_content(&handle, &note.content);
         crate::local_store::attach_note(handle, book_id.clone(), note.id.clone(), note.content.clone());
