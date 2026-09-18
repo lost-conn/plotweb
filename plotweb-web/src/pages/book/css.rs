@@ -743,6 +743,24 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
     opacity: 1;
 }
 
+/* Tier 1 (design/01-language.html#overlays): the chapter row's title cell
+   in its inline-edit state — rename, or the draft row from "Add chapter".
+   Same box as the static `.crow .t` span so the row doesn't reflow when it
+   switches between the two. */
+.crow-edit-input {
+    font: inherit;
+    color: inherit;
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-teal-7);
+    border-radius: var(--pw-radius-sm);
+    padding: 1px 6px;
+    box-shadow: var(--pw-focus-ring);
+}
+
+.crow-edit-input:focus {
+    outline: none;
+}
+
 /* ── Mobile hamburger bar ──────────────────────────── */
 
 .mobile-topbar {

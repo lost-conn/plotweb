@@ -92,12 +92,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
         chapter_handle,
         note_handle,
         bid_signal,
-        show_chapter_modal,
-        new_chapter_title,
-        show_rename_chapter_modal,
-        rename_chapter_id,
-        rename_chapter_title,
+        editing_chapter_id,
+        editing_chapter_title,
+        pending_new_chapter,
         chapter_title_save_timer_id,
+        delete_chapter_target,
         font_settings,
         beta_links,
         beta_feedback,
@@ -347,12 +346,16 @@ pub fn book_page(book_id: String) -> NodeHandle {
     });
 
     // ── Chapter actions ─────────────────────────────────────────
-    let add_chapter = move || {
-        let title = new_chapter_title.get();
-        if title.trim().is_empty() {
+    // Tier 1 (design/01-language.html#overlays): "Add chapter" appends an
+    // empty row with focus already in its title field rather than opening a
+    // dialog to ask for one. `title` comes off `editing_chapter_title`, the
+    // same draft signal the inline-rename row uses — see `panes::chapters`.
+    let add_chapter = move |title: String| {
+        let title = title.trim().to_string();
+        pending_new_chapter.set(false);
+        if title.is_empty() {
             return;
         }
-        show_chapter_modal.set(false);
         let bid = bid_signal.get();
         let bid_sync = bid.clone();
         let req = CreateChapterRequest { title };
@@ -410,16 +413,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
         );
     };
 
-    // ── Chapter rename save ───────────────────────────────────────
-    let save_rename_chapter = move || {
-        let title = rename_chapter_title.get();
-        if title.trim().is_empty() {
+    // ── Chapter rename save (Tier 1 — inline row, no overlay) ─────
+    let save_rename_chapter = move |cid: String, title: String| {
+        editing_chapter_id.set(None);
+        let title = title.trim().to_string();
+        if title.is_empty() {
             return;
         }
-        show_rename_chapter_modal.set(false);
         let bid = bid_signal.get();
         let bid_sync = bid.clone();
-        let cid = rename_chapter_id.get();
         let req = UpdateChapterRequest {
             title: Some(title.clone()),
             content: None,
@@ -531,39 +533,51 @@ pub fn book_page(book_id: String) -> NodeHandle {
         });
     };
 
-    let delete_chapter = move |chapter_id: String| {
+    // Tier 2 (design/01-language.html#overlays): deleting a chapter had no
+    // confirmation at all before this stage — one misclick removed a chapter
+    // outright. `request_delete_chapter` opens the confirm `Dialog`;
+    // `confirm_delete_chapter` is what its "Delete" button actually runs,
+    // mirroring the dashboard's book-delete confirm (`pages/dashboard.rs`).
+    let request_delete_chapter = move |chapter_id: String, title: String, word_count: u64| {
         move || {
-            let cid = chapter_id.clone();
-            let bid = bid_signal.get();
-            let bid_sync = bid.clone();
-            api::delete_req::<serde_json::Value>(
-                &format!("/api/books/{}/chapters/{}", bid, cid),
-                move |result| {
-                    if result.is_ok() {
-                        if active_pane.get() == BookPane::Editor(cid.clone()) {
-                            active_pane.set(BookPane::Chapters);
-                        }
-                        let cid_visible = cid.clone();
-                        let mut chapters = store.chapters.get();
-                        chapters.retain(|c| c.id != cid);
-                        // Before the document write, so no projection in between can
-                        // find the chapter still listed here and put it back.
-                        crate::local_book::rest_chapters(&bid_sync, |ch| {
-                            ch.retain(|c| c.id != cid)
-                        });
-                        crate::local_book::sync_chapters(&bid_sync, &chapters);
-                        // Same reload race as `move_chapter`: don't flip the
-                        // DOM-visible list until the local-doc write above lands.
-                        crate::local_book::on_settled(&bid_sync, move || {
-                            // Removal by id, for the same reason as `move_chapter`:
-                            // a pre-wait snapshot would clobber anything that landed
-                            // during the wait.
-                            store.chapters.update(|ch| ch.retain(|c| c.id != cid_visible));
-                        });
-                    }
-                },
-            );
+            delete_chapter_target.set(Some((chapter_id.clone(), title.clone(), word_count)));
         }
+    };
+
+    let confirm_delete_chapter = move || {
+        let Some((cid, _title, _wc)) = delete_chapter_target.get() else {
+            return;
+        };
+        delete_chapter_target.set(None);
+        let bid = bid_signal.get();
+        let bid_sync = bid.clone();
+        api::delete_req::<serde_json::Value>(
+            &format!("/api/books/{}/chapters/{}", bid, cid),
+            move |result| {
+                if result.is_ok() {
+                    if active_pane.get() == BookPane::Editor(cid.clone()) {
+                        active_pane.set(BookPane::Chapters);
+                    }
+                    let cid_visible = cid.clone();
+                    let mut chapters = store.chapters.get();
+                    chapters.retain(|c| c.id != cid);
+                    // Before the document write, so no projection in between can
+                    // find the chapter still listed here and put it back.
+                    crate::local_book::rest_chapters(&bid_sync, |ch| {
+                        ch.retain(|c| c.id != cid)
+                    });
+                    crate::local_book::sync_chapters(&bid_sync, &chapters);
+                    // Same reload race as `move_chapter`: don't flip the
+                    // DOM-visible list until the local-doc write above lands.
+                    crate::local_book::on_settled(&bid_sync, move || {
+                        // Removal by id, for the same reason as `move_chapter`:
+                        // a pre-wait snapshot would clobber anything that landed
+                        // during the wait.
+                        store.chapters.update(|ch| ch.retain(|c| c.id != cid_visible));
+                    });
+                }
+            },
+        );
     };
 
     let go_dashboard = move || {
@@ -1025,6 +1039,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
             style { {css::BOOK_WORKSPACE_CSS} }
             style { {SECTION_HEADER_CSS} }
             style { {PANE_HEADER_CSS} }
+            style { {crate::components::dialog::DIALOG_CSS} }
+            style { {crate::components::sheet::SHEET_CSS} }
             style { {editor_utils::EDITOR_CSS} }
             // Editor font styles
             style {
@@ -1137,8 +1153,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 variant: "subtle",
                                 size: "xs",
                                 onclick: move || {
-                                    new_chapter_title.set(String::new());
-                                    show_chapter_modal.set(true);
+                                    flush_editor_if_active();
+                                    active_pane.set(BookPane::Chapters);
+                                    store.sidebar_open.set(false);
+                                    editing_chapter_id.set(None);
+                                    editing_chapter_title.set(String::new());
+                                    pending_new_chapter.set(true);
                                 },
                                 {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
                             }
@@ -1262,7 +1282,16 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     }
 
                     // Chapters pane (CSS toggle, always in DOM)
-                    {panes::chapters::render(__scope, state, store, open_chapter, reorder_chapter, delete_chapter)}
+                    {panes::chapters::render(
+                        __scope,
+                        state,
+                        store,
+                        open_chapter,
+                        reorder_chapter,
+                        request_delete_chapter,
+                        add_chapter,
+                        save_rename_chapter,
+                    )}
 
                     // Editor pane (CSS toggle, always in DOM — preserves undo history)
                     {panes::editor::render(
@@ -1320,9 +1349,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 store,
                 book_id.clone(),
                 add_note,
-                add_chapter,
                 save_book_settings,
-                save_rename_chapter,
+                confirm_delete_chapter,
                 add_beta_link,
                 update_beta_link,
             )}

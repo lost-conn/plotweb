@@ -60,14 +60,24 @@ pub(super) struct BookState {
 
     pub bid_signal: Signal<String>,
 
-    // ── Chapter modal / rename / inline title ───────────────────
-    pub show_chapter_modal: Signal<bool>,
-    pub new_chapter_title: Signal<String>,
-    pub show_rename_chapter_modal: Signal<bool>,
-    pub rename_chapter_id: Signal<String>,
-    pub rename_chapter_title: Signal<String>,
+    // ── Chapter inline rename / add (Tier 1 — no overlay) ────────
+    /// The chapter row currently in its inline rename state (title becomes a
+    /// text field in place), or `None` when no row is being renamed.
+    pub editing_chapter_id: Signal<Option<String>>,
+    /// Draft text for whichever row is being edited — the rename row above, or
+    /// the empty draft row appended by "Add chapter" (see `pending_new_chapter`).
+    pub editing_chapter_title: Signal<String>,
+    /// Set the instant "Add chapter" is clicked: the chapters pane appends one
+    /// empty row and focuses its title field instead of opening a dialog to ask
+    /// for a title. Cleared once that row commits (Enter/blur) or is cancelled
+    /// (Escape, which discards the still-uncreated chapter entirely).
+    pub pending_new_chapter: Signal<bool>,
     /// Inline chapter title save timer
     pub chapter_title_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
+    /// The chapter targeted by the Tier-2 delete confirm dialog — (id, title,
+    /// word count), or `None` when it's closed. Mirrors the dashboard's book
+    /// delete confirm (`pages/dashboard.rs`'s `delete_target`).
+    pub delete_chapter_target: Signal<Option<(String, String, u64)>>,
 
     // ── Chapters pane: drag-to-reorder + the `⋯` overflow menu ──────
     /// The chapter id currently being dragged, `None` when no drag is active.
@@ -187,12 +197,11 @@ impl BookState {
 
             bid_signal: Signal::new(book_id.to_string()),
 
-            show_chapter_modal: Signal::new(false),
-            new_chapter_title: Signal::new(String::new()),
-            show_rename_chapter_modal: Signal::new(false),
-            rename_chapter_id: Signal::new(String::new()),
-            rename_chapter_title: Signal::new(String::new()),
+            editing_chapter_id: Signal::new(None),
+            editing_chapter_title: Signal::new(String::new()),
+            pending_new_chapter: Signal::new(false),
             chapter_title_save_timer_id: Signal::new(None),
+            delete_chapter_target: Signal::new(None),
 
             dragging_chapter_id: Signal::new(None),
             chapter_drop_target: Signal::new(None),
