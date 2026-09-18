@@ -22,6 +22,7 @@ mod css;
 mod feedback;
 mod flush;
 mod modals;
+mod notes_filter;
 mod panes;
 mod sidebar;
 pub(crate) mod sigils;

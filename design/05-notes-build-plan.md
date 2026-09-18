@@ -48,7 +48,8 @@ siege's dates then move without you touching them.
 | Server handlers | `crates/plotweb-server/src/routes/notes.rs` |
 | Cutover helpers (`cutover_structure`, `apply_cutover_structure`) | `crates/plotweb-server/src/routes/mod.rs` |
 | Client local-first mirror | `plotweb-web/src/local_book.rs` (`sync_notes`, `note_meta`), `local_store.rs` (`attach_note`) |
-| Notes pane — the horizontal card tree | `plotweb-web/src/pages/book/panes/notes.rs` |
+| Notes surface — the outline, view switcher, filter bar (card 3) | `plotweb-web/src/pages/book/panes/notes.rs` |
+| The filter itself (pure, host-tested) | `plotweb-web/src/pages/book/notes_filter.rs` |
 | Note editor pane | `plotweb-web/src/pages/book/panes/note_editor.rs` |
 | Note autosave orchestration | `plotweb-web/src/pages/book/mod.rs:1057-1110` |
 
@@ -105,10 +106,15 @@ backlinks both ways.
   deliberately left alone (`panes/notes.rs`).
 
 Watch: seven panes are permanently mounted and toggled with `display:none` to preserve editor
-undo history (`book.rs:4398`). Any routing change must preserve that.
+undo history (the mount list at the end of `book_page`, `pages/book/mod.rs`; the rule is
+documented in `pages/book/panes/mod.rs`). Any routing change must preserve that.
 
 **Done when:** the tree is the notes surface, drag-to-reparent still works, the filter narrows
 it, and e2e passes.
+
+**Shipped.** The switcher lives *inside* the still-permanently-mounted Notes pane, so no pane
+was unmounted and no routing changed; the Timeline tab renders disabled until card 5 adds a
+`NotesView::Timeline`. "may" is called **"any of"** in the UI (off → must → any of → without).
 
 ## [Notes 4/8] Calendar and time entry
 

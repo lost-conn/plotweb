@@ -165,149 +165,250 @@ pub(super) const TYPOGRAPHY_CSS: &str = r#"
 }
 "#;
 
-/// CSS for the notes tree.
+/// CSS for the notes surface — the outline, the view tabs and the filter bar.
+///
+/// `design/04-notes-wireframes.html` take E: a vertical outline rather than the
+/// horizontal card tree this replaces. Facet is a one-character gutter glyph on the
+/// left, the span sits in a right-aligned gutter, and the rest of the row is title.
+/// Metadata (span, chips, counts) is set in a monospace face, which is the wireframe's
+/// voice for anything the author did not write themselves.
 pub(super) const NOTES_CSS: &str = r#"
 .notes-pane {
     padding: 0;
-    overflow-x: auto;
     overflow-y: auto;
+    overflow-x: hidden;
     height: 100%;
+    display: flex;
+    flex-direction: column;
 }
 .notes-pane-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 24px 24px 0 24px;
+    padding: var(--pw-space-lg) var(--pw-space-lg) 0 var(--pw-space-lg);
+    flex-shrink: 0;
 }
+
+/* ── View switcher ──
+   Tree today, Timeline in card 5. The disabled tab is not a placeholder view:
+   it names what is coming without pretending to show it. */
+.notes-views {
+    display: flex;
+    gap: var(--pw-space-md);
+    padding: var(--pw-space-sm) var(--pw-space-lg) 0 var(--pw-space-lg);
+    border-bottom: 1px solid var(--pw-hairline);
+    flex-shrink: 0;
+}
+.notes-viewtab {
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-dimmed);
+    padding: 0 0 6px 0;
+    margin-bottom: -1px;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color var(--pw-dur-fast) var(--pw-ease);
+}
+.notes-viewtab:hover {
+    color: var(--rinch-color-text);
+}
+.notes-viewtab.is-on {
+    color: var(--rinch-color-text);
+    border-bottom-color: var(--rinch-color-teal-6);
+}
+.notes-viewtab.is-disabled,
+.notes-viewtab.is-disabled:hover {
+    color: var(--rinch-color-placeholder);
+    cursor: default;
+}
+
+/* ── Filter bar ──
+   Shared by every notes view, which is why it is a sibling of the tree rather
+   than part of it. A chip cycles off -> must -> any of -> without -> off. */
+.notes-filter {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-2xs);
+    padding: var(--pw-space-sm) var(--pw-space-lg) 0 var(--pw-space-lg);
+    flex-shrink: 0;
+}
+.notes-filter-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--pw-space-2xs);
+}
+.fchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    line-height: 1.4;
+    padding: 3px 9px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    background: var(--rinch-color-surface);
+    color: var(--rinch-color-dimmed);
+    cursor: pointer;
+    user-select: none;
+    transition: border-color var(--pw-dur-fast) var(--pw-ease),
+                color var(--pw-dur-fast) var(--pw-ease);
+}
+.fchip:hover {
+    border-color: var(--rinch-color-placeholder);
+    color: var(--rinch-color-text);
+}
+.fchip .op {
+    width: 8px;
+    text-align: center;
+    font-weight: 700;
+}
+.fchip[data-state="must"] {
+    border-color: var(--rinch-color-teal-6);
+    color: var(--rinch-color-teal-6);
+}
+/* Dashed for the OR group: the members belong together and none of them is
+   individually required, which a solid border would imply. */
+.fchip[data-state="any"] {
+    border-style: dashed;
+    border-color: var(--rinch-color-teal-6);
+    color: var(--rinch-color-teal-6);
+}
+.fchip[data-state="without"] {
+    border-color: var(--rinch-color-red-6);
+    color: var(--rinch-color-red-6);
+    text-decoration: line-through;
+}
+.notes-filter-clear {
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-dimmed);
+    padding: 3px 4px;
+    cursor: pointer;
+}
+.notes-filter-clear:hover {
+    color: var(--rinch-color-text);
+}
+.notes-filter-status {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-dimmed);
+}
+
+/* ── The outline ── */
 .notes-tree {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 16px 24px 24px;
-    min-width: min-content;
+    padding: var(--pw-space-xs) var(--pw-space-lg) var(--pw-space-2xl) var(--pw-space-lg);
 }
 .notes-empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 60px 24px;
+    padding: var(--pw-space-2xl) var(--pw-space-lg);
 }
 .note-branch {
     display: flex;
-    flex-direction: row;
-    align-items: flex-start;
-    gap: 0;
+    flex-direction: column;
+    min-width: 0;
 }
-.note-card {
-    width: 220px;
-    min-height: 48px;
-    flex-shrink: 0;
-    padding: 8px 10px;
-    border-radius: var(--rinch-radius-sm);
-    background: var(--rinch-color-surface);
-    border: 1px solid var(--rinch-color-border);
-    border-left: 3px solid var(--note-color, var(--rinch-color-teal-6));
-    cursor: grab;
-    transition: box-shadow 0.15s, border-color 0.15s;
-    position: relative;
-}
-.note-card:hover {
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-}
-.note-card-header {
+.note-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 4px;
+    gap: var(--pw-space-3xs);
+    border-radius: var(--pw-radius-sm);
+    min-width: 0;
+}
+.note-row:hover {
+    background: var(--pw-hairline);
+}
+.note-row.is-selected {
+    background: var(--pw-hairline);
+}
+.note-row.is-selected .note-card-title {
+    font-weight: 600;
+}
+/* Shown only because something below it matched: a path to a result, not a
+   result. Dimmed rather than dropped, or a match filed three levels down would
+   take its ancestors off the screen with it. */
+.note-row.is-muted {
+    opacity: 0.45;
+}
+.note-twist {
+    width: 16px;
+    flex: none;
+    align-self: stretch;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    line-height: 1;
+    color: var(--rinch-color-placeholder);
+    cursor: pointer;
+}
+.note-card {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--pw-space-xs);
+    padding: 6px var(--pw-space-2xs);
+    cursor: pointer;
+    border-radius: var(--pw-radius-sm);
+}
+.note-glyph {
+    width: 14px;
+    flex: none;
+    text-align: center;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--note-color, var(--rinch-color-teal-6));
+}
+.note-glyph.is-lore {
+    color: var(--rinch-color-placeholder);
 }
 .note-card-title {
-    font-size: 13px;
-    font-weight: 600;
+    flex: 1;
+    min-width: 0;
+    font-size: var(--pw-text-md);
+    color: var(--rinch-color-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    flex: 1;
-    color: var(--rinch-color-text);
 }
-.note-card-actions {
-    display: flex;
-    align-items: center;
-    gap: 0;
-    opacity: 0;
-    transition: opacity 0.15s;
-}
-.note-card:hover .note-card-actions {
-    opacity: 1;
-}
-.note-card-preview {
-    font-size: 11px;
+.note-when {
+    flex: none;
+    margin-left: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    font-variant-numeric: tabular-nums;
     color: var(--rinch-color-dimmed);
-    margin-top: 4px;
-    max-height: 80px;
-    overflow: hidden;
-    line-height: 1.4;
-    white-space: pre-wrap;
-    word-break: break-word;
+}
+.note-row-actions {
+    display: flex;
+    gap: 2px;
+    flex: none;
+    opacity: 0;
+    transition: opacity var(--pw-dur-fast) var(--pw-ease);
+}
+.note-row:hover .note-row-actions {
+    opacity: 1;
 }
 .note-children {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding-left: 16px;
-    position: relative;
-    justify-content: center;
+    margin-left: 15px;
+    padding-left: var(--pw-space-xs);
+    border-left: 1px solid var(--pw-hairline);
+    min-width: 0;
 }
-.note-children::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 20px;
-    bottom: 20px;
-    width: 1px;
-    background: var(--rinch-color-border);
-}
-.note-child-row {
-    display: flex;
-    flex-direction: row;
-    align-items: flex-start;
-    position: relative;
-}
-.note-child-row::before {
-    content: '';
-    position: absolute;
-    left: -16px;
-    width: 16px;
-    height: 1px;
-    background: var(--rinch-color-border);
-    top: 20px;
-}
-.note-collapse-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border: none;
-    background: var(--rinch-color-surface);
-    border: 1px solid var(--rinch-color-border);
-    border-radius: 50%;
-    cursor: pointer;
-    font-size: 9px;
-    color: var(--rinch-color-dimmed);
-    position: absolute;
-    right: -9px;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 1;
-    line-height: 1;
-}
-.note-collapse-btn:hover {
-    background: var(--rinch-color-border);
-}
+/* The gap opens instantly. It used to grow over 100ms, which on the old 48px+
+   cards was decoration and on these ~35px rows is a moving target: every row
+   below the cursor slides down while you are aiming at one, and a third of a
+   row is all the difference between "insert before" and "nest inside". */
 .note-drop-zone {
     height: 0;
     border-radius: 2px;
-    transition: height 0.1s, background 0.1s;
+    transition: background 0.1s;
     flex-shrink: 0;
 }
 .note-drop-zone.visible {
@@ -322,8 +423,7 @@ pub(super) const NOTES_CSS: &str = r#"
     pointer-events: none;
 }
 .note-card.drop-child {
-    border-color: var(--rinch-color-teal-6);
-    box-shadow: 0 0 0 2px var(--rinch-color-teal-6);
+    box-shadow: inset 0 0 0 1px var(--rinch-color-teal-6);
 }
 .note-editor-pane {
     display: flex;
@@ -618,37 +718,30 @@ pub(super) const NOTES_CSS: &str = r#"
     text-overflow: ellipsis;
 }
 
-/* ── Mobile: vertical stack, full-width cards, indented nesting ─────────── */
+/* ── Phone ──
+   The outline is already vertical, so nothing has to change shape: only the
+   page gutter shrinks, and the row actions stop being hover-only. */
 @media (max-width: 768px) {
-    .notes-pane {
-        overflow-x: hidden;
+    .notes-pane-header,
+    .notes-views,
+    .notes-filter {
+        padding-left: var(--pw-space-md);
+        padding-right: var(--pw-space-md);
     }
     .notes-tree {
-        min-width: 0;
-    }
-    .note-branch {
-        flex-direction: column;
-        align-items: stretch;
-        width: 100%;
-    }
-    .note-card {
-        width: auto;
+        padding-left: var(--pw-space-md);
+        padding-right: var(--pw-space-md);
     }
     .note-children {
-        padding-left: 14px;
+        margin-left: 10px;
     }
-    /* The horizontal connector stub doesn't apply to the vertical layout. */
-    .note-child-row::before {
-        display: none;
-    }
-    /* Actions are hover-only on desktop; always show them on touch. */
-    .note-card-actions {
+    .note-row-actions {
         opacity: 1;
     }
 }
-/* Coarse pointers (touch) can't hover — always reveal the card actions. */
+/* Coarse pointers (touch) can't hover — always reveal the row actions. */
 @media (hover: none) {
-    .note-card-actions {
+    .note-row-actions {
         opacity: 1;
     }
 }

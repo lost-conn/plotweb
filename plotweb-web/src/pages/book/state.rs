@@ -186,9 +186,23 @@ pub(super) struct BookState {
     /// The document handle `caret_anchor` needs, captured from the render scope — an
     /// event handler has no render scope of its own to ask.
     pub sigil_doc: Signal<Option<crate::pages::editor_utils::DocRef>>,
+    /// Which notes view is on screen. Card 5 adds the timeline beside the tree.
+    ///
+    /// This and the two below sit here — on the page's state, *above* the view switcher
+    /// — rather than inside the notes surface, which is the whole reason the switcher
+    /// can be a re-render instead of a navigation: changing view keeps the narrowing and
+    /// the selected note (`design/04-notes-wireframes.html`, "Placement and the phone").
+    pub notes_view: Signal<super::panes::notes::NotesView>,
+    /// The shared filter: chips cycling off / must / any of / without, applied
+    /// identically by every notes view. See [`super::notes_filter`].
+    pub notes_filter: Signal<super::notes_filter::Filter>,
+    /// The note the tree is highlighting. Distinct from `BookPane::NoteEditor`'s id: a
+    /// selection survives leaving the editor, and card 5's timeline highlights the same
+    /// note without opening it.
+    pub notes_selected: Signal<Option<String>>,
     pub dragging_note_id: Signal<Option<String>>,
     pub drop_target: Signal<Option<(Option<String>, usize)>>,
-    /// Floating drag ghost, positioned from ondragmove (see render_note_card).
+    /// Floating drag ghost, positioned from ondragmove (see `panes::notes`).
     pub ghost_visible: Signal<bool>,
     pub ghost_pos: Signal<(f32, f32)>,
     pub ghost_label: Signal<String>,
@@ -296,6 +310,9 @@ impl BookState {
             sigil_rows: Signal::new(Vec::new()),
             sigil_highlight: Signal::new(0),
             sigil_doc: Signal::new(None),
+            notes_view: Signal::new(super::panes::notes::NotesView::Tree),
+            notes_filter: Signal::new(super::notes_filter::Filter::default()),
+            notes_selected: Signal::new(None),
             dragging_note_id: Signal::new(None),
             drop_target: Signal::new(None),
             ghost_visible: Signal::new(false),

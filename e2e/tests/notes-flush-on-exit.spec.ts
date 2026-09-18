@@ -32,12 +32,29 @@ import {
 
 const NOTE_EDITOR = "#note-editor-main [data-pm-editor]";
 
-/** Focus the note body and send real keystrokes (`.fill()` does nothing here). */
+/**
+ * Focus the note body and send real keystrokes (`.fill()` does nothing here).
+ *
+ * `keyboard.type` resolves once the key events have been *dispatched*, not once the
+ * editor has processed them. Leaving immediately after it therefore raced the model:
+ * the flush serialized whatever had been applied so far and the assertion at the end
+ * read back a truncated note ("Words typed j"), failing ~4 runs in 6. Waiting for the
+ * text to actually appear asserts the precondition these tests rely on — the edit
+ * exists in the model — rather than assuming it. The `writes` check that follows still
+ * proves the debounce has not fired, so this does not weaken what is being tested.
+ */
 async function typeInNote(page: Page, text: string) {
   const surface = page.locator(NOTE_EDITOR);
   await surface.waitFor({ state: "visible", timeout: 15_000 });
   await surface.click();
-  await page.keyboard.type(text);
+  // A small per-key delay, because zero-delay typing loses keystrokes outright: the
+  // editor would still be short several characters after waiting ten seconds, which is
+  // a drop rather than a lag. That is rinch's input path, not the flush under test —
+  // the same family as the documented `editor-mobile-typing` races. Typing at a human
+  // pace sidesteps it and costs nothing here: the 800ms debounce restarts on every
+  // keystroke, so a slower run leaves the pending-write window exactly as open.
+  await page.keyboard.type(text, { delay: 10 });
+  await expect(surface).toContainText(text);
 }
 
 /** Open a note from the notes tree by title and wait for its editor. */
