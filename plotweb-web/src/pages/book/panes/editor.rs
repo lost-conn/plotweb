@@ -439,11 +439,23 @@ where
         chapter_handle,
         pending_feedback_scroll,
         reply_drafts,
+        editor_writing,
         ..
     } = state;
+
+    // This chapter's feedback — read wherever the rail, its header count, and
+    // the mobile toolbar badge each need "does this chapter have feedback".
+    let current_chapter_feedback = move || {
+        let cid = match active_pane.get() {
+            BookPane::Editor(ref cid) => cid.clone(),
+            _ => return Vec::new(),
+        };
+        beta_feedback.get().into_iter().filter(|f| f.chapter_id == cid).collect::<Vec<_>>()
+    };
+
     rsx! {
         div {
-            class: "editor-layout",
+            class: {move || if editor_writing.get() { "editor-layout is-writing" } else { "editor-layout" }},
             style: {move || if matches!(active_pane.get(), BookPane::Editor(_)) { "" } else { "display:none;" }},
 
             div { class: "editor-topbar",
@@ -459,42 +471,21 @@ where
                         oninput: move |v: String| save_chapter_title_inline(v),
                     }
                 }
-                div {
-                    style: "display: flex; align-items: center; gap: 8px;",
-                    div {
-                        class: "editor-word-count",
-                        {move || format!("{} words", editor_word_count.get())}
-                    }
-                    div {
-                        class: {|| format!("save-indicator {}", save_status.get())},
-                        {move || match save_status.get() {
-                            "saving" => "Saving...".to_string(),
-                            // "Saved" has to mean the same thing everywhere.
-                            // For a cut-over book sync is how an edit reaches
-                            // the server, so with sync off this save reached
-                            // this device and nothing else — say so.
-                            "saved" if saved_here_only() => {
-                                "Saved on this device".to_string()
-                            }
-                            "saved" => "Saved".to_string(),
-                            "error" => "Save failed — retry".to_string(),
-                            _ => "Unsaved".to_string(),
-                        }}
-                    }
-                    if !beta_feedback.get().is_empty() {
-                        ActionIcon {
-                            variant: {move || if show_feedback_sidebar.get() { "filled".to_string() } else { "subtle".to_string() }},
-                            size: "sm",
-                            onclick: move || show_feedback_sidebar.update(|v| *v = !*v),
-                            {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
-                        }
+                if !current_chapter_feedback().is_empty() {
+                    ActionIcon {
+                        variant: {move || if show_feedback_sidebar.get() { "filled".to_string() } else { "subtle".to_string() }},
+                        size: "sm",
+                        onclick: move || show_feedback_sidebar.update(|v| *v = !*v),
+                        {render_tabler_icon(__scope, TablerIcon::MessageCircle, TablerIconStyle::Outline)}
                     }
                 }
             }
 
             // A save that didn't land says so here rather than only in the
-            // four-word status indicator above. `if` (not a reactive text
-            // node) so the whole block swaps in and out.
+            // four-word status indicator in the footer. `if` (not a reactive
+            // text node) so the whole block swaps in and out. Deliberately NOT
+            // faded by the typing collapse (task 4 covers ambient chrome, not
+            // an active data-loss warning the author needs to see).
             if save_alert.get().is_some() {
                 div {
                     style: "padding: 8px 16px 0;",
@@ -526,10 +517,16 @@ where
                 }
             }
 
+            // Formatting toolbar: no selection-driven popover (see the doc
+            // comment on `editor_toolbar` in editor_utils.rs — rinch's
+            // `EditorHandle` exposes no selection-change signal or screen-space
+            // selection rect to anchor one against, and a guessed popover
+            // position is worse than a toolbar). It fades with the rest of the
+            // chrome instead via the shared `is-writing` class.
             {editor_utils::editor_toolbar(__scope, chapter_handle.get(), book_id.clone(), schedule_chapter_autosave)}
 
             div {
-                style: "display: flex; flex: 1; overflow: hidden;",
+                style: "display: flex; flex: 1; overflow: hidden; position: relative;",
                 div { class: "editor-scroll",
                     // Wrapper keeps the `#editor-main` id the feedback
                     // scroll-to-text feature queries; the model-first
@@ -545,48 +542,78 @@ where
                 }
 
                 // Editor feedback backdrop (mobile)
-                div {
-                    class: {move || if show_feedback_sidebar.get() { "editor-feedback-backdrop open" } else { "editor-feedback-backdrop" }},
-                    onclick: move || show_feedback_sidebar.set(false),
+                if !current_chapter_feedback().is_empty() {
+                    div {
+                        class: {move || if show_feedback_sidebar.get() { "editor-feedback-backdrop open" } else { "editor-feedback-backdrop" }},
+                        onclick: move || show_feedback_sidebar.set(false),
+                    }
                 }
 
-                // Feedback sidebar (in editor)
+                // Feedback rail — mounted only when this chapter has feedback
+                // (task 3). A chapter with none used to hold 300px open just to
+                // say so; the prose column gets that width back instead. The
+                // toggle (topbar icon above) and the unresolved-count badge
+                // only appear in the same condition, so there's nothing to
+                // "open" when the rail isn't mounted.
+                if !current_chapter_feedback().is_empty() {
+                    div {
+                        class: {move || if show_feedback_sidebar.get() { "editor-feedback-sidebar visible" } else { "editor-feedback-sidebar hidden" }},
+
+                        div { class: "editor-feedback-header",
+                            "Feedback"
+                            if current_chapter_feedback().iter().filter(|f| !f.resolved).count() > 0 {
+                                span {
+                                    class: "editor-feedback-count",
+                                    {move || format!("{} unresolved", current_chapter_feedback().iter().filter(|f| !f.resolved).count())}
+                                }
+                            }
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "xs",
+                                onclick: move || show_feedback_sidebar.set(false),
+                                {render_tabler_icon(__scope, TablerIcon::X, TablerIconStyle::Outline)}
+                            }
+                        }
+                        div { class: "editor-feedback-list",
+                            for fb in current_chapter_feedback() {
+                                {editor_feedback_item(__scope, fb, pending_feedback_scroll, reply_drafts, author_reply, resolve_feedback, delete_feedback)}
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Footer: word count + save state. Moved out of the topbar (task 5)
+            // into a quiet strip that fades with the rest of the chrome —
+            // visible when you look, invisible when you write. The "Saved" /
+            // "Saved on this device" distinction is load-bearing for cut-over
+            // books (`saved_here_only`) and keeps its exact wording and dot.
+            //
+            // It sits in the layout column *after* the content row, not inside
+            // the scroller: placed within `.editor-scroll` it followed the prose
+            // and was pushed below the fold, so the word count and save state
+            // were only reachable by scrolling to the end of the chapter —
+            // strictly worse than the topbar it replaced.
+            div { class: "editor-footer",
                 div {
-                    class: {move || if show_feedback_sidebar.get() { "editor-feedback-sidebar visible" } else { "editor-feedback-sidebar hidden" }},
-
-                    div { class: "editor-feedback-header",
-                        "Feedback"
-                        ActionIcon {
-                            variant: "subtle",
-                            size: "xs",
-                            onclick: move || show_feedback_sidebar.set(false),
-                            {render_tabler_icon(__scope, TablerIcon::X, TablerIconStyle::Outline)}
+                    class: "editor-word-count",
+                    {move || format!("{} words", editor_word_count.get())}
+                }
+                div {
+                    class: {|| format!("save-indicator {}", save_status.get())},
+                    {move || match save_status.get() {
+                        "saving" => "Saving...".to_string(),
+                        // "Saved" has to mean the same thing everywhere. For a
+                        // cut-over book sync is how an edit reaches the server,
+                        // so with sync off this save reached this device and
+                        // nothing else — say so.
+                        "saved" if saved_here_only() => {
+                            "Saved on this device".to_string()
                         }
-                    }
-                    div { class: "editor-feedback-list",
-                        for fb in beta_feedback.get().into_iter().filter(|f| {
-                            if let BookPane::Editor(ref cid) = active_pane.get() {
-                                f.chapter_id == *cid
-                            } else {
-                                false
-                            }
-                        }) {
-                            {editor_feedback_item(__scope, fb, pending_feedback_scroll, reply_drafts, author_reply, resolve_feedback, delete_feedback)}
-                        }
-
-                        if beta_feedback.get().iter().filter(|f| {
-                            if let BookPane::Editor(ref cid) = active_pane.get() {
-                                f.chapter_id == *cid
-                            } else {
-                                false
-                            }
-                        }).count() == 0 {
-                            Center {
-                                style: "padding: 20px 0;",
-                                Text { color: "dimmed", size: "sm", "No feedback for this chapter." }
-                            }
-                        }
-                    }
+                        "saved" => "Saved".to_string(),
+                        "error" => "Save failed — retry".to_string(),
+                        _ => "Unsaved".to_string(),
+                    }}
                 }
             }
         }

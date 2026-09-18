@@ -165,6 +165,7 @@ pub const EDITOR_CSS: &str = r#"
     border-bottom: 1px solid var(--rinch-color-border);
     background: var(--pw-color-deep);
     flex-shrink: 0;
+    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
 }
 
 .editor-topbar-left {
@@ -183,6 +184,7 @@ pub const EDITOR_CSS: &str = r#"
     background: var(--pw-color-deep);
     flex-shrink: 0;
     overflow-x: auto;
+    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
 }
 
 .toolbar-separator {
@@ -201,10 +203,16 @@ pub const EDITOR_CSS: &str = r#"
 }
 
 /* The wrapper we own: page layout only. Typography lives on the editor's own
-   container below — see the note there. */
+   container below — see the note there.
+
+   `max-width` is the measure token (`--pw-measure`, app_shell.rs), not a
+   layout-pane width — this box governs line length, not how much of the pane
+   the editor occupies. It used to hardcode 720px (~90 characters/line at 16px,
+   measured), well past where the eye loses the line return; `--pw-measure` is
+   tuned to ~73. */
 .editor-content {
     min-height: 100%;
-    max-width: 720px;
+    max-width: var(--pw-measure);
     margin: 0 auto;
     padding: 48px 48px;
     outline: none;
@@ -359,6 +367,27 @@ pub const EDITOR_CSS: &str = r#"
     border-radius: 2px;
 }
 
+/* Word count + save state (task 5): a quiet strip under the prose, inside
+   `.editor-scroll` so it scrolls with the page rather than pinning itself over
+   the text — the mockup's version is `position: absolute` over the canvas,
+   but this editor's content can be taller than the viewport (unlike the
+   mockup's static sample), so an overlaid footer would sit on top of prose
+   rather than below it. It still fades with the rest of the chrome. */
+/* `width: 100%` matters: as a flex item this box otherwise shrinks to its
+   content, so `max-width` never binds and the two readings huddle together
+   mid-column instead of sitting at the ends of the measure they annotate. */
+.editor-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    width: 100%;
+    max-width: var(--pw-measure);
+    margin: 0 auto;
+    padding: 4px 48px 24px;
+    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
+}
+
 .editor-word-count {
     font-size: 12px;
     color: var(--rinch-color-dimmed);
@@ -390,12 +419,59 @@ pub const EDITOR_CSS: &str = r#"
     font-weight: 600;
 }
 
+.editor-feedback-count {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--rinch-color-placeholder);
+    font-weight: 400;
+}
+
+/* ── Chrome collapse while typing (task 4) ─────────────────────────────
+   `.editor-layout.is-writing` is set for as long as the author is actively
+   typing (see `editor_writing` in book/mod.rs — driven by `EditorHandle::
+   on_change`, the only cross-platform "an edit happened" signal available;
+   there is no DOM `keydown` to hang this on since `#editor-main` isn't
+   `contenteditable`). Every rule here is opacity + `pointer-events: none` —
+   deliberately never `display`, `width`, or `margin` — so the prose column's
+   x position cannot shift mid-sentence. The feedback rail keeps its `width:
+   300px` (or is simply absent — task 3) the entire time; only its ink fades.
+   `prefers-reduced-motion` (see app_shell.rs) already zeroes every transition
+   duration site-wide, so collapse/return is instant rather than animated for
+   users who asked for that. */
+.editor-layout.is-writing .editor-topbar,
+.editor-layout.is-writing .toolbar,
+.editor-layout.is-writing .editor-footer {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.editor-feedback-sidebar {
+    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
+}
+
+.editor-layout.is-writing .editor-feedback-sidebar {
+    opacity: 0;
+    pointer-events: none;
+}
+
 @media (max-width: 768px) {
     .editor-content {
         padding: 16px;
     }
+    .editor-footer {
+        padding: 4px 16px 16px;
+    }
     .toolbar {
         padding: 6px 12px;
+    }
+    /* On the bottom-sheet layout the rail is opened deliberately (tap the
+       header icon) rather than being ambient chrome — collapsing it while
+       typing would be surprising on a surface the reader had to explicitly
+       summon, and mobile has no persistent mouse to bring it back with a
+       pointer move. */
+    .editor-layout.is-writing .editor-feedback-sidebar {
+        opacity: 1;
+        pointer-events: auto;
     }
 }
 "#;
@@ -445,6 +521,33 @@ fn fmt_button(
 ///
 /// A plain function (not `#[component]`) so it can take the non-`Copy` `EditorHandle`
 /// and the `on_edit` closure directly.
+///
+/// **This is a permanent toolbar, not a selection popover, because rinch does not
+/// expose enough to build one.** A selection-anchored popover needs two things: a
+/// signal that fires on selection change, and the selection's screen-space
+/// rectangle. `EditorHandle` has neither:
+/// - `selection()` returns model [`Selection`] (document positions), not geometry.
+/// - `caret_address(pos)` maps a model position to `(textblock DOM node id, byte
+///   offset)`, but that node id is rinch's own internal id — the reverse lookup to
+///   an actual `web_sys::Element` (`node_by_nid` / `NODE_REGISTRY` in
+///   `rinch-web::web_document`) is `pub(crate)` to rinch-web, unreachable from here.
+/// - The one thing that *does* compute real selection rectangles —
+///   `DomDocument::query_selection_rects`, used internally to paint the selection
+///   highlight — is private to `rinch-editor-view`'s `View`, never surfaced on
+///   `EditorHandle`.
+/// - There's no `on_selection_change` callback; `on_change` fires only for
+///   document *mutations*, not selection-only changes (by design — see its doc
+///   comment).
+///
+/// `#editor-main` also isn't `contenteditable`, so `document.getSelection()` /
+/// `getRangeAt(0).getBoundingClientRect()` (what the reference mockup's popover
+/// uses) describe nothing here. Faking a position from font-metrics + the model
+/// selection's byte offsets was considered and rejected: it would drift from the
+/// real caret under wrapping, at different zoom levels, and near soft line breaks,
+/// and a popover in the wrong place is worse than a toolbar that's always right
+/// where it says it is. So instead this toolbar fades with the rest of the chrome
+/// on the typing-collapse (`is-writing`, see EDITOR_CSS) rather than disappearing
+/// only when there's no selection.
 pub fn editor_toolbar(
     __scope: &mut RenderScope,
     handle: EditorHandle,

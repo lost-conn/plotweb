@@ -89,6 +89,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
         chapter_dirty,
         note_dirty,
         auto_save_timer_id,
+        editor_writing,
+        editor_writing_idle_timer_id,
         chapter_handle,
         note_handle,
         bid_signal,
@@ -139,6 +141,19 @@ pub fn book_page(book_id: String) -> NodeHandle {
         chapter_handle.get().set_dark_mode(dark);
         note_handle.get().set_dark_mode(dark);
     });
+
+    // Whether the chapter currently open in the editor has any feedback — the
+    // mobile hamburger bar's message-circle toggle only makes sense to show when
+    // there's something for it to open. (The desktop editor topbar has its own
+    // copy of this same check — see `current_chapter_feedback` in
+    // `panes::editor::render` — because that one also needs the filtered list
+    // itself, not just whether it's non-empty.)
+    let current_chapter_has_feedback = move || {
+        match active_pane.get() {
+            BookPane::Editor(ref cid) => beta_feedback.get().iter().any(|f| f.chapter_id == *cid),
+            _ => false,
+        }
+    };
 
     PAGE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     let page_gen = PAGE_GEN.with(|g| g.get());
@@ -318,30 +333,73 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }))));
     };
 
-    // ── Set up Ctrl+S and auto-save (once, on mount) ────────────
+    // ── Chrome collapse while typing ─────────────────────────────
+    // Sidebar, editor header, footer and feedback rail fade (CSS opacity +
+    // `pointer-events: none` on `editor_writing` — see EDITOR_CSS) while the
+    // author is actively typing, and return on pointer move, Escape, or a short
+    // idle pause. Driven off real edits (`EditorHandle::on_change`), not DOM
+    // `keydown`: `#editor-main` is rinch's own editor-view, not a
+    // `contenteditable`, so there is no native `input`/`keydown` to hang this on
+    // at the DOM level the way the reference mockup does.
+    let stop_writing = move || {
+        editor_writing.set(false);
+        if let Some(h) = editor_writing_idle_timer_id.get() {
+            rinch_core::clear_timeout(h);
+            editor_writing_idle_timer_id.set(None);
+        }
+    };
+    let start_writing = move || {
+        editor_writing.set(true);
+        if let Some(h) = editor_writing_idle_timer_id.get() {
+            rinch_core::clear_timeout(h);
+        }
+        editor_writing_idle_timer_id.set(Some(rinch_core::reactive::unowned(move || rinch_core::set_timeout(2500, move || {
+            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            editor_writing.set(false);
+        }))));
+    };
+
+    // ── Set up Ctrl+S, Escape-to-return, and auto-save (once, on mount) ──
     if let Some(window) = crate::platform::window() {
-        // Ctrl+S — immediate save of the current chapter.
+        // Ctrl+S — immediate save of the current chapter. Escape — bring the
+        // collapsed chrome back immediately rather than waiting for the idle timer.
         let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
             if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
                 event.prevent_default();
                 if let BookPane::Editor(ref cid) = active_pane.get() {
                     save_content(cid.clone());
                 }
+            } else if event.key() == "Escape" {
+                stop_writing();
             }
         }) as Box<dyn FnMut(_)>);
         window.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
         keydown.forget();
+
+        // Pointer move — also brings the chrome back (mirrors the reference
+        // mockup: move the mouse, chrome returns). Only acts while collapsed, so
+        // this doesn't fight the idle timer on every idle mousemove.
+        let mousemove = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
+            if editor_writing.get() {
+                stop_writing();
+            }
+        }) as Box<dyn FnMut(_)>);
+        window.add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref()).ok();
+        mousemove.forget();
     }
 
-    // Auto-save on edit. Cross-platform: the editor notifies us after any local edit
-    // (typing/paste/IME/commands), and deliberately not for selection-only changes or
-    // for `load_doc`, so opening a chapter can't re-trigger a save. Registered outside
-    // the `window` guard above so it runs on native too. Gate on the chapter editor
-    // being active — the note editor has its own hook.
+    // Auto-save on edit, and mark the editor "writing" so the chrome collapses.
+    // Cross-platform: the editor notifies us after any local edit (typing/paste/
+    // IME/commands), and deliberately not for selection-only changes or for
+    // `load_doc`, so opening a chapter can't re-trigger a save or a collapse.
+    // Registered outside the `window` guard above so the autosave half runs on
+    // native too (the collapse itself is a web-only visual affordance — native
+    // has no mouse-leaves-then-returns chrome to hide).
     chapter_handle.get().on_change(move || {
         if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
         if matches!(active_pane.get(), BookPane::Editor(_)) {
             schedule_chapter_autosave();
+            start_writing();
         }
     });
 
@@ -1096,7 +1154,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 }}
             }
 
-            div { class: "book-workspace",
+            div {
+                class: {move || if editor_writing.get() { "book-workspace is-writing" } else { "book-workspace" }},
                 // ── Backdrop for mobile sidebar ──
                 div {
                     class: {move || if store.sidebar_open.get() { "sidebar-backdrop open" } else { "sidebar-backdrop" }},
@@ -1271,7 +1330,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             onclick: toggle_sidebar,
                             {render_tabler_icon(__scope, TablerIcon::Menu2, TablerIconStyle::Outline)}
                         }
-                        if !beta_feedback.get().is_empty() && matches!(active_pane.get(), BookPane::Editor(_)) {
+                        if current_chapter_has_feedback() {
                             ActionIcon {
                                 variant: {move || if show_feedback_sidebar.get() { "filled".to_string() } else { "subtle".to_string() }},
                                 size: "sm",

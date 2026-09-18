@@ -53,6 +53,17 @@ pub(super) struct BookState {
     pub note_dirty: Signal<bool>,
     pub auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
 
+    /// True while the author is actively typing in the chapter editor — sidebar,
+    /// editor header, footer and feedback rail fade (opacity + `pointer-events:
+    /// none`, never width/margin, so the prose column never shifts) while this is
+    /// set. Set on `EditorHandle::on_change` (a real content edit — cross-platform,
+    /// unlike guessing at DOM `keydown` on a surface that isn't `contenteditable`);
+    /// cleared on pointer move, Escape, or a short idle timeout.
+    pub editor_writing: Signal<bool>,
+    /// Idle-return timer for `editor_writing` — reset on every edit, fires to
+    /// bring the chrome back after a pause in typing.
+    pub editor_writing_idle_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
+
     /// Model-first prose editors (rinch-editor-view), one per prose surface. Stored in
     /// Signals so the (Copy) save/switch closures can grab a clone via `.get()`.
     pub chapter_handle: Signal<EditorHandle>,
@@ -191,6 +202,9 @@ impl BookState {
             chapter_dirty: Signal::new(false),
             note_dirty: Signal::new(false),
             auto_save_timer_id: Signal::new(None),
+
+            editor_writing: Signal::new(false),
+            editor_writing_idle_timer_id: Signal::new(None),
 
             chapter_handle: Signal::new(crate::rinch_backend::create_editor()),
             note_handle: Signal::new(crate::rinch_backend::create_editor()),
