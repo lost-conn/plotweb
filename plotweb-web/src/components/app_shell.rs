@@ -68,10 +68,17 @@ const DESIGN_TOKENS: &str = r#"
   --pw-dur-slow: 320ms;
 
   /* ── Measure ──
-     Prose sits at roughly 68 characters wherever it appears. The reader already
-     does this at 760px; the editor runs the full width of its pane, which is the
-     one number most worth fixing in the passes that follow. */
-  --pw-measure:  34em;
+     Prose sits at roughly 68-73 characters wherever it appears. Measured against
+     real glyph widths (binary-searching how much of a representative prose
+     sentence fits a candidate box, not a flat px/char average) rather than
+     assumed: 34em measured to ~68 characters at 16px in Playwrite DE Grund,
+     which was still narrower than intended once padding and real punctuation
+     were accounted for. 37em measures to ~73 characters at 16px (and ~73 at 17px,
+     since both dimensions scale together) — top of the 65–75 comfortable band.
+     The editor's `.editor-content` is the one consumer so far (its own
+     hardcoded 720px predates this token); the reader still hardcodes 760px and
+     was not touched by this pass. */
+  --pw-measure:  37em;
   --pw-pane-max: 720px;
 
   /* ── Fonts ──

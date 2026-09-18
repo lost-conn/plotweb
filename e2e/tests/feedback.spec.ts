@@ -123,7 +123,9 @@ test("beta reader submits feedback on a selected text range, and it persists", a
   try {
     await reader.goto(`/read/${token}`);
 
-    // Open the chapter from the reader sidebar and wait for its prose to render.
+    // Contents is opened on demand now (no permanent sidebar) — open it from
+    // the header, then pick the chapter and wait for its prose to render.
+    await reader.locator(".reader-topbar .rinch-action-icon").first().click();
     await reader.locator(".reader-chapter-item", { hasText: "Chapter One" }).click();
     await expect(reader.locator("#reader-content")).toContainText(TARGET_PHRASE);
 
@@ -157,13 +159,22 @@ test("beta reader submits feedback on a selected text range, and it persists", a
       })
       .toBe(true);
 
-    // And it shows up in the reader's feedback panel.
-    await expect(reader.locator(".reader-feedback-list .feedback-comment")).toContainText(
-      comment,
-    );
-    await expect(reader.locator(".reader-feedback-list .feedback-quote")).toContainText(
-      TARGET_PHRASE,
-    );
+    // The feedback rail is gone — existing feedback now surfaces as a
+    // `.rd-mark` underline right where the words are. Wrapping is applied
+    // right after a successful submit (`refresh_marks`), no reload needed.
+    const mark = reader.locator("mark.rd-mark", { hasText: TARGET_PHRASE });
+    await expect(mark).toBeVisible();
+
+    // Clicking it opens the popover with the quote and the comment just left.
+    await mark.click();
+    await expect(reader.locator(".feedback-tooltip.visible")).toBeVisible();
+    await expect(reader.locator(".feedback-tooltip-quote")).toContainText(TARGET_PHRASE);
+    await expect(reader.locator(".feedback-tooltip-comment")).toContainText(comment);
+
+    // And it appears under "Your notes" at the foot of Contents.
+    await reader.locator(".feedback-tooltip-actions").getByRole("button", { name: "Close" }).click();
+    await reader.locator(".reader-topbar .rinch-action-icon").first().click();
+    await expect(reader.locator(".reader-note-item")).toContainText(TARGET_PHRASE);
   } finally {
     await readerContext.close();
   }

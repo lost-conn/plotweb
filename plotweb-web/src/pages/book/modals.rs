@@ -1,7 +1,25 @@
-//! The book page's nine modals: restore confirmation, add note, add chapter,
-//! book settings, rename chapter, create/edit beta link, import, and export.
-//! Each is a `rinch::Modal` re-declaring its own `Space + Group + Cancel/Confirm`
-//! footer, matching the rest of this codebase's modal style.
+//! The book page's overlays, tiered by weight (see `design/01-language.html#overlays`).
+//!
+//! Nine `rinch::Modal`s used to live here, each re-declaring its own
+//! `Space + Group + Cancel/Confirm` footer at one uniform volume — a rename
+//! and an import wizard got the same centred dialog treatment. They're now
+//! three tiers:
+//!
+//! - **Tier 1 — in place.** Rename and Add-chapter no longer open anything;
+//!   they edit the chapters-pane row directly (`panes/chapters.rs`).
+//! - **Tier 2 — [`Dialog`](crate::components::dialog::Dialog).** Small,
+//!   centred, reserved for destructive/irreversible confirms: restore a
+//!   version, delete a chapter.
+//! - **Tier 3 — [`Sheet`](crate::components::sheet::Sheet).** A right-hand
+//!   slide-over (bottom sheet under 768px) for long or multi-step work:
+//!   Import, Export, Book settings, Create/Edit beta link.
+//!
+//! Add Note keeps Tier 2's chrome but not its weight-class reasoning — the
+//! task was chrome-only, since Notes as a surface is being rebuilt later.
+//!
+//! Create/Edit beta link were ~95% identical, including duplicated one-off
+//! inline styles; `beta_link_sheet_fields` is now the one body both render,
+//! parametrized on which signal set backs it rather than duplicated per mode.
 
 use rinch::prelude::*;
 use wasm_bindgen::JsCast;
@@ -9,32 +27,112 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{Book, Chapter, CommitInfo, ImportPreviewResponse};
 
 use crate::api;
+use crate::components::dialog::Dialog;
+use crate::components::sheet::Sheet;
 use crate::store::AppStore;
 
 use super::state::BookState;
 use super::BookPane;
 
-/// Render all nine modals. Takes the handful of closures the modals invoke on
-/// submit (chapter/note/beta-link creation and edits, book settings save) —
-/// everything else comes off `state`/`store`.
+/// The max-chapters + pin-version + username fields shared by Create and Edit
+/// beta link — previously duplicated verbatim (including the same hand-rolled
+/// checkbox markup) between the two modals. Takes the signals directly rather
+/// than a value+setter pair per field: every field here is read live inside
+/// reactive closures anyway (`value_fn`/`checked_fn`), so a `Signal` is what
+/// both call sites already have on hand.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn render<AN, AC, SBS, SRC, ABL, UBL>(
+fn beta_link_sheet_fields(
+    __scope: &mut RenderScope,
+    reader_name: Signal<String>,
+    max_chapter_text: Signal<String>,
+    pin_version: Signal<bool>,
+    username: Signal<String>,
+    error: Signal<Option<String>>,
+    max_chapter_input_id: &'static str,
+    onsubmit: impl Fn() + 'static + Copy,
+) -> NodeHandle {
+    rsx! {
+        Fragment {
+            TextInput {
+                label: "Reader Name",
+                placeholder: "e.g. Alice, Book Club, etc.",
+                value_fn: move || reader_name.get(),
+                oninput: move |v: String| reader_name.set(v),
+                onsubmit: onsubmit,
+            }
+            Space { h: "md" }
+            Text { size: "sm", color: "dimmed",
+                "Optionally restrict how many chapters the reader can access:"
+            }
+            Space { h: "xs" }
+            div {
+                style: "display: flex; align-items: center; gap: 8px;",
+                Text { size: "sm", "Max chapters:" }
+                input {
+                    id: max_chapter_input_id,
+                    r#type: "number",
+                    min: "1",
+                    placeholder: "All",
+                    value: {move || max_chapter_text.get()},
+                    oninput: move |v: String| max_chapter_text.set(v),
+                    style: "width: 80px; padding: 4px 8px; border: 1px solid var(--rinch-color-border); border-radius: 4px; background: var(--rinch-color-surface); color: var(--rinch-color-text); font-size: 13px;",
+                }
+            }
+            Space { h: "md" }
+            div {
+                style: "display: flex; align-items: center; gap: 8px; cursor: pointer;",
+                onclick: move || pin_version.update(|v| *v = !*v),
+                div {
+                    style: "width: 20px; height: 20px; border: 1px solid var(--rinch-color-border); border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 14px;",
+                    {move || if pin_version.get() { "\u{2713}" } else { "" }}
+                }
+                Text { size: "sm", "Pin to current version" }
+            }
+            Text { size: "xs", color: "dimmed",
+                "If pinned, the reader sees a snapshot of the book as it is now. Otherwise, they always see the latest version."
+            }
+            Space { h: "md" }
+            TextInput {
+                label: "PlotWeb Username (optional)",
+                placeholder: "Attach to a registered user",
+                value_fn: move || username.get(),
+                oninput: move |v: String| username.set(v),
+            }
+            Text { size: "xs", color: "dimmed",
+                "If set, this user will see the book on their dashboard."
+            }
+            if let Some(ref err) = error.get() {
+                Space { h: "xs" }
+                Text { size: "xs", color: "red", {err.clone()} }
+            }
+        }
+    }
+}
+
+/// Render the book page's overlays: two `Dialog`s (restore, delete-chapter),
+/// one chrome-only `Dialog` (add note), and four `Sheet`s (import, export,
+/// book settings, beta link — the last covering both create and edit).
+///
+/// Takes the handful of closures the overlays invoke on submit — everything
+/// else comes off `state`/`store`. `add_chapter`/`save_rename_chapter` moved
+/// to `panes::chapters` with Tier 1; this only keeps what still opens an
+/// overlay.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn render<AN, SBS, CDC, ABL, UBL>(
     __scope: &mut RenderScope,
     state: BookState,
     store: AppStore,
     book_id: String,
     add_note: AN,
-    add_chapter: AC,
     save_book_settings: SBS,
-    save_rename_chapter: SRC,
+    confirm_delete_chapter: CDC,
     add_beta_link: ABL,
     update_beta_link: UBL,
 ) -> NodeHandle
 where
     AN: Fn() + 'static + Copy,
-    AC: Fn() + 'static + Copy,
     SBS: Fn() + 'static + Copy,
-    SRC: Fn() + 'static + Copy,
+    CDC: Fn() + 'static + Copy,
     ABL: Fn() + 'static + Copy,
     UBL: Fn() + 'static + Copy,
 {
@@ -47,17 +145,14 @@ where
         history_preview_content,
         history_diff,
         active_pane,
+        delete_chapter_target,
         show_note_modal,
         new_note_title,
         new_note_color,
-        show_chapter_modal,
-        new_chapter_title,
         show_book_settings_modal,
         edit_book_title,
         edit_book_desc,
         edit_book_cover,
-        show_rename_chapter_modal,
-        rename_chapter_title,
         show_beta_link_modal,
         new_beta_reader_name,
         new_beta_max_chapter_text,
@@ -85,82 +180,121 @@ where
         export_loading,
         ..
     } = state;
+
+    let submit_new_beta_link = move || {
+        // Parse the max chapter input from its bound signal.
+        match new_beta_max_chapter_text.get().parse::<i64>() {
+            Ok(n) => new_beta_max_chapter.set(Some(n - 1)), // 0-indexed
+            Err(_) => new_beta_max_chapter.set(None),
+        }
+        add_beta_link();
+    };
+
+    let submit_edit_beta_link = move || {
+        match edit_beta_max_chapter_text.get().parse::<i64>() {
+            Ok(n) => edit_beta_max_chapter.set(Some(n - 1)), // 0-indexed
+            Err(_) => edit_beta_max_chapter.set(None),
+        }
+        update_beta_link();
+    };
+
     rsx! {
         Fragment {
-            // Restore confirmation modal
-            Modal {
+            // ── Tier 2 — Dialog: restore a version ──────────────────────
+            Dialog {
                 opened_fn: move || show_restore_confirm.get().is_some(),
                 onclose: move || show_restore_confirm.set(None),
-                title: "Restore Version",
-
-                Text { "Are you sure you want to restore to this version? Your current version will be preserved in history." }
-                Space { h: "md" }
-                Group {
-                    justify: "flex-end",
-                    Button {
-                        variant: "default",
-                        onclick: move || show_restore_confirm.set(None),
-                        "Cancel"
-                    }
-                    Button {
-                        color: "blue",
-                        onclick: move || {
-                            if let Some(oid) = show_restore_confirm.get() {
-                                let bid = bid_signal.get();
-                                show_restore_confirm.set(None);
-                                let bid_book = bid.clone();
-                                let bid_ch = bid.clone();
-                                let bid_rest = bid.clone();
-                                let bid_hist = bid.clone();
-                                api::post::<_, serde_json::Value>(
-                                    &format!("/api/books/{}/history/{}/restore", bid, oid),
-                                    &serde_json::json!({}),
-                                    move |result| {
-                                        if result.is_ok() {
-                                            // Refresh book data
-                                            api::get::<Book>(&format!("/api/books/{}", bid_book), move |book_result| {
-                                                if let Ok(book) = book_result {
-                                                    store.current_book.set(Some(book));
-                                                }
-                                                api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid_ch), move |ch_result| {
-                                                    if let Ok(chapters) = ch_result {
-                                                        // A restore is a fresh REST answer about which
-                                                        // chapters exist, so the projection's snapshot
-                                                        // takes it too — otherwise the next projection
-                                                        // paints the pre-restore list back.
-                                                        crate::local_book::rest_chapters(&bid_rest, |ch| {
-                                                            *ch = chapters.clone()
-                                                        });
-                                                        store.chapters.set(chapters);
-                                                    }
-                                                    // Refresh history
-                                                    api::get::<Vec<CommitInfo>>(&format!("/api/books/{}/history", bid_hist), move |commits_result| {
-                                                        if let Ok(commits) = commits_result {
-                                                            history_commits.set(commits);
-                                                        }
-                                                        history_preview_commit.set(None);
-                                                        history_preview_chapters.set(Vec::new());
-                                                        history_preview_content.set(None);
-                                                        history_diff.set(None);
-                                                        active_pane.set(BookPane::Chapters);
-                                                    });
-                                                });
-                                            });
+                title: "Restore this version?",
+                danger: false,
+                confirm_label: "Restore",
+                onconfirm: move || {
+                    if let Some(oid) = show_restore_confirm.get() {
+                        let bid = bid_signal.get();
+                        show_restore_confirm.set(None);
+                        let bid_book = bid.clone();
+                        let bid_ch = bid.clone();
+                        let bid_rest = bid.clone();
+                        let bid_hist = bid.clone();
+                        api::post::<_, serde_json::Value>(
+                            &format!("/api/books/{}/history/{}/restore", bid, oid),
+                            &serde_json::json!({}),
+                            move |result| {
+                                if result.is_ok() {
+                                    // Refresh book data
+                                    api::get::<Book>(&format!("/api/books/{}", bid_book), move |book_result| {
+                                        if let Ok(book) = book_result {
+                                            store.current_book.set(Some(book));
                                         }
-                                    },
-                                );
-                            }
-                        },
-                        "Restore"
+                                        api::get::<Vec<Chapter>>(&format!("/api/books/{}/chapters", bid_ch), move |ch_result| {
+                                            if let Ok(chapters) = ch_result {
+                                                // A restore is a fresh REST answer about which
+                                                // chapters exist, so the projection's snapshot
+                                                // takes it too — otherwise the next projection
+                                                // paints the pre-restore list back.
+                                                crate::local_book::rest_chapters(&bid_rest, |ch| {
+                                                    *ch = chapters.clone()
+                                                });
+                                                store.chapters.set(chapters);
+                                            }
+                                            // Refresh history
+                                            api::get::<Vec<CommitInfo>>(&format!("/api/books/{}/history", bid_hist), move |commits_result| {
+                                                if let Ok(commits) = commits_result {
+                                                    history_commits.set(commits);
+                                                }
+                                                history_preview_commit.set(None);
+                                                history_preview_chapters.set(Vec::new());
+                                                history_preview_content.set(None);
+                                                history_diff.set(None);
+                                                active_pane.set(BookPane::Chapters);
+                                            });
+                                        });
+                                    });
+                                }
+                            },
+                        );
                     }
+                },
+
+                Text { size: "sm",
+                    "Your current version will be preserved in history."
                 }
             }
 
-            // Add Note Modal
-            Modal {
+            // ── Tier 2 — Dialog: delete a chapter ───────────────────────
+            // Previously had no confirmation at all — one misclick removed a
+            // chapter outright. Matches the dashboard's book-delete confirm:
+            // names the thing, states the word count, "This cannot be undone."
+            Dialog {
+                opened_fn: move || delete_chapter_target.get().is_some(),
+                onclose: move || delete_chapter_target.set(None),
+                title: {move || {
+                    delete_chapter_target.get()
+                        .map(|(_, title, _)| format!("Delete \"{title}\"?"))
+                        .unwrap_or_default()
+                }},
+                danger: true,
+                confirm_label: "Delete",
+                onconfirm: confirm_delete_chapter,
+
+                div {
+                    {move || {
+                        delete_chapter_target.get()
+                            .map(|(_, _, wc)| format!("{} words.", super::panes::chapters::format_word_count_full(wc)))
+                            .unwrap_or_default()
+                    }}
+                }
+                span { class: "pw-dialog-warning", "This cannot be undone." }
+            }
+
+            // ── Tier 2 — Dialog (chrome only): Add Note ─────────────────
+            // Notes as a surface is being rebuilt later — this keeps its
+            // current behaviour and adopts Dialog's chrome, nothing else.
+            Dialog {
                 opened_fn: move || show_note_modal.get(),
                 onclose: move || show_note_modal.set(false),
                 title: "Add Note",
+                confirm_label: "Add",
+                onconfirm: add_note,
 
                 TextInput {
                     label: "Note Title",
@@ -191,51 +325,10 @@ where
                         }
                     }
                 }
-                Space { h: "lg" }
-                Group {
-                    justify: "flex-end",
-                    Button {
-                        variant: "subtle",
-                        onclick: move || show_note_modal.set(false),
-                        "Cancel"
-                    }
-                    Button {
-                        onclick: add_note,
-                        "Add"
-                    }
-                }
             }
 
-            // Add Chapter Modal
-            Modal {
-                opened_fn: move || show_chapter_modal.get(),
-                onclose: move || show_chapter_modal.set(false),
-                title: "Add Chapter",
-
-                TextInput {
-                    label: "Chapter Title",
-                    placeholder: "Enter chapter title",
-                    value_fn: move || new_chapter_title.get(),
-                    oninput: move |v: String| new_chapter_title.set(v),
-                    onsubmit: add_chapter,
-                }
-                Space { h: "lg" }
-                Group {
-                    justify: "flex-end",
-                    Button {
-                        variant: "subtle",
-                        onclick: move || show_chapter_modal.set(false),
-                        "Cancel"
-                    }
-                    Button {
-                        onclick: add_chapter,
-                        "Add"
-                    }
-                }
-            }
-
-            // Book Settings Modal
-            Modal {
+            // ── Tier 3 — Sheet: Book settings ───────────────────────────
+            Sheet {
                 opened_fn: move || show_book_settings_modal.get(),
                 onclose: move || show_book_settings_modal.set(false),
                 title: "Book Settings",
@@ -325,92 +418,22 @@ where
                 }
             }
 
-            // Rename Chapter Modal
-            Modal {
-                opened_fn: move || show_rename_chapter_modal.get(),
-                onclose: move || show_rename_chapter_modal.set(false),
-                title: "Rename Chapter",
-
-                TextInput {
-                    label: "Chapter Title",
-                    placeholder: "Enter chapter title",
-                    value_fn: move || rename_chapter_title.get(),
-                    oninput: move |v: String| rename_chapter_title.set(v),
-                    onsubmit: save_rename_chapter,
-                }
-                Space { h: "lg" }
-                Group {
-                    justify: "flex-end",
-                    Button {
-                        variant: "subtle",
-                        onclick: move || show_rename_chapter_modal.set(false),
-                        "Cancel"
-                    }
-                    Button {
-                        onclick: save_rename_chapter,
-                        "Rename"
-                    }
-                }
-            }
-
-            // Create Beta Link Modal
-            Modal {
+            // ── Tier 3 — Sheet: Create beta link ────────────────────────
+            Sheet {
                 opened_fn: move || show_beta_link_modal.get(),
                 onclose: move || show_beta_link_modal.set(false),
                 title: "Create Beta Reader Link",
 
-                TextInput {
-                    label: "Reader Name",
-                    placeholder: "e.g. Alice, Book Club, etc.",
-                    value_fn: move || new_beta_reader_name.get(),
-                    oninput: move |v: String| new_beta_reader_name.set(v),
-                    onsubmit: add_beta_link,
-                }
-                Space { h: "md" }
-                Text { size: "sm", color: "dimmed",
-                    "Optionally restrict how many chapters the reader can access:"
-                }
-                Space { h: "xs" }
-                div {
-                    style: "display: flex; align-items: center; gap: 8px;",
-                    Text { size: "sm", "Max chapters:" }
-                    input {
-                        id: "beta-max-chapter-input",
-                        r#type: "number",
-                        min: "1",
-                        placeholder: "All",
-                        value: {move || new_beta_max_chapter_text.get()},
-                        oninput: move |v: String| new_beta_max_chapter_text.set(v),
-                        style: "width: 80px; padding: 4px 8px; border: 1px solid var(--rinch-color-border); border-radius: 4px; background: var(--rinch-color-surface); color: var(--rinch-color-text); font-size: 13px;",
-                    }
-                }
-                Space { h: "md" }
-                div {
-                    style: "display: flex; align-items: center; gap: 8px; cursor: pointer;",
-                    onclick: move || new_beta_pin_version.update(|v| *v = !*v),
-                    div {
-                        style: "width: 20px; height: 20px; border: 1px solid var(--rinch-color-border); border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 14px;",
-                        {move || if new_beta_pin_version.get() { "\u{2713}" } else { "" }}
-                    }
-                    Text { size: "sm", "Pin to current version" }
-                }
-                Text { size: "xs", color: "dimmed",
-                    "If pinned, the reader sees a snapshot of the book as it is now. Otherwise, they always see the latest version."
-                }
-                Space { h: "md" }
-                TextInput {
-                    label: "PlotWeb Username (optional)",
-                    placeholder: "Attach to a registered user",
-                    value_fn: move || new_beta_username.get(),
-                    oninput: move |v: String| new_beta_username.set(v),
-                }
-                Text { size: "xs", color: "dimmed",
-                    "If set, this user will see the book on their dashboard."
-                }
-                if let Some(ref err) = beta_link_error.get() {
-                    Space { h: "xs" }
-                    Text { size: "xs", color: "red", {err.clone()} }
-                }
+                {beta_link_sheet_fields(
+                    __scope,
+                    new_beta_reader_name,
+                    new_beta_max_chapter_text,
+                    new_beta_pin_version,
+                    new_beta_username,
+                    beta_link_error,
+                    "beta-max-chapter-input",
+                    submit_new_beta_link,
+                )}
                 Space { h: "lg" }
                 Group {
                     justify: "flex-end",
@@ -420,77 +443,32 @@ where
                         "Cancel"
                     }
                     Button {
-                        onclick: move || {
-                            // Parse the max chapter input from its bound signal
-                            match new_beta_max_chapter_text.get().parse::<i64>() {
-                                Ok(n) => new_beta_max_chapter.set(Some(n - 1)), // 0-indexed
-                                Err(_) => new_beta_max_chapter.set(None),
-                            }
-                            add_beta_link();
-                        },
+                        onclick: submit_new_beta_link,
                         "Create"
                     }
                 }
             }
 
-            // Edit Beta Link Modal
-            Modal {
+            // ── Tier 3 — Sheet: Edit beta link ───────────────────────────
+            // Same body as Create (`beta_link_sheet_fields`), bound to the
+            // `edit_beta_*` signal set instead of `new_beta_*` — this and the
+            // sheet above were ~95% identical, including duplicated one-off
+            // inline styles, before that helper existed.
+            Sheet {
                 opened_fn: move || editing_beta_link.get().is_some(),
                 onclose: move || editing_beta_link.set(None),
                 title: "Edit Beta Reader Link",
 
-                TextInput {
-                    label: "Reader Name",
-                    placeholder: "e.g. Alice, Book Club, etc.",
-                    value_fn: move || edit_beta_reader_name.get(),
-                    oninput: move |v: String| edit_beta_reader_name.set(v),
-                    onsubmit: update_beta_link,
-                }
-                Space { h: "md" }
-                Text { size: "sm", color: "dimmed",
-                    "Restrict how many chapters the reader can access (leave empty for all):"
-                }
-                Space { h: "xs" }
-                div {
-                    style: "display: flex; align-items: center; gap: 8px;",
-                    Text { size: "sm", "Max chapters:" }
-                    input {
-                        id: "beta-edit-max-chapter-input",
-                        r#type: "number",
-                        min: "1",
-                        placeholder: "All",
-                        value: {move || edit_beta_max_chapter_text.get()},
-                        oninput: move |v: String| edit_beta_max_chapter_text.set(v),
-                        style: "width: 80px; padding: 4px 8px; border: 1px solid var(--rinch-color-border); border-radius: 4px; background: var(--rinch-color-surface); color: var(--rinch-color-text); font-size: 13px;",
-                    }
-                }
-                Space { h: "md" }
-                div {
-                    style: "display: flex; align-items: center; gap: 8px; cursor: pointer;",
-                    onclick: move || edit_beta_pinned.update(|v| *v = !*v),
-                    div {
-                        style: "width: 20px; height: 20px; border: 1px solid var(--rinch-color-border); border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 14px;",
-                        {move || if edit_beta_pinned.get() { "\u{2713}" } else { "" }}
-                    }
-                    Text { size: "sm", "Pin to current version" }
-                }
-                Text { size: "xs", color: "dimmed",
-                    "If pinned, the reader sees a snapshot. Unpin to show the latest version."
-                }
-                Space { h: "md" }
-                TextInput {
-                    label: "PlotWeb Username (optional)",
-                    placeholder: "Attach to a registered user",
-                    value_fn: move || edit_beta_username.get(),
-                    oninput: move |v: String| edit_beta_username.set(v),
-                }
-                Text { size: "xs", color: "dimmed",
-                    "If set, this user will see the book on their dashboard. Clear to detach."
-                }
-                if let Some(ref err) = beta_link_error.get() {
-                    Space { h: "xs" }
-                    Text { size: "xs", color: "red", {err.clone()} }
-                }
+                {beta_link_sheet_fields(
+                    __scope,
+                    edit_beta_reader_name,
+                    edit_beta_max_chapter_text,
+                    edit_beta_pinned,
+                    edit_beta_username,
+                    beta_link_error,
+                    "beta-edit-max-chapter-input",
+                    submit_edit_beta_link,
+                )}
                 Space { h: "lg" }
                 Group {
                     justify: "flex-end",
@@ -500,21 +478,14 @@ where
                         "Cancel"
                     }
                     Button {
-                        onclick: move || {
-                            // Parse the max chapter input from its bound signal
-                            match edit_beta_max_chapter_text.get().parse::<i64>() {
-                                Ok(n) => edit_beta_max_chapter.set(Some(n - 1)), // 0-indexed
-                                Err(_) => edit_beta_max_chapter.set(None),
-                            }
-                            update_beta_link();
-                        },
+                        onclick: submit_edit_beta_link,
                         "Save"
                     }
                 }
             }
 
-            // Import Manuscript Modal
-            Modal {
+            // ── Tier 3 — Sheet: Import manuscript ───────────────────────
+            Sheet {
                 opened_fn: move || show_import_modal.get(),
                 onclose: move || {
                     show_import_modal.set(false);
@@ -679,8 +650,8 @@ where
                 }
             }
 
-            // Export Manuscript Modal
-            Modal {
+            // ── Tier 3 — Sheet: Export manuscript ───────────────────────
+            Sheet {
                 opened_fn: move || show_export_modal.get(),
                 onclose: move || {
                     show_export_modal.set(false);

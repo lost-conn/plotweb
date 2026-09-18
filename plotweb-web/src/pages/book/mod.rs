@@ -11,6 +11,8 @@ use plotweb_common::{
 };
 
 use crate::api;
+use crate::components::pane_header::PANE_HEADER_CSS;
+use crate::components::section_header::{SectionHeader, SECTION_HEADER_CSS};
 use crate::fonts;
 use crate::pages::editor_utils;
 use crate::router;
@@ -87,15 +89,16 @@ pub fn book_page(book_id: String) -> NodeHandle {
         chapter_dirty,
         note_dirty,
         auto_save_timer_id,
+        editor_writing,
+        editor_writing_idle_timer_id,
         chapter_handle,
         note_handle,
         bid_signal,
-        show_chapter_modal,
-        new_chapter_title,
-        show_rename_chapter_modal,
-        rename_chapter_id,
-        rename_chapter_title,
+        editing_chapter_id,
+        editing_chapter_title,
+        pending_new_chapter,
         chapter_title_save_timer_id,
+        delete_chapter_target,
         font_settings,
         beta_links,
         beta_feedback,
@@ -139,8 +142,46 @@ pub fn book_page(book_id: String) -> NodeHandle {
         note_handle.get().set_dark_mode(dark);
     });
 
+    // Whether the chapter currently open in the editor has any feedback — the
+    // mobile hamburger bar's message-circle toggle only makes sense to show when
+    // there's something for it to open. (The desktop editor topbar has its own
+    // copy of this same check — see `current_chapter_feedback` in
+    // `panes::editor::render` — because that one also needs the filtered list
+    // itself, not just whether it's non-empty.)
+    let current_chapter_has_feedback = move || {
+        match active_pane.get() {
+            BookPane::Editor(ref cid) => beta_feedback.get().iter().any(|f| f.chapter_id == *cid),
+            _ => false,
+        }
+    };
+
     PAGE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     let page_gen = PAGE_GEN.with(|g| g.get());
+
+    // Return early unless this particular mount of the book page is still live.
+    //
+    // Deferred work — debounced saves, the writing-idle timer, in-flight fetch
+    // callbacks — can outlive the scope that owns the signals it touches, and
+    // `Signal::get()` *panics* on a freed slot (`set`/`update` merely warn). Two
+    // different things can make a callback stale, and each guard alone lets the
+    // other through:
+    //
+    // * `PAGE_GEN` catches a *remount of this same page* — opening another book
+    //   bumps the counter while the old timers are still armed. It cannot catch
+    //   navigation *away*, because leaving for the reader or the dashboard never
+    //   re-runs this setup and so never bumps it.
+    // * `is_alive` catches *scope disposal*, which is exactly the cross-page
+    //   case: the signals are freed even though the generation still matches.
+    //
+    // `active_pane` is the canary — every signal here belongs to the same scope,
+    // so if it is gone they all are.
+    macro_rules! bail_if_stale {
+        () => {
+            if PAGE_GEN.with(|g| g.get()) != page_gen || !active_pane.is_alive() {
+                return;
+            }
+        };
+    }
 
     // Trigger font catalog fetch
     fonts::fetch_font_catalog();
@@ -253,9 +294,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // ── Save helper for the editor ──────────────────────────────
     let save_content = move |chapter_id_to_save: String| {
         // Bail if this page instance is no longer current (user navigated away and back)
-        if PAGE_GEN.with(|g| g.get()) != page_gen {
-            return;
-        }
+        bail_if_stale!();
         // Only save if this chapter's content is the one currently loaded in the
         // editor model — otherwise the model still holds a previous chapter and we'd
         // overwrite the wrong one.
@@ -306,7 +345,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             _ => return,
         };
         auto_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(3000, move || {
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            bail_if_stale!();
             // Recompute the word count from the model (debounced, not per-keystroke).
             editor_word_count.set(editor_utils::editor_word_count(&chapter_handle.get()));
             if let BookPane::Editor(ref current_cid) = active_pane.get() {
@@ -317,40 +356,96 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }))));
     };
 
-    // ── Set up Ctrl+S and auto-save (once, on mount) ────────────
+    // ── Chrome collapse while typing ─────────────────────────────
+    // Sidebar, editor header, footer and feedback rail fade (CSS opacity +
+    // `pointer-events: none` on `editor_writing` — see EDITOR_CSS) while the
+    // author is actively typing, and return on pointer move, Escape, or a short
+    // idle pause. Driven off real edits (`EditorHandle::on_change`), not DOM
+    // `keydown`: `#editor-main` is rinch's own editor-view, not a
+    // `contenteditable`, so there is no native `input`/`keydown` to hang this on
+    // at the DOM level the way the reference mockup does.
+    let stop_writing = move || {
+        editor_writing.set(false);
+        if let Some(h) = editor_writing_idle_timer_id.get() {
+            rinch_core::clear_timeout(h);
+            editor_writing_idle_timer_id.set(None);
+        }
+    };
+    let start_writing = move || {
+        editor_writing.set(true);
+        if let Some(h) = editor_writing_idle_timer_id.get() {
+            rinch_core::clear_timeout(h);
+        }
+        editor_writing_idle_timer_id.set(Some(rinch_core::reactive::unowned(move || rinch_core::set_timeout(2500, move || {
+            bail_if_stale!();
+            editor_writing.set(false);
+        }))));
+    };
+
+    // ── Set up Ctrl+S, Escape-to-return, and auto-save (once, on mount) ──
     if let Some(window) = crate::platform::window() {
-        // Ctrl+S — immediate save of the current chapter.
+        // Ctrl+S — immediate save of the current chapter. Escape — bring the
+        // collapsed chrome back immediately rather than waiting for the idle timer.
+        // Both listeners below are `forget()`-ed, so they stay bound to `window`
+        // for the life of the tab — including after this page's scope is gone.
+        // Every signal they touch is freed at that point and `Signal::get()`
+        // panics on a freed slot, so each one has to check first. The mousemove
+        // handler is the sharp edge: it runs on *any* pointer movement, so a
+        // single unguarded read takes the whole WASM instance down the moment
+        // the reader moves their mouse on the next page.
         let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+            bail_if_stale!();
             if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
                 event.prevent_default();
                 if let BookPane::Editor(ref cid) = active_pane.get() {
                     save_content(cid.clone());
                 }
+            } else if event.key() == "Escape" {
+                stop_writing();
             }
         }) as Box<dyn FnMut(_)>);
         window.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
         keydown.forget();
+
+        // Pointer move — also brings the chrome back (mirrors the reference
+        // mockup: move the mouse, chrome returns). Only acts while collapsed, so
+        // this doesn't fight the idle timer on every idle mousemove.
+        let mousemove = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
+            bail_if_stale!();
+            if editor_writing.get() {
+                stop_writing();
+            }
+        }) as Box<dyn FnMut(_)>);
+        window.add_event_listener_with_callback("mousemove", mousemove.as_ref().unchecked_ref()).ok();
+        mousemove.forget();
     }
 
-    // Auto-save on edit. Cross-platform: the editor notifies us after any local edit
-    // (typing/paste/IME/commands), and deliberately not for selection-only changes or
-    // for `load_doc`, so opening a chapter can't re-trigger a save. Registered outside
-    // the `window` guard above so it runs on native too. Gate on the chapter editor
-    // being active — the note editor has its own hook.
+    // Auto-save on edit, and mark the editor "writing" so the chrome collapses.
+    // Cross-platform: the editor notifies us after any local edit (typing/paste/
+    // IME/commands), and deliberately not for selection-only changes or for
+    // `load_doc`, so opening a chapter can't re-trigger a save or a collapse.
+    // Registered outside the `window` guard above so the autosave half runs on
+    // native too (the collapse itself is a web-only visual affordance — native
+    // has no mouse-leaves-then-returns chrome to hide).
     chapter_handle.get().on_change(move || {
-        if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+        bail_if_stale!();
         if matches!(active_pane.get(), BookPane::Editor(_)) {
             schedule_chapter_autosave();
+            start_writing();
         }
     });
 
     // ── Chapter actions ─────────────────────────────────────────
-    let add_chapter = move || {
-        let title = new_chapter_title.get();
-        if title.trim().is_empty() {
+    // Tier 1 (design/01-language.html#overlays): "Add chapter" appends an
+    // empty row with focus already in its title field rather than opening a
+    // dialog to ask for one. `title` comes off `editing_chapter_title`, the
+    // same draft signal the inline-rename row uses — see `panes::chapters`.
+    let add_chapter = move |title: String| {
+        let title = title.trim().to_string();
+        pending_new_chapter.set(false);
+        if title.is_empty() {
             return;
         }
-        show_chapter_modal.set(false);
         let bid = bid_signal.get();
         let bid_sync = bid.clone();
         let req = CreateChapterRequest { title };
@@ -408,16 +503,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
         );
     };
 
-    // ── Chapter rename save ───────────────────────────────────────
-    let save_rename_chapter = move || {
-        let title = rename_chapter_title.get();
-        if title.trim().is_empty() {
+    // ── Chapter rename save (Tier 1 — inline row, no overlay) ─────
+    let save_rename_chapter = move |cid: String, title: String| {
+        editing_chapter_id.set(None);
+        let title = title.trim().to_string();
+        if title.is_empty() {
             return;
         }
-        show_rename_chapter_modal.set(false);
         let bid = bid_signal.get();
         let bid_sync = bid.clone();
-        let cid = rename_chapter_id.get();
         let req = UpdateChapterRequest {
             title: Some(title.clone()),
             content: None,
@@ -459,7 +553,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         };
         chapter_title_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(1000, move || {
             // Bail if this page instance is stale (user navigated away and back)
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            bail_if_stale!();
             if let BookPane::Editor(ref current_cid) = active_pane.get() {
                 if *current_cid != captured_cid { return; }
             } else { return; }
@@ -487,92 +581,138 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }))));
     };
 
-    let move_chapter = move |chapter_id: String, direction: i32| {
+    // Drag-to-reorder: move `dragged_id` to sit at `target_index` in the list
+    // (post-removal indexing, i.e. the index it should occupy once it's pulled
+    // out of its old slot). Same local-first sequencing the old arrow-key move
+    // used — sync the local doc first, then hold the DOM-visible move and the
+    // REST PUT until that write has settled — so a drag can't race a reload.
+    let reorder_chapter = move |dragged_id: String, target_index: usize| {
+        let mut chapters = store.chapters.get();
+        let Some(from) = chapters.iter().position(|c| c.id == dragged_id) else {
+            return;
+        };
+        let target_index = target_index.min(chapters.len().saturating_sub(1));
+        if from == target_index {
+            return;
+        }
+        let chapter = chapters.remove(from);
+        chapters.insert(target_index, chapter);
+
+        let bid = bid_signal.get();
+        crate::local_book::sync_chapters(&bid, &chapters);
+
+        let ids: Vec<String> = chapters.iter().map(|c| c.id.clone()).collect();
+        let bid_put = bid.clone();
+        let moved = dragged_id.clone();
+        crate::local_book::on_settled(&bid, move || {
+            // Re-apply the move to whatever the list holds *now* rather than
+            // writing back the copy captured before the wait — a projection
+            // that lands during the wait must not be clobbered by a stale one.
+            store.chapters.update(|chapters| {
+                let Some(from) = chapters.iter().position(|c| c.id == moved) else {
+                    return;
+                };
+                let target_index = target_index.min(chapters.len().saturating_sub(1));
+                if from != target_index {
+                    let chapter = chapters.remove(from);
+                    chapters.insert(target_index, chapter);
+                }
+            });
+            let req = ReorderChaptersRequest { chapter_ids: ids };
+            api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid_put), &req, move |_result| {});
+        });
+    };
+
+    // Tier 2 (design/01-language.html#overlays): deleting a chapter had no
+    // confirmation at all before this stage — one misclick removed a chapter
+    // outright. `request_delete_chapter` opens the confirm `Dialog`;
+    // `confirm_delete_chapter` is what its "Delete" button actually runs,
+    // mirroring the dashboard's book-delete confirm (`pages/dashboard.rs`).
+    let request_delete_chapter = move |chapter_id: String, title: String, word_count: u64| {
         move || {
-            let mut chapters = store.chapters.get();
-            let Some(idx) = chapters.iter().position(|c| c.id == chapter_id) else {
-                return;
-            };
-            let new_idx = idx as i32 + direction;
-            if new_idx < 0 || (new_idx as usize) >= chapters.len() {
+            delete_chapter_target.set(Some((chapter_id.clone(), title.clone(), word_count)));
+        }
+    };
+
+    let confirm_delete_chapter = move || {
+        let Some((cid, _title, _wc)) = delete_chapter_target.get() else {
+            return;
+        };
+        delete_chapter_target.set(None);
+        let bid = bid_signal.get();
+        let bid_sync = bid.clone();
+        api::delete_req::<serde_json::Value>(
+            &format!("/api/books/{}/chapters/{}", bid, cid),
+            move |result| {
+                if result.is_ok() {
+                    if active_pane.get() == BookPane::Editor(cid.clone()) {
+                        active_pane.set(BookPane::Chapters);
+                    }
+                    let cid_visible = cid.clone();
+                    let mut chapters = store.chapters.get();
+                    chapters.retain(|c| c.id != cid);
+                    // Before the document write, so no projection in between can
+                    // find the chapter still listed here and put it back.
+                    crate::local_book::rest_chapters(&bid_sync, |ch| {
+                        ch.retain(|c| c.id != cid)
+                    });
+                    crate::local_book::sync_chapters(&bid_sync, &chapters);
+                    // Same reload race as `move_chapter`: don't flip the
+                    // DOM-visible list until the local-doc write above lands.
+                    crate::local_book::on_settled(&bid_sync, move || {
+                        // Removal by id, for the same reason as `move_chapter`:
+                        // a pre-wait snapshot would clobber anything that landed
+                        // during the wait.
+                        store.chapters.update(|ch| ch.retain(|c| c.id != cid_visible));
+                    });
+                }
+            },
+        );
+    };
+
+    // Synchronously flush a pending (debounced) chapter autosave before leaving
+    // the editor pane. Without this, navigating away via the back-arrow or any
+    // sidebar button discards edits made in the last ~3s, because the pending
+    // debounce timer later sees active_pane != Editor and skips the save.
+    let flush_editor_if_active = move || {
+        if let BookPane::Editor(ref current_id) = active_pane.get() {
+            let current_id = current_id.clone();
+            // Clear the pending debounce timer so it doesn't fire a redundant/stale save.
+            if let Some(h) = auto_save_timer_id.get() {
+                rinch_core::clear_timeout(h);
+                auto_save_timer_id.set(None);
+            }
+            // Don't flush while the chapter is still loading: the model holds the
+            // previous chapter's content, so saving it to `current_id` would overwrite
+            // this chapter with another chapter's content.
+            if loaded_chapter_id.get().as_deref() != Some(current_id.as_str()) {
                 return;
             }
-            chapters.swap(idx, new_idx as usize);
-
             let bid = bid_signal.get();
-            crate::local_book::sync_chapters(&bid, &chapters);
-
-            // Hold the DOM-visible swap (and the REST PUT) until the local-doc
-            // write above has actually landed. Flipping `store.chapters` first
-            // would let an immediate reload race that write — it's a real
-            // IndexedDB round trip, not same-tick — and losing that race means
-            // the reload's local-doc-wins projection silently reverts this
-            // reorder even though the REST call below reliably lands. See
-            // `local_book::on_settled`.
-            let ids: Vec<String> = chapters.iter().map(|c| c.id.clone()).collect();
-            let bid_put = bid.clone();
-            let moved = chapter_id.clone();
-            crate::local_book::on_settled(&bid, move || {
-                // Re-apply the swap to whatever the list holds *now* rather than
-                // writing back the copy captured before the wait. A projection can
-                // land during that window — a sync integration re-projecting the
-                // book doc — and putting a pre-wait snapshot over it would revert
-                // it, which is the failure this whole change exists to stop.
-                store.chapters.update(|chapters| {
-                    let Some(idx) = chapters.iter().position(|c| c.id == moved) else {
-                        return;
-                    };
-                    let new_idx = idx as i32 + direction;
-                    if new_idx >= 0 && (new_idx as usize) < chapters.len() {
-                        chapters.swap(idx, new_idx as usize);
-                    }
-                });
-                let req = ReorderChaptersRequest { chapter_ids: ids };
-                api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid_put), &req, move |_result| {});
-            });
+            if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
+                save_status.set("saving");
+                panes::chapters::save_chapter_body(
+                    format!("/api/books/{}/chapters/{}", bid, current_id),
+                    content,
+                    !sends_body_content(),
+                    save_status,
+                    save_alert,
+                );
+            }
         }
     };
 
-    let delete_chapter = move |chapter_id: String| {
-        move || {
-            let cid = chapter_id.clone();
-            let bid = bid_signal.get();
-            let bid_sync = bid.clone();
-            api::delete_req::<serde_json::Value>(
-                &format!("/api/books/{}/chapters/{}", bid, cid),
-                move |result| {
-                    if result.is_ok() {
-                        if active_pane.get() == BookPane::Editor(cid.clone()) {
-                            active_pane.set(BookPane::Chapters);
-                        }
-                        let cid_visible = cid.clone();
-                        let mut chapters = store.chapters.get();
-                        chapters.retain(|c| c.id != cid);
-                        // Before the document write, so no projection in between can
-                        // find the chapter still listed here and put it back.
-                        crate::local_book::rest_chapters(&bid_sync, |ch| {
-                            ch.retain(|c| c.id != cid)
-                        });
-                        crate::local_book::sync_chapters(&bid_sync, &chapters);
-                        // Same reload race as `move_chapter`: don't flip the
-                        // DOM-visible list until the local-doc write above lands.
-                        crate::local_book::on_settled(&bid_sync, move || {
-                            // Removal by id, for the same reason as `move_chapter`:
-                            // a pre-wait snapshot would clobber anything that landed
-                            // during the wait.
-                            store.chapters.update(|ch| ch.retain(|c| c.id != cid_visible));
-                        });
-                    }
-                },
-            );
-        }
-    };
-
+    // Leaving the book page entirely has to flush for the same reason switching
+    // panes does — these three were the only exits that didn't. An edit made in
+    // the last ~3s was silently discarded, and the still-armed debounce timer
+    // went on to read signals belonging to the disposed page scope.
     let go_dashboard = move || {
+        flush_editor_if_active();
         router::navigate(Route::Dashboard);
     };
 
     let logout = move || {
+        flush_editor_if_active();
         api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({}), move |_result| {
             store.current_user.set(None);
             router::navigate(Route::Login);
@@ -827,37 +967,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }
     };
 
-    // Synchronously flush a pending (debounced) chapter autosave before leaving
-    // the editor pane. Without this, navigating away via the back-arrow or any
-    // sidebar button discards edits made in the last ~3s, because the pending
-    // debounce timer later sees active_pane != Editor and skips the save.
-    let flush_editor_if_active = move || {
-        if let BookPane::Editor(ref current_id) = active_pane.get() {
-            let current_id = current_id.clone();
-            // Clear the pending debounce timer so it doesn't fire a redundant/stale save.
-            if let Some(h) = auto_save_timer_id.get() {
-                rinch_core::clear_timeout(h);
-                auto_save_timer_id.set(None);
-            }
-            // Don't flush while the chapter is still loading: the model holds the
-            // previous chapter's content, so saving it to `current_id` would overwrite
-            // this chapter with another chapter's content.
-            if loaded_chapter_id.get().as_deref() != Some(current_id.as_str()) {
-                return;
-            }
-            let bid = bid_signal.get();
-            if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
-                save_status.set("saving");
-                panes::chapters::save_chapter_body(
-                    format!("/api/books/{}/chapters/{}", bid, current_id),
-                    content,
-                    !sends_body_content(),
-                    save_status,
-                    save_alert,
-                );
-            }
-        }
-    };
 
     // ── Sidebar click handlers ──────────────────────────────────
     let _open_chapters_pane = move || {
@@ -994,7 +1103,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // `EditorHandle::on_change` hook, gated on the note editor being active. (Toolbar
     // formatting and color changes call `schedule_note_save` directly.)
     note_handle.get().on_change(move || {
-        if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+        bail_if_stale!();
         if matches!(active_pane.get(), BookPane::NoteEditor(_)) {
             schedule_note_save();
         }
@@ -1025,6 +1134,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
             style { {css::TYPOGRAPHY_CSS} }
             style { {css::NOTES_CSS} }
             style { {css::BOOK_WORKSPACE_CSS} }
+            style { {SECTION_HEADER_CSS} }
+            style { {PANE_HEADER_CSS} }
+            style { {crate::components::dialog::DIALOG_CSS} }
+            style { {crate::components::sheet::SHEET_CSS} }
             style { {editor_utils::EDITOR_CSS} }
             // Editor font styles
             style {
@@ -1080,7 +1193,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 }}
             }
 
-            div { class: "book-workspace",
+            div {
+                class: {move || if editor_writing.get() { "book-workspace is-writing" } else { "book-workspace" }},
                 // ── Backdrop for mobile sidebar ──
                 div {
                     class: {move || if store.sidebar_open.get() { "sidebar-backdrop open" } else { "sidebar-backdrop" }},
@@ -1091,53 +1205,60 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 div {
                     class: {move || if store.sidebar_open.get() { "book-sidebar open" } else { "book-sidebar" }},
 
-                    // Book title
-                    div { class: "book-sidebar-title",
-                        span {
-                            style: "flex: 1; overflow: hidden; text-overflow: ellipsis;",
-                            {move || store.current_book.get().map(|b| b.title.clone()).unwrap_or_default()}
-                        }
-                        ActionIcon {
-                            variant: "subtle",
-                            size: "xs",
-                            onclick: move || {
-                                let book = store.current_book.get();
-                                if let Some(b) = book {
-                                    edit_book_title.set(b.title.clone());
-                                    edit_book_desc.set(b.description.clone());
-                                    edit_book_cover.set(b.cover_image.clone());
-                                    show_book_settings_modal.set(true);
-                                }
-                            },
-                            {render_tabler_icon(__scope, TablerIcon::Pencil, TablerIconStyle::Outline)}
-                        }
-                    }
-                    Space { h: "sm" }
-
-                    div { class: "book-sidebar-nav",
-                        // Chapters section header
+                    // Book header — mini jacket, title, quiet word-count line.
+                    // Content up, tools down (#chapters mockup): this replaces the
+                    // old flat title-plus-edit-pencil row with the object the rest
+                    // of the app treats a book as (see `components/book_jacket.rs`).
+                    div {
+                        class: "ws-book",
+                        onclick: move || {
+                            let book = store.current_book.get();
+                            if let Some(b) = book {
+                                edit_book_title.set(b.title.clone());
+                                edit_book_desc.set(b.description.clone());
+                                edit_book_cover.set(b.cover_image.clone());
+                                show_book_settings_modal.set(true);
+                            }
+                        },
+                        div { class: "ws-book-mini" }
                         div {
-                            class: {move || if matches!(active_pane.get(), BookPane::Chapters) { "sidebar-section-header active" } else { "sidebar-section-header" }},
+                            style: "min-width: 0; flex: 1;",
                             div {
-                                style: "display: flex; align-items: center; cursor: pointer;",
-                                onclick: move || chapters_collapsed.update(|c| *c = !*c),
-                                span {
-                                    style: "margin-right: 6px; display: inline-flex; align-items: center; font-size: 10px; line-height: 1; position: relative; top: -1px;",
-                                    {move || if chapters_collapsed.get() { "\u{25b8}" } else { "\u{25be}" }}
-                                }
-                                "Chapters"
+                                class: "ws-book-title",
+                                {move || store.current_book.get().map(|b| b.title.clone()).unwrap_or_default()}
                             }
                             div {
-                                style: "display: flex; align-items: center; gap: 2px;",
-                                ActionIcon {
-                                    variant: "subtle",
-                                    size: "xs",
-                                    onclick: move || {
-                                        new_chapter_title.set(String::new());
-                                        show_chapter_modal.set(true);
-                                    },
-                                    {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
-                                }
+                                class: "ws-book-words",
+                                {move || {
+                                    let words: u64 = store.chapters.get().iter().map(|c| c.word_count).sum();
+                                    format!("{} words", panes::chapters::format_word_count_full(words))
+                                }}
+                            }
+                        }
+                    }
+
+                    div { class: "book-sidebar-nav",
+                        SectionHeader {
+                            label: "Manuscript",
+                            count: {move || Some(store.chapters.get().len() as i64)},
+                            active: {move || matches!(active_pane.get(), BookPane::Chapters)},
+                            span {
+                                style: "display: inline-flex; align-items: center; margin-right: 2px;",
+                                onclick: move || chapters_collapsed.update(|c| *c = !*c),
+                                {move || if chapters_collapsed.get() { "\u{25b8}" } else { "\u{25be}" }}
+                            }
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "xs",
+                                onclick: move || {
+                                    flush_editor_if_active();
+                                    active_pane.set(BookPane::Chapters);
+                                    store.sidebar_open.set(false);
+                                    editing_chapter_id.set(None);
+                                    editing_chapter_title.set(String::new());
+                                    pending_new_chapter.set(true);
+                                },
+                                {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
                             }
                         }
 
@@ -1150,105 +1271,94 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     __scope,
                                     chapter.id.clone(),
                                     chapter.title.clone(),
+                                    chapter.word_count,
                                     active_pane,
                                     open_chapter,
-                                    move_chapter,
                                 )}
                             }
                         }
 
-                        // Notes section header
-                        div {
-                            class: {move || if matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_)) { "sidebar-section-header active" } else { "sidebar-section-header" }},
-                            div {
-                                style: "display: flex; align-items: center; cursor: pointer; flex: 1;",
-                                onclick: open_notes_pane,
-                                "Notes"
+                        SectionHeader {
+                            label: "Notes",
+                            count: {move || Some(store.notes.get().len() as i64)},
+                            active: {move || matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_))},
+                            style: "margin-top: var(--pw-space-sm);",
+                            onclick: open_notes_pane,
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "xs",
+                                onclick: move || {
+                                    new_note_title.set(String::new());
+                                    new_note_parent_id.set(None);
+                                    new_note_color.set("teal".to_string());
+                                    show_note_modal.set(true);
+                                },
+                                {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
                             }
-                            div {
-                                style: "display: flex; align-items: center; gap: 2px;",
-                                ActionIcon {
-                                    variant: "subtle",
-                                    size: "xs",
-                                    onclick: move || {
-                                        new_note_title.set(String::new());
-                                        new_note_parent_id.set(None);
-                                        new_note_color.set("teal".to_string());
-                                        show_note_modal.set(true);
-                                    },
-                                    {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
-                                }
-                            }
-                        }
-
-                        // Typography section header
-                        div {
-                            class: {move || if matches!(active_pane.get(), BookPane::Typography) { "sidebar-section-header active" } else { "sidebar-section-header" }},
-                            onclick: open_typography_pane,
-                            "Typography"
-                        }
-
-                        // Beta Readers section header
-                        div {
-                            class: {move || if matches!(active_pane.get(), BookPane::BetaReaders) { "sidebar-section-header active" } else { "sidebar-section-header" }},
-                            onclick: open_beta_pane,
-                            div {
-                                style: "display: flex; align-items: center; justify-content: space-between; width: 100%;",
-                                "Beta Readers"
-                                if !beta_links.get().is_empty() {
-                                    Badge {
-                                        variant: "light",
-                                        size: "xs",
-                                        {move || format!("{}", beta_links.get().len())}
-                                    }
-                                }
-                            }
-                        }
-
-                        // History section header
-                        div {
-                            class: {move || if matches!(active_pane.get(), BookPane::History) { "sidebar-section-header active" } else { "sidebar-section-header" }},
-                            onclick: open_history_pane,
-                            "History"
                         }
                     }
 
-                    // Footer
-                    div { class: "book-sidebar-footer",
-                        Button {
-                            variant: "subtle",
-                            size: "xs",
-                            onclick: move || router::navigate(Route::ReaderPreview(bid_signal.get())),
+                    // Tools footer strip — Typography / Beta readers / History /
+                    // Preview, demoted from equal-weight section headers to a row
+                    // of icon buttons: these open roughly once a week, unlike the
+                    // manuscript above. Sits above the theme/dashboard/logout row.
+                    div { class: "ws-tools",
+                        div {
+                            class: "tool",
+                            data-tip: "Typography",
+                            onclick: open_typography_pane,
+                            {render_tabler_icon(__scope, TablerIcon::Typography, TablerIconStyle::Outline)}
+                        }
+                        div {
+                            class: "tool",
+                            data-tip: "Beta readers",
+                            onclick: open_beta_pane,
+                            {render_tabler_icon(__scope, TablerIcon::Users, TablerIconStyle::Outline)}
+                            if !beta_links.get().is_empty() {
+                                span { class: "badge", {move || format!("{}", beta_links.get().len())} }
+                            }
+                        }
+                        div {
+                            class: "tool",
+                            data-tip: "History",
+                            onclick: open_history_pane,
+                            {render_tabler_icon(__scope, TablerIcon::History, TablerIconStyle::Outline)}
+                        }
+                        div {
+                            class: "tool",
+                            data-tip: "Preview as reader",
+                            onclick: move || {
+                                flush_editor_if_active();
+                                router::navigate(Route::ReaderPreview(bid_signal.get()));
+                            },
                             {render_tabler_icon(__scope, TablerIcon::Eye, TablerIconStyle::Outline)}
-                            " Preview as reader"
                         }
-                        Button {
-                            variant: "subtle",
-                            size: "xs",
+                        span { class: "sp" }
+                        div {
+                            class: "tool",
+                            data-tip: "Theme",
+                            onclick: toggle_dark,
+                            // Reactive icon: an rsx `if` block re-renders the child
+                            // node when dark_mode toggles. A bare `{expr}` block is
+                            // captured once; a `{|| ...}` child closure is treated as
+                            // reactive text by rinch, not a node.
+                            if store.dark_mode.get() {
+                                {render_tabler_icon(__scope, TablerIcon::Sun, TablerIconStyle::Outline)}
+                            } else {
+                                {render_tabler_icon(__scope, TablerIcon::Moon, TablerIconStyle::Outline)}
+                            }
+                        }
+                        div {
+                            class: "tool",
+                            data-tip: "All books",
                             onclick: go_dashboard,
-                            "\u{2190} Dashboard"
+                            {render_tabler_icon(__scope, TablerIcon::Home, TablerIconStyle::Outline)}
                         }
-                        div { class: "book-sidebar-footer-row",
-                            ActionIcon {
-                                variant: "subtle",
-                                size: "sm",
-                                onclick: toggle_dark,
-                                // Reactive icon: an rsx `if` block re-renders the child
-                                // node when dark_mode toggles. A bare `{expr}` block is
-                                // captured once; a `{|| ...}` child closure is treated as
-                                // reactive text by rinch, not a node.
-                                if store.dark_mode.get() {
-                                    {render_tabler_icon(__scope, TablerIcon::Sun, TablerIconStyle::Outline)}
-                                } else {
-                                    {render_tabler_icon(__scope, TablerIcon::Moon, TablerIconStyle::Outline)}
-                                }
-                            }
-                            ActionIcon {
-                                variant: "subtle",
-                                size: "sm",
-                                onclick: logout,
-                                {render_tabler_icon(__scope, TablerIcon::Logout, TablerIconStyle::Outline)}
-                            }
+                        div {
+                            class: "tool",
+                            data-tip: "Sign out",
+                            onclick: logout,
+                            {render_tabler_icon(__scope, TablerIcon::Logout, TablerIconStyle::Outline)}
                         }
                     }
                 }
@@ -1262,7 +1372,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             onclick: toggle_sidebar,
                             {render_tabler_icon(__scope, TablerIcon::Menu2, TablerIconStyle::Outline)}
                         }
-                        if !beta_feedback.get().is_empty() && matches!(active_pane.get(), BookPane::Editor(_)) {
+                        if current_chapter_has_feedback() {
                             ActionIcon {
                                 variant: {move || if show_feedback_sidebar.get() { "filled".to_string() } else { "subtle".to_string() }},
                                 size: "sm",
@@ -1273,7 +1383,16 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     }
 
                     // Chapters pane (CSS toggle, always in DOM)
-                    {panes::chapters::render(__scope, state, store, open_chapter, move_chapter, delete_chapter)}
+                    {panes::chapters::render(
+                        __scope,
+                        state,
+                        store,
+                        open_chapter,
+                        reorder_chapter,
+                        request_delete_chapter,
+                        add_chapter,
+                        save_rename_chapter,
+                    )}
 
                     // Editor pane (CSS toggle, always in DOM — preserves undo history)
                     {panes::editor::render(
@@ -1331,9 +1450,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 store,
                 book_id.clone(),
                 add_note,
-                add_chapter,
                 save_book_settings,
-                save_rename_chapter,
+                confirm_delete_chapter,
                 add_beta_link,
                 update_beta_link,
             )}

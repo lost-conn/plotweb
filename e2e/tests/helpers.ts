@@ -60,28 +60,47 @@ export async function createBook(page: Page, title: string): Promise<string> {
   return url.split("/book/")[1];
 }
 
-/** Add a chapter via the "Add Chapter" modal. */
+/**
+ * Add a chapter via the chapters pane's inline "Add chapter" row.
+ *
+ * Post-overlay-tiers (design/01-language.html#overlays, Tier 1), this no
+ * longer opens a dialog: clicking "Add chapter" appends an empty draft row
+ * (`#chapter-inline-title`, focused) directly in the chapter list, and Enter
+ * commits it (see `focus_inline_input` / `commit_new_chapter` in
+ * pages/book/panes/chapters.rs).
+ */
 export async function addChapter(page: Page, title: string) {
-  await page.getByRole("button", { name: "Add Chapter" }).first().click();
-  const modal = page.locator(".rinch-modal__body:visible");
-  await modal.locator("input[placeholder='Enter chapter title']").fill(title);
-  await modal.getByRole("button", { name: "Add", exact: true }).click();
-  // The chapter shows up in the sidebar.
+  await page.getByRole("button", { name: "Add chapter" }).first().click();
+  const input = page.locator("#chapter-inline-title");
+  // The Enter/Escape/blur listeners are wired from a `set_timeout(0, ..)`
+  // inside an effect (`focus_inline_input`, pages/book/panes/chapters.rs) —
+  // they attach a tick after the input mounts, so a `.press("Enter")` fired
+  // immediately after `.fill()` can race ahead of them and land on an input
+  // with no commit handler yet. Waiting for the input to actually be focused
+  // (the synchronous part of that same function, called before the listeners
+  // are wired) is a reasonably tight proxy for "the effect has run".
+  await input.waitFor({ state: "visible" });
+  await expect(input).toBeFocused();
+  await input.fill(title);
+  await input.press("Enter");
+  // The chapter shows up as a row in the chapters pane.
   await expect(
-    page.locator(".sidebar-chapter-name", { hasText: title }),
+    page.locator(".chapter-rows .crow .t", { hasText: title }),
   ).toBeVisible();
 }
 
 /**
  * Open the Notes pane from the book sidebar.
  *
- * The sidebar "Notes" section header toggles the notes pane into the main
+ * The sidebar "Notes" section header (`.pw-section-header`, renamed from
+ * `.sidebar-section-header` when the sidebar became rows — see
+ * `components/section_header.rs`) toggles the notes pane into the main
  * content area (a CSS `display` toggle). Clicking it flips `active_pane` to
  * Notes; we wait for the pane header to be visible before returning.
  */
 export async function openNotesPane(page: Page) {
   await page
-    .locator(".sidebar-section-header", { hasText: "Notes" })
+    .locator(".pw-section-header", { hasText: "Notes" })
     .getByText("Notes", { exact: true })
     .click();
   await expect(page.locator(".notes-pane-header")).toBeVisible();
@@ -106,15 +125,16 @@ export async function createNote(page: Page, title: string) {
 }
 
 /**
- * Open the Beta Readers pane from the book sidebar (mirrors `openNotesPane`).
+ * Open the Beta Readers pane from the book sidebar.
  *
- * The sidebar "Beta Readers" section header flips `active_pane` to
- * `BookPane::BetaReaders`, revealing the pane's "Beta Readers" heading.
+ * No longer a sidebar section header: Typography / Beta Readers / History
+ * demoted to the footer tools strip (`.ws-tools .tool`, one icon each,
+ * `data-tip="Beta readers"`) when the sidebar IA was reworked. Clicking it
+ * flips `active_pane` to `BookPane::BetaReaders`, revealing the pane's
+ * "Beta Readers" heading.
  */
 export async function openBetaReadersPane(page: Page) {
-  await page
-    .locator(".sidebar-section-header", { hasText: "Beta Readers" })
-    .click();
+  await page.locator('.ws-tools .tool[data-tip="Beta readers"]').click();
   await expect(page.getByRole("heading", { name: "Beta Readers" })).toBeVisible();
 }
 
@@ -122,8 +142,10 @@ export async function openBetaReadersPane(page: Page) {
  * Create a beta reader link through the Beta Readers pane UI and return its
  * server-side `token`.
  *
- * Opens the pane, clicks "Create Link", fills the reader name in the modal, and
- * confirms. The link's token isn't surfaced in the DOM, so we read it back from
+ * Opens the pane, clicks "Create Link", fills the reader name in the Sheet
+ * (a right-hand slide-over — Tier 3 of the overlay redesign, `.pw-sheet-body`,
+ * not `.rinch-modal__body`; see `components/sheet.rs`), and confirms. The
+ * link's token isn't surfaced in the DOM, so we read it back from
  * `GET /api/books/{id}/beta-links` (polled until the just-created link appears,
  * proving the POST landed server-side).
  */
@@ -134,13 +156,16 @@ export async function createBetaLink(
 ): Promise<string> {
   await openBetaReadersPane(page);
   await page.getByRole("button", { name: "Create Link" }).click();
-  const modal = page.locator(".rinch-modal__body:visible");
-  await modal
+  // Both the Create and Edit beta-link Sheets stay mounted while closed
+  // (rinch #761 — a Drawer never unmounts, only slides off/hides), so
+  // `.pw-sheet-body` always matches two; scope to the one that's visible.
+  const sheet = page.locator(".pw-sheet-body:visible");
+  await sheet
     .locator("input[placeholder='e.g. Alice, Book Club, etc.']")
     .fill(readerName);
-  await modal.getByRole("button", { name: "Create", exact: true }).click();
-  // The modal closes once the POST succeeds.
-  await expect(page.locator(".rinch-modal__body:visible")).toHaveCount(0);
+  await sheet.getByRole("button", { name: "Create", exact: true }).click();
+  // The sheet closes once the POST succeeds.
+  await expect(page.locator(".pw-sheet-body:visible")).toHaveCount(0);
 
   let token = "";
   await expect

@@ -4,8 +4,11 @@ import { createBook, registerNewUser } from "./helpers";
 /**
  * Typography / font-settings persistence coverage.
  *
- * The book sidebar's "Typography" section header (`.sidebar-section-header`)
- * flips `active_pane` to `BookPane::Typography` and, ~100ms later, imperatively
+ * "Typography" is an icon button in the sidebar's footer tools strip
+ * (`.ws-tools .tool[data-tip="Typography"]`, `pages/book/mod.rs`) — demoted
+ * from an equal-weight sidebar section header since these panes open far less
+ * often than the manuscript. Clicking it flips `active_pane` to
+ * `BookPane::Typography` and, ~100ms later, imperatively
  * builds the pane's controls via `setup_font_pickers` (book.rs ~3170):
  *   - the spacing grid (`#spacing-selector-grid`) gets native `<select>`s
  *     `#pw-paragraph-spacing`, `#pw-paragraph-indent`, `#pw-heading-indent`
@@ -24,11 +27,13 @@ import { createBook, registerNewUser } from "./helpers";
  * exists (proving `setup_font_pickers`' deferred build ran and its change
  * listeners are attached — the selects and their handlers are wired in the same
  * synchronous closure).
+ *
+ * Typography is no longer a sidebar section header: it was demoted to an icon
+ * button in the footer tools strip (`.ws-tools .tool[data-tip="Typography"]`,
+ * `pages/book/mod.rs`) alongside Beta readers / History / Preview.
  */
 async function openTypographyPane(page: Page) {
-  await page
-    .locator(".sidebar-section-header", { hasText: "Typography" })
-    .click();
+  await page.locator('.ws-tools .tool[data-tip="Typography"]').click();
   await expect(page.locator("#pw-paragraph-spacing")).toBeVisible();
 }
 
@@ -39,7 +44,7 @@ async function openTypographyPane(page: Page) {
  * render the saved font settings when opened.
  */
 async function waitBookLoaded(page: Page, title: string) {
-  await expect(page.locator(".book-sidebar-title")).toContainText(title);
+  await expect(page.locator(".ws-book-title")).toContainText(title);
 }
 
 test("paragraph-spacing select change persists across reload", async ({ page }) => {

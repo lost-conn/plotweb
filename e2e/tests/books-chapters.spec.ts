@@ -39,9 +39,11 @@ test("leaving the editor immediately after typing does not lose the edit", async
   const prose = "An edit made right before navigating away.";
   await typeInEditor(page, prose);
 
-  // Immediately leave the editor pane (no debounce wait) via a sidebar section,
-  // which must flush the pending save.
-  await page.locator(".sidebar-section-header", { hasText: "TYPOGRAPHY" }).click();
+  // Immediately leave the editor pane (no debounce wait) via a footer tool,
+  // which must flush the pending save. Typography demoted from a sidebar
+  // section header to an icon in the `.ws-tools` footer strip; `open_typography_pane`
+  // still calls `flush_editor_if_active()` before switching panes (book/mod.rs).
+  await page.locator('.ws-tools .tool[data-tip="Typography"]').click();
   // Come back to the chapter.
   await openChapter(page, "Chapter One");
   await expect(page.locator("#editor-main")).toContainText(prose);
