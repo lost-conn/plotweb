@@ -11,6 +11,8 @@ use plotweb_common::{
 };
 
 use crate::api;
+use crate::components::pane_header::PANE_HEADER_CSS;
+use crate::components::section_header::{SectionHeader, SECTION_HEADER_CSS};
 use crate::fonts;
 use crate::pages::editor_utils;
 use crate::router;
@@ -487,50 +489,46 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }))));
     };
 
-    let move_chapter = move |chapter_id: String, direction: i32| {
-        move || {
-            let mut chapters = store.chapters.get();
-            let Some(idx) = chapters.iter().position(|c| c.id == chapter_id) else {
-                return;
-            };
-            let new_idx = idx as i32 + direction;
-            if new_idx < 0 || (new_idx as usize) >= chapters.len() {
-                return;
-            }
-            chapters.swap(idx, new_idx as usize);
-
-            let bid = bid_signal.get();
-            crate::local_book::sync_chapters(&bid, &chapters);
-
-            // Hold the DOM-visible swap (and the REST PUT) until the local-doc
-            // write above has actually landed. Flipping `store.chapters` first
-            // would let an immediate reload race that write — it's a real
-            // IndexedDB round trip, not same-tick — and losing that race means
-            // the reload's local-doc-wins projection silently reverts this
-            // reorder even though the REST call below reliably lands. See
-            // `local_book::on_settled`.
-            let ids: Vec<String> = chapters.iter().map(|c| c.id.clone()).collect();
-            let bid_put = bid.clone();
-            let moved = chapter_id.clone();
-            crate::local_book::on_settled(&bid, move || {
-                // Re-apply the swap to whatever the list holds *now* rather than
-                // writing back the copy captured before the wait. A projection can
-                // land during that window — a sync integration re-projecting the
-                // book doc — and putting a pre-wait snapshot over it would revert
-                // it, which is the failure this whole change exists to stop.
-                store.chapters.update(|chapters| {
-                    let Some(idx) = chapters.iter().position(|c| c.id == moved) else {
-                        return;
-                    };
-                    let new_idx = idx as i32 + direction;
-                    if new_idx >= 0 && (new_idx as usize) < chapters.len() {
-                        chapters.swap(idx, new_idx as usize);
-                    }
-                });
-                let req = ReorderChaptersRequest { chapter_ids: ids };
-                api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid_put), &req, move |_result| {});
-            });
+    // Drag-to-reorder: move `dragged_id` to sit at `target_index` in the list
+    // (post-removal indexing, i.e. the index it should occupy once it's pulled
+    // out of its old slot). Same local-first sequencing the old arrow-key move
+    // used — sync the local doc first, then hold the DOM-visible move and the
+    // REST PUT until that write has settled — so a drag can't race a reload.
+    let reorder_chapter = move |dragged_id: String, target_index: usize| {
+        let mut chapters = store.chapters.get();
+        let Some(from) = chapters.iter().position(|c| c.id == dragged_id) else {
+            return;
+        };
+        let target_index = target_index.min(chapters.len().saturating_sub(1));
+        if from == target_index {
+            return;
         }
+        let chapter = chapters.remove(from);
+        chapters.insert(target_index, chapter);
+
+        let bid = bid_signal.get();
+        crate::local_book::sync_chapters(&bid, &chapters);
+
+        let ids: Vec<String> = chapters.iter().map(|c| c.id.clone()).collect();
+        let bid_put = bid.clone();
+        let moved = dragged_id.clone();
+        crate::local_book::on_settled(&bid, move || {
+            // Re-apply the move to whatever the list holds *now* rather than
+            // writing back the copy captured before the wait — a projection
+            // that lands during the wait must not be clobbered by a stale one.
+            store.chapters.update(|chapters| {
+                let Some(from) = chapters.iter().position(|c| c.id == moved) else {
+                    return;
+                };
+                let target_index = target_index.min(chapters.len().saturating_sub(1));
+                if from != target_index {
+                    let chapter = chapters.remove(from);
+                    chapters.insert(target_index, chapter);
+                }
+            });
+            let req = ReorderChaptersRequest { chapter_ids: ids };
+            api::put::<_, serde_json::Value>(&format!("/api/books/{}/chapters/reorder", bid_put), &req, move |_result| {});
+        });
     };
 
     let delete_chapter = move |chapter_id: String| {
@@ -1025,6 +1023,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
             style { {css::TYPOGRAPHY_CSS} }
             style { {css::NOTES_CSS} }
             style { {css::BOOK_WORKSPACE_CSS} }
+            style { {SECTION_HEADER_CSS} }
+            style { {PANE_HEADER_CSS} }
             style { {editor_utils::EDITOR_CSS} }
             // Editor font styles
             style {
@@ -1091,53 +1091,56 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 div {
                     class: {move || if store.sidebar_open.get() { "book-sidebar open" } else { "book-sidebar" }},
 
-                    // Book title
-                    div { class: "book-sidebar-title",
-                        span {
-                            style: "flex: 1; overflow: hidden; text-overflow: ellipsis;",
-                            {move || store.current_book.get().map(|b| b.title.clone()).unwrap_or_default()}
-                        }
-                        ActionIcon {
-                            variant: "subtle",
-                            size: "xs",
-                            onclick: move || {
-                                let book = store.current_book.get();
-                                if let Some(b) = book {
-                                    edit_book_title.set(b.title.clone());
-                                    edit_book_desc.set(b.description.clone());
-                                    edit_book_cover.set(b.cover_image.clone());
-                                    show_book_settings_modal.set(true);
-                                }
-                            },
-                            {render_tabler_icon(__scope, TablerIcon::Pencil, TablerIconStyle::Outline)}
-                        }
-                    }
-                    Space { h: "sm" }
-
-                    div { class: "book-sidebar-nav",
-                        // Chapters section header
+                    // Book header — mini jacket, title, quiet word-count line.
+                    // Content up, tools down (#chapters mockup): this replaces the
+                    // old flat title-plus-edit-pencil row with the object the rest
+                    // of the app treats a book as (see `components/book_jacket.rs`).
+                    div {
+                        class: "ws-book",
+                        onclick: move || {
+                            let book = store.current_book.get();
+                            if let Some(b) = book {
+                                edit_book_title.set(b.title.clone());
+                                edit_book_desc.set(b.description.clone());
+                                edit_book_cover.set(b.cover_image.clone());
+                                show_book_settings_modal.set(true);
+                            }
+                        },
+                        div { class: "ws-book-mini" }
                         div {
-                            class: {move || if matches!(active_pane.get(), BookPane::Chapters) { "sidebar-section-header active" } else { "sidebar-section-header" }},
+                            style: "min-width: 0; flex: 1;",
                             div {
-                                style: "display: flex; align-items: center; cursor: pointer;",
-                                onclick: move || chapters_collapsed.update(|c| *c = !*c),
-                                span {
-                                    style: "margin-right: 6px; display: inline-flex; align-items: center; font-size: 10px; line-height: 1; position: relative; top: -1px;",
-                                    {move || if chapters_collapsed.get() { "\u{25b8}" } else { "\u{25be}" }}
-                                }
-                                "Chapters"
+                                class: "ws-book-title",
+                                {move || store.current_book.get().map(|b| b.title.clone()).unwrap_or_default()}
                             }
                             div {
-                                style: "display: flex; align-items: center; gap: 2px;",
-                                ActionIcon {
-                                    variant: "subtle",
-                                    size: "xs",
-                                    onclick: move || {
-                                        new_chapter_title.set(String::new());
-                                        show_chapter_modal.set(true);
-                                    },
-                                    {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
-                                }
+                                class: "ws-book-words",
+                                {move || {
+                                    let words: u64 = store.chapters.get().iter().map(|c| c.word_count).sum();
+                                    format!("{} words", panes::chapters::format_word_count_full(words))
+                                }}
+                            }
+                        }
+                    }
+
+                    div { class: "book-sidebar-nav",
+                        SectionHeader {
+                            label: "Manuscript",
+                            count: {move || Some(store.chapters.get().len() as i64)},
+                            active: {move || matches!(active_pane.get(), BookPane::Chapters)},
+                            span {
+                                style: "display: inline-flex; align-items: center; margin-right: 2px;",
+                                onclick: move || chapters_collapsed.update(|c| *c = !*c),
+                                {move || if chapters_collapsed.get() { "\u{25b8}" } else { "\u{25be}" }}
+                            }
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "xs",
+                                onclick: move || {
+                                    new_chapter_title.set(String::new());
+                                    show_chapter_modal.set(true);
+                                },
+                                {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
                             }
                         }
 
@@ -1150,105 +1153,91 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                     __scope,
                                     chapter.id.clone(),
                                     chapter.title.clone(),
+                                    chapter.word_count,
                                     active_pane,
                                     open_chapter,
-                                    move_chapter,
                                 )}
                             }
                         }
 
-                        // Notes section header
-                        div {
-                            class: {move || if matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_)) { "sidebar-section-header active" } else { "sidebar-section-header" }},
-                            div {
-                                style: "display: flex; align-items: center; cursor: pointer; flex: 1;",
-                                onclick: open_notes_pane,
-                                "Notes"
+                        SectionHeader {
+                            label: "Notes",
+                            count: {move || Some(store.notes.get().len() as i64)},
+                            active: {move || matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_))},
+                            style: "margin-top: var(--pw-space-sm);",
+                            onclick: open_notes_pane,
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "xs",
+                                onclick: move || {
+                                    new_note_title.set(String::new());
+                                    new_note_parent_id.set(None);
+                                    new_note_color.set("teal".to_string());
+                                    show_note_modal.set(true);
+                                },
+                                {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
                             }
-                            div {
-                                style: "display: flex; align-items: center; gap: 2px;",
-                                ActionIcon {
-                                    variant: "subtle",
-                                    size: "xs",
-                                    onclick: move || {
-                                        new_note_title.set(String::new());
-                                        new_note_parent_id.set(None);
-                                        new_note_color.set("teal".to_string());
-                                        show_note_modal.set(true);
-                                    },
-                                    {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
-                                }
-                            }
-                        }
-
-                        // Typography section header
-                        div {
-                            class: {move || if matches!(active_pane.get(), BookPane::Typography) { "sidebar-section-header active" } else { "sidebar-section-header" }},
-                            onclick: open_typography_pane,
-                            "Typography"
-                        }
-
-                        // Beta Readers section header
-                        div {
-                            class: {move || if matches!(active_pane.get(), BookPane::BetaReaders) { "sidebar-section-header active" } else { "sidebar-section-header" }},
-                            onclick: open_beta_pane,
-                            div {
-                                style: "display: flex; align-items: center; justify-content: space-between; width: 100%;",
-                                "Beta Readers"
-                                if !beta_links.get().is_empty() {
-                                    Badge {
-                                        variant: "light",
-                                        size: "xs",
-                                        {move || format!("{}", beta_links.get().len())}
-                                    }
-                                }
-                            }
-                        }
-
-                        // History section header
-                        div {
-                            class: {move || if matches!(active_pane.get(), BookPane::History) { "sidebar-section-header active" } else { "sidebar-section-header" }},
-                            onclick: open_history_pane,
-                            "History"
                         }
                     }
 
-                    // Footer
-                    div { class: "book-sidebar-footer",
-                        Button {
-                            variant: "subtle",
-                            size: "xs",
+                    // Tools footer strip — Typography / Beta readers / History /
+                    // Preview, demoted from equal-weight section headers to a row
+                    // of icon buttons: these open roughly once a week, unlike the
+                    // manuscript above. Sits above the theme/dashboard/logout row.
+                    div { class: "ws-tools",
+                        div {
+                            class: "tool",
+                            data-tip: "Typography",
+                            onclick: open_typography_pane,
+                            {render_tabler_icon(__scope, TablerIcon::Typography, TablerIconStyle::Outline)}
+                        }
+                        div {
+                            class: "tool",
+                            data-tip: "Beta readers",
+                            onclick: open_beta_pane,
+                            {render_tabler_icon(__scope, TablerIcon::Users, TablerIconStyle::Outline)}
+                            if !beta_links.get().is_empty() {
+                                span { class: "badge", {move || format!("{}", beta_links.get().len())} }
+                            }
+                        }
+                        div {
+                            class: "tool",
+                            data-tip: "History",
+                            onclick: open_history_pane,
+                            {render_tabler_icon(__scope, TablerIcon::History, TablerIconStyle::Outline)}
+                        }
+                        div {
+                            class: "tool",
+                            data-tip: "Preview as reader",
                             onclick: move || router::navigate(Route::ReaderPreview(bid_signal.get())),
                             {render_tabler_icon(__scope, TablerIcon::Eye, TablerIconStyle::Outline)}
-                            " Preview as reader"
                         }
-                        Button {
-                            variant: "subtle",
-                            size: "xs",
+                        span { class: "sp" }
+                        div {
+                            class: "tool",
+                            data-tip: "Theme",
+                            onclick: toggle_dark,
+                            // Reactive icon: an rsx `if` block re-renders the child
+                            // node when dark_mode toggles. A bare `{expr}` block is
+                            // captured once; a `{|| ...}` child closure is treated as
+                            // reactive text by rinch, not a node.
+                            if store.dark_mode.get() {
+                                {render_tabler_icon(__scope, TablerIcon::Sun, TablerIconStyle::Outline)}
+                            } else {
+                                {render_tabler_icon(__scope, TablerIcon::Moon, TablerIconStyle::Outline)}
+                            }
+                        }
+                        div {
+                            class: "tool",
+                            data-tip: "All books",
                             onclick: go_dashboard,
-                            "\u{2190} Dashboard"
+                            {render_tabler_icon(__scope, TablerIcon::Home, TablerIconStyle::Outline)}
                         }
-                        div { class: "book-sidebar-footer-row",
-                            ActionIcon {
-                                variant: "subtle",
-                                size: "sm",
-                                onclick: toggle_dark,
-                                // Reactive icon: an rsx `if` block re-renders the child
-                                // node when dark_mode toggles. A bare `{expr}` block is
-                                // captured once; a `{|| ...}` child closure is treated as
-                                // reactive text by rinch, not a node.
-                                if store.dark_mode.get() {
-                                    {render_tabler_icon(__scope, TablerIcon::Sun, TablerIconStyle::Outline)}
-                                } else {
-                                    {render_tabler_icon(__scope, TablerIcon::Moon, TablerIconStyle::Outline)}
-                                }
-                            }
-                            ActionIcon {
-                                variant: "subtle",
-                                size: "sm",
-                                onclick: logout,
-                                {render_tabler_icon(__scope, TablerIcon::Logout, TablerIconStyle::Outline)}
-                            }
+                        div {
+                            class: "tool",
+                            data-tip: "Sign out",
+                            onclick: logout,
+                            {render_tabler_icon(__scope, TablerIcon::Logout, TablerIconStyle::Outline)}
                         }
                     }
                 }
@@ -1273,7 +1262,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     }
 
                     // Chapters pane (CSS toggle, always in DOM)
-                    {panes::chapters::render(__scope, state, store, open_chapter, move_chapter, delete_chapter)}
+                    {panes::chapters::render(__scope, state, store, open_chapter, reorder_chapter, delete_chapter)}
 
                     // Editor pane (CSS toggle, always in DOM — preserves undo history)
                     {panes::editor::render(

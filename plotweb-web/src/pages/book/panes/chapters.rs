@@ -9,6 +9,7 @@ use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use plotweb_common::{Chapter, SaveReceipt, UpdateChapterRequest};
 
 use crate::api;
+use crate::components::pane_header::PaneHeader;
 use crate::pages::editor_utils;
 use crate::rinch_backend::EditorHandle;
 use crate::store::AppStore;
@@ -17,6 +18,36 @@ use super::super::state::BookState;
 use super::super::BookPane;
 #[cfg(target_arch = "wasm32")]
 use super::editor::scroll_to_text_in_editor;
+
+/// "3,140" — full comma-grouped count for the pane's rows, where there's room
+/// for the exact number. The sidebar's abbreviated "3.1k" is a different
+/// helper ([`abbreviate_word_count`]) because the two surfaces have different
+/// space budgets, not because the underlying count differs.
+pub(in crate::pages::book) fn format_word_count_full(count: u64) -> String {
+    let s = count.to_string();
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(*b as char);
+    }
+    out
+}
+
+/// "3.1k" — abbreviated count for the sidebar row, which has one line and no
+/// room for "3,140". Mirrors `pages/dashboard.rs`'s private `format_word_count`
+/// (same rounding rule) rather than sharing it, since that one isn't public.
+pub(in crate::pages::book) fn abbreviate_word_count(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}k", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
+    }
+}
 
 /// Apply a save response to the editor's status and the author-facing alert.
 ///
@@ -284,20 +315,20 @@ pub(in crate::pages::book) fn do_switch_chapter_inner(
 
 /// Render the Chapters pane (CSS toggle, always in DOM).
 #[allow(clippy::too_many_arguments)]
-pub(in crate::pages::book) fn render<OC, MC, DC, OCO, MCO, DCO>(
+#[allow(clippy::too_many_arguments)]
+pub(in crate::pages::book) fn render<OC, RC, DC, OCO, DCO>(
     __scope: &mut RenderScope,
     state: BookState,
     store: AppStore,
     open_chapter: OC,
-    move_chapter: MC,
+    reorder_chapter: RC,
     delete_chapter: DC,
 ) -> NodeHandle
 where
     OC: Fn(String) -> OCO + 'static + Copy,
-    MC: Fn(String, i32) -> MCO + 'static + Copy,
+    RC: Fn(String, usize) + 'static + Copy,
     DC: Fn(String) -> DCO + 'static + Copy,
     OCO: Fn() + 'static,
-    MCO: Fn() + 'static,
     DCO: Fn() + 'static,
 {
     let BookState {
@@ -317,53 +348,90 @@ where
         rename_chapter_id,
         rename_chapter_title,
         show_rename_chapter_modal,
+        dragging_chapter_id,
+        chapter_drop_target,
+        show_chapters_menu,
         ..
     } = state;
+
+    let chapter_count = move || store.chapters.get().len();
+    let total_words = move || store.chapters.get().iter().map(|c| c.word_count).sum::<u64>();
+
     rsx! {
         div {
             class: "book-main-scroll",
             style: {move || if matches!(active_pane.get(), BookPane::Chapters) { "" } else { "display:none;" }},
 
             div { class: "chapters-pane",
-                div { class: "chapters-pane-header",
-                    Title { order: 3, "Chapters" }
-                    div {
-                        style: "display: flex; gap: 8px;",
-                        Button {
-                            size: "sm",
-                            variant: "outline",
-                            onclick: move || {
-                                show_import_modal.set(true);
-                                import_preview.set(Vec::new());
-                                import_full_chapters.set(Vec::new());
-                                import_error.set(None);
-                                import_filename.set(String::new());
-                            },
-                            "Import"
+                PaneHeader {
+                    title: "Manuscript",
+                    subtitle: {|| format!(
+                        "{} chapter{} · {} words",
+                        chapter_count(),
+                        if chapter_count() == 1 { "" } else { "s" },
+                        format_word_count_full(total_words()),
+                    )},
+
+                    Popover {
+                        opened_fn: move || show_chapters_menu.get(),
+                        onclose: move || show_chapters_menu.set(false),
+                        position: "bottom-end",
+                        close_on_click_outside: true,
+                        close_on_escape: true,
+                        shadow: "md",
+                        radius: "sm",
+
+                        PopoverTarget {
+                            ActionIcon {
+                                variant: "subtle",
+                                size: "sm",
+                                onclick: move || show_chapters_menu.update(|v| *v = !*v),
+                                {render_tabler_icon(__scope, TablerIcon::DotsVertical, TablerIconStyle::Outline)}
+                            }
                         }
-                        Button {
-                            size: "sm",
-                            variant: "outline",
-                            onclick: move || {
-                                // Default to exporting the whole book.
-                                let all: std::collections::HashSet<String> =
-                                    store.chapters.get().iter().map(|c| c.id.clone()).collect();
-                                export_selected.set(all);
-                                export_format.set("md");
-                                export_error.set(None);
-                                export_loading.set(false);
-                                show_export_modal.set(true);
-                            },
-                            "Export"
+                        PopoverDropdown {
+                            div { class: "chapters-menu",
+                                button {
+                                    class: "chapters-menu-item",
+                                    onclick: move || {
+                                        show_chapters_menu.set(false);
+                                        show_import_modal.set(true);
+                                        import_preview.set(Vec::new());
+                                        import_full_chapters.set(Vec::new());
+                                        import_error.set(None);
+                                        import_filename.set(String::new());
+                                    },
+                                    {render_tabler_icon(__scope, TablerIcon::Upload, TablerIconStyle::Outline)}
+                                    "Import"
+                                }
+                                button {
+                                    class: "chapters-menu-item",
+                                    onclick: move || {
+                                        show_chapters_menu.set(false);
+                                        // Default to exporting the whole book.
+                                        let all: std::collections::HashSet<String> =
+                                            store.chapters.get().iter().map(|c| c.id.clone()).collect();
+                                        export_selected.set(all);
+                                        export_format.set("md");
+                                        export_error.set(None);
+                                        export_loading.set(false);
+                                        show_export_modal.set(true);
+                                    },
+                                    {render_tabler_icon(__scope, TablerIcon::Download, TablerIconStyle::Outline)}
+                                    "Export"
+                                }
+                            }
                         }
-                        Button {
-                            size: "sm",
-                            onclick: move || {
-                                new_chapter_title.set(String::new());
-                                show_chapter_modal.set(true);
-                            },
-                            "Add Chapter"
-                        }
+                    }
+
+                    Button {
+                        size: "sm",
+                        onclick: move || {
+                            new_chapter_title.set(String::new());
+                            show_chapter_modal.set(true);
+                        },
+                        {render_tabler_icon(__scope, TablerIcon::Plus, TablerIconStyle::Outline)}
+                        "Add chapter"
                     }
                 }
 
@@ -374,88 +442,83 @@ where
                     }
                 }
 
-                div { class: "chapter-list",
-                    for (i, is_last, chapter) in ({
-                        let chapters = store.chapters.get();
-                        let n = chapters.len();
-                        chapters.into_iter().enumerate().map(move |(i, c)| (i, i + 1 == n, c))
+                div {
+                    class: "chapter-rows",
+                    for (_i, chapter) in ({
+                        store.chapters.get().into_iter().enumerate()
                     }) {
-                        Paper {
+                        // Wrapped in Signals (as `panes/notes.rs`'s `nid` does for the
+                        // same reason): the `for` body's prop closures each want their
+                        // own copy of the id/title, and a plain `String` moved into the
+                        // first closure that captures it is gone for the rest — a
+                        // Signal is `Copy`, so every closure below can read it freely.
+                        let cid = Signal::new(chapter.id.clone());
+                        let ctitle = Signal::new(chapter.title.clone());
+                        let cwords = chapter.word_count;
+                        div {
                             key: chapter.id.clone(),
-                            shadow: "xs",
-                            p: "md",
-                            radius: "sm",
-                            class: "chapter-item",
-
-                            div {
-                                class: "chapter-item-content",
-                                div {
-                                    class: "chapter-item-left",
-                                    onclick: open_chapter(chapter.id.clone()),
-
-                                    Badge {
-                                        variant: "light",
-                                        size: "sm",
-                                        {format!("{}", i + 1)}
-                                    }
-                                    Text { weight: "500", {chapter.title.clone()} }
-                                    Text { size: "xs", color: "dimmed",
-                                        {format!("{} words", chapter.word_count)}
-                                    }
+                            class: {move || {
+                                let mut cls = "crow".to_string();
+                                if dragging_chapter_id.get().as_deref() == Some(cid.get().as_str()) {
+                                    cls.push_str(" dragging");
                                 }
-                                div {
-                                    class: "chapter-item-actions",
-                                    ActionIcon {
-                                        variant: "subtle",
-                                        size: "sm",
-                                        disabled: i == 0,
-                                        onclick: move_chapter(chapter.id.clone(), -1),
-                                        {render_tabler_icon(
-                                            __scope,
-                                            TablerIcon::ChevronUp,
-                                            TablerIconStyle::Outline,
-                                        )}
-                                    }
-                                    ActionIcon {
-                                        variant: "subtle",
-                                        size: "sm",
-                                        disabled: is_last,
-                                        onclick: move_chapter(chapter.id.clone(), 1),
-                                        {render_tabler_icon(
-                                            __scope,
-                                            TablerIcon::ChevronDown,
-                                            TablerIconStyle::Outline,
-                                        )}
-                                    }
-                                    ActionIcon {
-                                        variant: "subtle",
-                                        size: "sm",
-                                        onclick: {
-                                            let cid = chapter.id.clone();
-                                            let ctitle = chapter.title.clone();
-                                            move || {
-                                                rename_chapter_id.set(cid.clone());
-                                                rename_chapter_title.set(ctitle.clone());
-                                                show_rename_chapter_modal.set(true);
-                                            }
-                                        },
-                                        {render_tabler_icon(
-                                            __scope,
-                                            TablerIcon::Pencil,
-                                            TablerIconStyle::Outline,
-                                        )}
-                                    }
-                                    ActionIcon {
-                                        variant: "subtle",
-                                        color: "red",
-                                        size: "sm",
-                                        onclick: delete_chapter(chapter.id.clone()),
-                                        {render_tabler_icon(
-                                            __scope,
-                                            TablerIcon::Trash,
-                                            TablerIconStyle::Outline,
-                                        )}
-                                    }
+                                if chapter_drop_target.get() == Some(_i) && dragging_chapter_id.get().is_some() {
+                                    cls.push_str(" drop-target");
+                                }
+                                cls
+                            }},
+                            draggable: "true",
+                            ondragstart: move || dragging_chapter_id.set(Some(cid.get())),
+                            ondragover: move || {
+                                chapter_drop_target.set(Some(_i));
+                            },
+                            ondrop: move || {
+                                if let Some(dragged) = dragging_chapter_id.get() {
+                                    reorder_chapter(dragged, _i);
+                                }
+                                dragging_chapter_id.set(None);
+                                chapter_drop_target.set(None);
+                            },
+                            ondragend: move || {
+                                dragging_chapter_id.set(None);
+                                chapter_drop_target.set(None);
+                            },
+
+                            span { class: "grip",
+                                {render_tabler_icon(__scope, TablerIcon::GripVertical, TablerIconStyle::Outline)}
+                            }
+                            span { class: "n", {format!("{}", _i + 1)} }
+                            span {
+                                class: "t",
+                                onclick: open_chapter(cid.get()),
+                                {move || ctitle.get()}
+                            }
+                            span { class: "m", {format_word_count_full(cwords)} }
+                            span { class: "acts",
+                                ActionIcon {
+                                    variant: "subtle",
+                                    size: "sm",
+                                    onclick: move || {
+                                        rename_chapter_id.set(cid.get());
+                                        rename_chapter_title.set(ctitle.get());
+                                        show_rename_chapter_modal.set(true);
+                                    },
+                                    {render_tabler_icon(
+                                        __scope,
+                                        TablerIcon::Pencil,
+                                        TablerIconStyle::Outline,
+                                    )}
+                                }
+                                ActionIcon {
+                                    variant: "subtle",
+                                    color: "red",
+                                    size: "sm",
+                                    onclick: delete_chapter(cid.get()),
+                                    {render_tabler_icon(
+                                        __scope,
+                                        TablerIcon::Trash,
+                                        TablerIconStyle::Outline,
+                                    )}
                                 }
                             }
                         }
