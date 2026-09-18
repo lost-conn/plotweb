@@ -363,3 +363,46 @@ async fn a_book_reports_whether_it_is_cut_over() {
         .expect("the book is listed");
     assert_eq!(entry["cutover"], true);
 }
+
+/// Import writes git directly, and a cut-over book reads its chapter list from the
+/// canonical `book:` document — so without a follow-up write the imported manuscript
+/// lands on disk and is invisible in the app. The canonical copy has to exist *before*
+/// the import for this to prove anything: `cutover_structure` degrades to git when it
+/// finds no canonical document, which would hide the bug.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_import_into_a_cut_over_book_reaches_the_canonical_chapter_list() {
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book_id = app.create_book("Novel").await;
+    app.cut_over(&book_id).await;
+
+    // Creating a chapter after cutover seeds the canonical `book:` document, so the
+    // read below really is answered by the CRDT rather than falling back to git.
+    app.create_chapter(&book_id, "Existing").await;
+
+    let manuscript = "# Imported One\n\nFirst.\n\n# Imported Two\n\nSecond.\n";
+    let r = app
+        .post_multipart(
+            &format!("/api/books/{book_id}/import/confirm"),
+            "manuscript.md",
+            manuscript.as_bytes(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::CREATED, "import: {}", r.json);
+
+    let list = app.get(&format!("/api/books/{book_id}/chapters")).await;
+    assert_eq!(list.status, StatusCode::OK);
+    let titles: Vec<String> = list
+        .json
+        .as_array()
+        .expect("a chapter list")
+        .iter()
+        .map(|c| c["title"].as_str().unwrap_or_default().to_string())
+        .collect();
+    for expected in ["Existing", "Imported One", "Imported Two"] {
+        assert!(
+            titles.iter().any(|t| t == expected),
+            "{expected:?} missing from the cut-over book's chapter list: {titles:?}"
+        );
+    }
+}
