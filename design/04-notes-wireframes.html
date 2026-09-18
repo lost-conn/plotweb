@@ -1,0 +1,1714 @@
+<meta charset="utf-8">
+<title>PlotWeb Notes — wireframe explorations</title>
+
+<style>
+/* ═══════════════════════════════════════════════════════════════
+   WIREFRAME SHEET — deliberately unstyled.
+   Greys + one indigo for "the thing under discussion".
+   No PlotWeb palette here: the question is structure, not skin.
+   ═══════════════════════════════════════════════════════════════ */
+:root{
+  --paper:#F7F7F6;
+  --ink:#23242A;
+  --ink-2:#5C5F68;
+  --ink-3:#8C9098;
+  --line:#CFD2D6;
+  --line-2:#E3E5E8;
+  --box:#FFFFFF;
+  --fill:#EDEEF0;
+  --mark:#4B4FA8;         /* the one accent: selection / live thread */
+  --mark-soft:#E6E7F4;
+  --warn:#9A6A12;
+  --warn-soft:#F5EEDD;
+
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  --sans: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px; --s8:72px;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:15px; line-height:1.55;
+  -webkit-font-smoothing:antialiased;
+}
+img{max-width:100%}
+
+/* ── page frame ─────────────────────────────────────────────── */
+.wrap{max-width:1180px; margin:0 auto; padding:var(--s7) var(--s5) 140px}
+.measure{max-width:64ch}
+
+header.sheet{
+  border-bottom:1px solid var(--line);
+  padding-bottom:var(--s5); margin-bottom:var(--s7);
+  display:flex; flex-direction:column; gap:var(--s3);
+}
+header.sheet .kicker{
+  font-family:var(--mono); font-size:11px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--ink-3);
+}
+header.sheet h1{
+  margin:0; font-size:30px; line-height:1.15; font-weight:600;
+  letter-spacing:-.015em; text-wrap:balance;
+}
+
+/* ── section rhythm ─────────────────────────────────────────── */
+section.block{margin-bottom:var(--s8); scroll-margin-top:var(--s5)}
+section.block > h2{
+  margin:0 0 var(--s2); font-size:21px; font-weight:600; letter-spacing:-.01em;
+}
+section.block > .lede{margin:0 0 var(--s5); color:var(--ink-2); max-width:62ch}
+h3.sub{
+  margin:var(--s6) 0 var(--s3); font-size:15px; font-weight:600;
+  display:flex; align-items:baseline; gap:var(--s3);
+}
+h3.sub .tag{
+  font-family:var(--mono); font-size:10px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--ink-3); font-weight:400;
+  border:1px solid var(--line); border-radius:2px; padding:1px 6px;
+}
+p{margin:0 0 var(--s3)}
+p:last-child{margin-bottom:0}
+a{color:var(--mark)}
+
+/* ── the wireframe canvas ───────────────────────────────────── */
+.frame{
+  background:var(--box); border:1px solid var(--line);
+  border-radius:3px; overflow:hidden;
+}
+.frame + .verdict{margin-top:var(--s3)}
+
+.frame-bar{
+  display:flex; align-items:center; gap:var(--s3);
+  padding:var(--s2) var(--s3);
+  border-bottom:1px solid var(--line-2); background:var(--fill);
+  font-family:var(--mono); font-size:11px; color:var(--ink-2);
+  flex-wrap:wrap;
+}
+.frame-bar .grow{flex:1}
+.frame-body{padding:var(--s4)}
+.frame-body.flush{padding:0}
+
+/* control affordances inside wireframes */
+.ctl{
+  font:inherit; font-family:var(--mono); font-size:11px;
+  background:var(--box); color:var(--ink);
+  border:1px solid var(--line); border-radius:2px;
+  padding:3px 8px; cursor:pointer;
+}
+.ctl:hover{border-color:var(--ink-3)}
+.ctl:focus-visible{outline:2px solid var(--mark); outline-offset:1px}
+.ctl[aria-pressed="true"], .ctl.on{background:var(--mark); border-color:var(--mark); color:#fff}
+.ctl-group{display:flex; gap:var(--s1); flex-wrap:wrap}
+label.ctl-lbl{font-family:var(--mono); font-size:11px; color:var(--ink-3); display:flex; align-items:center; gap:6px}
+input[type=range]{accent-color:var(--mark); width:120px}
+
+/* ── verdicts: what each take buys and costs ────────────────── */
+.verdict{
+  display:grid; grid-template-columns:repeat(auto-fit, minmax(240px,1fr));
+  gap:var(--s4); font-size:14px;
+}
+.verdict div{border-top:2px solid var(--line); padding-top:var(--s2)}
+.verdict div.good{border-top-color:var(--mark)}
+.verdict div.bad{border-top-color:var(--warn)}
+.verdict dt{
+  font-family:var(--mono); font-size:10px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--ink-3); margin-bottom:var(--s1);
+}
+.verdict p{color:var(--ink-2); margin:0}
+
+/* ── annotation callouts ────────────────────────────────────── */
+.anno{
+  font-family:var(--mono); font-size:11px; line-height:1.5; color:var(--ink-2);
+  border-left:2px solid var(--line); padding:var(--s1) 0 var(--s1) var(--s3);
+  margin:var(--s3) 0 0;
+}
+.anno b{color:var(--ink); font-weight:600}
+.anno.q{border-left-color:var(--warn); color:var(--warn)}
+.anno.q b{color:var(--warn)}
+
+/* ── generic wireframe furniture ────────────────────────────── */
+.ghost{background:var(--fill); border:1px solid var(--line-2); border-radius:2px}
+.ghost-line{height:8px; background:var(--line-2); border-radius:2px}
+.stack{display:flex; flex-direction:column}
+.row{display:flex; align-items:center}
+
+/* ═══════════════════════════════════════════════════════════════
+   TAKE A — horizontal lanes (the card's proposal)
+   ═══════════════════════════════════════════════════════════════ */
+.tl-shell{display:flex; flex-direction:column}
+.tl-scroll{overflow-x:auto; overflow-y:hidden}
+.tl-svg{display:block; min-width:760px}
+
+.tl-svg .axis-line{stroke:var(--line); stroke-width:1}
+.tl-svg .tick{stroke:var(--line-2); stroke-width:1}
+.tl-svg .tick-label{
+  font-family:var(--mono); font-size:10px; fill:var(--ink-3);
+  font-variant-numeric:tabular-nums;
+}
+.tl-svg .contain{fill:var(--fill); stroke:none; opacity:.7}
+.tl-svg .ev-box{fill:var(--box); stroke:var(--line); stroke-width:1}
+.tl-svg .ev-box.depth1{fill:var(--fill)}
+.tl-svg .ev-box.fuzzy{stroke-dasharray:3 3}
+.tl-svg .ev-label{font-family:var(--sans); font-size:11px; fill:var(--ink)}
+.tl-svg .ev-label.dim{fill:var(--ink-3)}
+.tl-svg .ev-box.mine{stroke:var(--mark)}
+.tl-svg .ev-label.mine{fill:var(--mark); font-weight:600}
+.tl-svg .lane-line{stroke:var(--line-2); stroke-width:1}
+.tl-svg .lane-line.on{stroke:var(--mark); stroke-width:2}
+.tl-svg .lane-name{font-family:var(--sans); font-size:11px; fill:var(--ink-2)}
+.tl-svg .lane-name.on{fill:var(--mark); font-weight:600}
+.tl-svg .ev-tie{stroke:var(--line); stroke-width:1.5}
+.tl-svg .ev-tie.on{stroke:var(--mark)}
+.tl-svg .ev-dot{fill:var(--ink-3)}
+.tl-svg .ev-dot.on{fill:var(--mark)}
+.tl-svg .zone-rule{stroke:var(--line); stroke-width:1; stroke-dasharray:2 3}
+.tl-svg .zone-lbl{
+  font-family:var(--mono); font-size:9px; fill:var(--ink-3);
+  letter-spacing:.1em; text-transform:uppercase;
+}
+.tl-svg .thread{fill:none; stroke:var(--mark); stroke-width:2; stroke-linejoin:round; stroke-linecap:round}
+.tl-svg .thread-node{fill:var(--mark)}
+.tl-svg .thread-ghost{fill:none; stroke:var(--line); stroke-width:1.5; stroke-dasharray:2 4}
+.tl-svg .band{fill:var(--mark-soft)}
+
+.rail{
+  border-top:1px dashed var(--line); background:var(--fill);
+  padding:var(--s3) var(--s4); display:flex; align-items:center;
+  gap:var(--s3); flex-wrap:wrap;
+}
+.rail .rail-lbl{
+  font-family:var(--mono); font-size:10px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--ink-3); margin-right:var(--s2);
+}
+.chip-undated{
+  border:1px dashed var(--line); border-radius:2px; background:var(--box);
+  padding:var(--s1) var(--s2); font-size:12px; cursor:grab;
+  display:flex; align-items:center; gap:var(--s2);
+}
+.chip-undated:active{cursor:grabbing}
+.chip-undated small{font-family:var(--mono); font-size:10px; color:var(--warn)}
+
+/* entity picker shared by takes A and C */
+.ent-picker{display:flex; gap:var(--s1); flex-wrap:wrap; align-items:center}
+.ent-chip{
+  font-family:var(--mono); font-size:11px; border:1px solid var(--line);
+  background:var(--box); border-radius:999px; padding:2px 10px; cursor:pointer;
+}
+.ent-chip:focus-visible{outline:2px solid var(--mark); outline-offset:1px}
+.ent-chip.on{background:var(--mark); border-color:var(--mark); color:#fff}
+
+/* ═══════════════════════════════════════════════════════════════
+   TAKE B — vertical spine
+   ═══════════════════════════════════════════════════════════════ */
+.spine{position:relative; padding:var(--s4) var(--s4) var(--s4) 0}
+.spine::before{
+  content:""; position:absolute; left:92px; top:0; bottom:0;
+  width:1px; background:var(--line);
+}
+.spine-row{display:grid; grid-template-columns:76px 32px 1fr; gap:0; align-items:start; margin-bottom:var(--s3)}
+.spine-when{
+  font-family:var(--mono); font-size:11px; color:var(--ink-3);
+  text-align:right; padding-top:var(--s2); font-variant-numeric:tabular-nums;
+}
+.spine-node{position:relative; height:100%}
+.spine-node::after{
+  content:""; position:absolute; left:11px; top:14px;
+  width:9px; height:9px; border-radius:50%;
+  background:var(--box); border:2px solid var(--ink-3);
+}
+.spine-row.fuzzy .spine-node::after{border-style:dotted; border-color:var(--warn)}
+.spine-card{
+  border:1px solid var(--line); border-radius:2px; background:var(--box);
+  padding:var(--s2) var(--s3);
+}
+.spine-card h4{margin:0 0 2px; font-size:13px; font-weight:600}
+.spine-card .refs{font-family:var(--mono); font-size:10px; color:var(--ink-3)}
+.spine-nest{margin-left:var(--s5); border-left:2px solid var(--line-2); padding-left:var(--s3); margin-top:var(--s2)}
+.spine-pair{
+  display:grid; grid-template-columns:1fr 1fr; gap:var(--s2);
+}
+.spine-pair .spine-card{border-style:solid}
+.spine-simul-lbl{
+  font-family:var(--mono); font-size:10px; color:var(--warn);
+  grid-column:1/-1; margin-bottom:2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TAKE C — entity swimlanes
+   ═══════════════════════════════════════════════════════════════ */
+.sw-svg{display:block; min-width:760px}
+.sw-svg .lane-line{stroke:var(--line-2); stroke-width:1}
+.sw-svg .lane-line.on{stroke:var(--mark); stroke-width:2}
+.sw-svg .lane-name{font-family:var(--sans); font-size:11px; fill:var(--ink-2)}
+.sw-svg .lane-name.on{fill:var(--mark); font-weight:600}
+.sw-svg .ev-band{fill:var(--fill); stroke:var(--line); stroke-width:1}
+.sw-svg .ev-band.fuzzy{stroke-dasharray:3 3}
+.sw-svg .ev-tie{stroke:var(--ink-3); stroke-width:1.5}
+.sw-svg .ev-dot{fill:var(--ink); }
+.sw-svg .ev-dot.on{fill:var(--mark)}
+.sw-svg .ev-cap{font-family:var(--sans); font-size:10px; fill:var(--ink-2)}
+.sw-svg .cap-leader{stroke:var(--line); stroke-width:1}
+
+/* ═══════════════════════════════════════════════════════════════
+   TREE TAKES
+   ═══════════════════════════════════════════════════════════════ */
+.tree{font-size:13px}
+.tree-sect{margin-bottom:var(--s4)}
+.tree-sect > h5{
+  margin:0 0 var(--s2); font-family:var(--mono); font-size:10px;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3);
+  display:flex; align-items:center; gap:var(--s2);
+}
+.tree-sect > h5 .count{color:var(--line); }
+.tnode{
+  display:flex; align-items:center; gap:var(--s2);
+  padding:3px var(--s2); border-radius:2px;
+}
+.tnode:hover{background:var(--fill)}
+.tnode .twist{width:12px; color:var(--ink-3); font-family:var(--mono); font-size:10px}
+.tnode .glyph{
+  width:16px; height:16px; flex:none; border:1px solid var(--line);
+  border-radius:2px; display:grid; place-items:center;
+  font-family:var(--mono); font-size:9px; color:var(--ink-3); background:var(--box);
+}
+.tnode .glyph.ev{border-radius:2px; border-style:solid}
+.tnode .glyph.ent{border-radius:50%}
+.tnode .glyph.lore{border-style:dashed}
+.tnode .when{
+  margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--ink-3);
+  font-variant-numeric:tabular-nums;
+}
+.tchildren{margin-left:var(--s5); border-left:1px solid var(--line-2); padding-left:var(--s2)}
+
+/* ═══════════════════════════════════════════════════════════════
+   EDITOR TAKE
+   ═══════════════════════════════════════════════════════════════ */
+.ed{display:grid; grid-template-columns:1fr 250px; min-height:380px}
+.ed-main{padding:var(--s5); border-right:1px solid var(--line-2)}
+.ed-rail{background:var(--fill); padding:var(--s4)}
+.ed-title{font-size:20px; font-weight:600; margin:0 0 var(--s2)}
+.facet-strip{
+  display:flex; gap:var(--s2); flex-wrap:wrap; align-items:center;
+  padding:var(--s2) 0 var(--s3); border-bottom:1px solid var(--line-2); margin-bottom:var(--s3);
+}
+.facet{
+  display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px;
+  border:1px solid var(--line); border-radius:2px; padding:3px 8px; background:var(--box);
+  cursor:pointer; color:var(--ink-3);
+}
+.facet.on{border-color:var(--mark); color:var(--mark); background:var(--mark-soft)}
+.facet .box{width:9px; height:9px; border:1px solid currentColor; border-radius:1px}
+.facet.on .box{background:currentColor}
+.ed-prose p{color:var(--ink-2); font-size:14px}
+.ed-prose .sig{
+  border-bottom:1px solid var(--mark); color:var(--mark); cursor:pointer;
+  font-weight:500;
+}
+.ed-prose .sig.hash{color:var(--warn); border-color:var(--warn)}
+.rail-sect{margin-bottom:var(--s4)}
+.rail-sect h6{
+  margin:0 0 var(--s2); font-family:var(--mono); font-size:10px;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);
+}
+.rail-item{
+  display:flex; align-items:center; gap:var(--s2); font-size:12px;
+  padding:2px 0; color:var(--ink-2);
+}
+.rail-item .dir{font-family:var(--mono); font-size:10px; color:var(--ink-3); width:14px}
+
+/* autocomplete popover mock */
+.ac{
+  border:1px solid var(--line); background:var(--box); border-radius:2px;
+  box-shadow:0 4px 12px rgba(35,36,42,.09); width:230px; overflow:hidden;
+  font-size:12px;
+}
+.ac-head{
+  font-family:var(--mono); font-size:10px; color:var(--ink-3);
+  padding:var(--s1) var(--s2); border-bottom:1px solid var(--line-2); background:var(--fill);
+}
+.ac-item{padding:4px var(--s2); display:flex; align-items:center; gap:var(--s2)}
+.ac-item.on{background:var(--mark-soft); color:var(--mark)}
+
+/* ═══════════════════════════════════════════════════════════════
+   FILTER BAR
+   ═══════════════════════════════════════════════════════════════ */
+.fbar{display:flex; gap:var(--s2); flex-wrap:wrap; align-items:center}
+.fchip{
+  font-family:var(--mono); font-size:11px; border:1px solid var(--line);
+  background:var(--box); border-radius:2px; padding:3px 9px; cursor:pointer;
+  display:flex; align-items:center; gap:6px;
+}
+.fchip .op{font-weight:700; width:8px; display:inline-block; text-align:center}
+.fchip[data-state="must"]{border-color:var(--mark); color:var(--mark); background:var(--mark-soft)}
+.fchip[data-state="mustnt"]{border-color:var(--warn); color:var(--warn); background:var(--warn-soft); text-decoration:line-through}
+.fchip[data-state="may"]{border-style:dashed}
+.fchip:focus-visible{outline:2px solid var(--mark); outline-offset:1px}
+.fresult{
+  font-family:var(--mono); font-size:11px; color:var(--ink-3); margin-top:var(--s3);
+  border-top:1px solid var(--line-2); padding-top:var(--s2);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SHELL / PLACEMENT
+   ═══════════════════════════════════════════════════════════════ */
+.shell{display:grid; grid-template-columns:150px 1fr; min-height:260px; font-size:12px}
+.shell-nav{border-right:1px solid var(--line-2); padding:var(--s3); background:var(--fill)}
+.shell-nav .nav-item{padding:3px var(--s2); border-radius:2px; color:var(--ink-2)}
+.shell-nav .nav-item.on{background:var(--mark); color:#fff}
+.shell-main{padding:var(--s3); display:flex; flex-direction:column; gap:var(--s2)}
+.viewtabs{display:flex; gap:var(--s1); border-bottom:1px solid var(--line-2); padding-bottom:var(--s2)}
+.viewtab{
+  font-family:var(--mono); font-size:11px; padding:3px 10px; border-radius:2px;
+  color:var(--ink-3); border:1px solid transparent;
+}
+.viewtab.on{color:var(--mark); border-color:var(--line); background:var(--box)}
+
+/* ── phone frame ────────────────────────────────────────────── */
+.phone{
+  width:270px; border:1px solid var(--line); border-radius:12px;
+  background:var(--box); overflow:hidden; flex:none;
+}
+.phone-bar{
+  padding:var(--s2) var(--s3); border-bottom:1px solid var(--line-2);
+  font-family:var(--mono); font-size:10px; color:var(--ink-3); background:var(--fill);
+}
+.phone-body{padding:var(--s3); font-size:12px}
+.side-by-side{display:flex; gap:var(--s5); flex-wrap:wrap; align-items:flex-start}
+
+/* ── decision table ─────────────────────────────────────────── */
+.tbl-scroll{overflow-x:auto}
+table.dec{border-collapse:collapse; width:100%; font-size:14px; min-width:600px}
+table.dec th, table.dec td{
+  text-align:left; padding:var(--s2) var(--s3);
+  border-bottom:1px solid var(--line-2); vertical-align:top;
+}
+table.dec th{
+  font-family:var(--mono); font-size:10px; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--ink-3); font-weight:400;
+  border-bottom:1px solid var(--line);
+}
+table.dec td:first-child{font-weight:600; white-space:nowrap}
+table.dec .src{font-family:var(--mono); font-size:11px; color:var(--ink-3)}
+
+ol.steps{margin:0; padding-left:1.3em}
+ol.steps li{margin-bottom:var(--s3); color:var(--ink-2)}
+ol.steps li b{color:var(--ink)}
+
+@media (max-width:820px){
+  .ed{grid-template-columns:1fr}
+  .ed-main{border-right:0; border-bottom:1px solid var(--line-2)}
+  .shell{grid-template-columns:1fr}
+  .shell-nav{border-right:0; border-bottom:1px solid var(--line-2)}
+}
+@media (prefers-reduced-motion: reduce){
+  *{transition:none !important; animation:none !important}
+}
+</style>
+
+<div class="wrap">
+
+<header class="sheet">
+  <div class="kicker">PlotWeb · design/04 · wireframes, not visual design</div>
+  <h1>Revamping notes: the shape, and the three takes it came from</h1>
+  <p class="measure" style="color:var(--ink-2); margin:0">
+    Everything here is grey boxes on purpose — the question is structure, not skin. The
+    <a href="#hybrid">chosen shape</a> is a stacked event ribbon over entity lanes; takes A, B and C
+    below are the evidence it came from, kept because each one names a cost the others don't.
+    Sample data throughout is one book, <em>The Amber Chain</em>, so they stay comparable.
+  </p>
+</header>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block">
+  <h2>What's settled</h2>
+  <p class="lede">Four decisions taken before drawing, three taken after seeing it drawn.</p>
+
+  <div class="tbl-scroll">
+  <table class="dec">
+    <thead><tr><th>Decision</th><th>Shape</th><th>Consequence for these wireframes</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Facets, not types</td>
+        <td>One note. Give it a span → it behaves as an Event. Mark it an entity → it gets a thread. Neither → lore.</td>
+        <td>No "new note of type…" dialog. A facet strip on the note itself. A note can hold both — a character with a lifespan is legal.</td>
+      </tr>
+      <tr>
+        <td>Three sigils</td>
+        <td><span class="src">#tag</span> labels · <span class="src">@mention</span> soft link · <span class="src">$ref</span> participation</td>
+        <td>Only <span class="src">$</span> draws a thread through an event. <span class="src">@</span> stays quiet in the timeline and shows in the editor rail.</td>
+      </tr>
+      <tr>
+        <td>Full workspace surface</td>
+        <td>Notes becomes a top-level view with its own switcher, not a 300px pane.</td>
+        <td>Timeline gets the width it needs. Costs a shell change — see <a href="#shell">placement</a>.</td>
+      </tr>
+      <tr>
+        <td>Fuzzy + relative time</td>
+        <td>Exact · approximate · open-ended · relational (<span class="src">after @siege</span>) · undated</td>
+        <td>Every take needs somewhere to put a note that isn't placeable yet, and a way to draw uncertainty.</td>
+      </tr>
+      <tr>
+        <td>Timeline = ribbon + lanes</td>
+        <td>A and C stacked on one axis, not toggled. B is the phone rendering.</td>
+        <td>Nesting is non-negotiable, so it lives in the ribbon. Presence moves to the lanes, which is what kills the crossing problem. <a href="#hybrid">Drawn here</a>.</td>
+      </tr>
+      <tr>
+        <td>Tree = take E</td>
+        <td>One tree the author arranges. Facet is a gutter glyph and a filter, not a section.</td>
+        <td><strong>Two hierarchies, deliberately separate</strong> — see below.</td>
+      </tr>
+      <tr>
+        <td>Gregorian deferred</td>
+        <td>Divisor stack only. Real calendars are a later feature, or a later config.</td>
+        <td>No leap-year special-casing anywhere in the model. <span class="src">1/365</span> is simply what a day means until told otherwise.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p class="anno" style="margin-top:var(--s5)"><b>The two hierarchies.</b> A note has a
+  <span class="src">tree_parent</span> — where the author filed it, arbitrary, House Vaun over Vess
+  Calloran — and, if it has a span, an <span class="src">event_parent</span> — containment in time,
+  the siege over the breach. They are set in different places by different gestures: dragging in the
+  tree moves one, dropping a bar inside another bar in the ribbon moves the other. Neither implies
+  the other, and an event can be filed anywhere in the tree without leaving its parent event.</p>
+
+  <p class="anno q"><b>Consequence worth agreeing to now:</b> <span class="src">event_parent</span>
+  should be <em>explicit</em>, not inferred from spans overlapping. Two events can coincide in time
+  without one containing the other — the parley and the siege here — and inferring nesting would
+  silently reparent them.</p>
+
+  <p class="anno" style="margin-top:var(--s5)"><b>One thing the card doesn't say, that the takes below assume.</b>
+  Notes today are a tree in the book structure doc plus one Automerge body doc per note.
+  Sigils live in the <em>body</em>. If the timeline had to read bodies to know who's in what, drawing
+  it would mean opening every note. So spans, the entity facet, and link edges get mirrored up into
+  the structure doc on save — the timeline renders from structure alone.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block" id="takeA">
+  <h2>Timeline, take A — horizontal lanes</h2>
+  <p class="lede">
+    The card's literal proposal. Time runs left to right. Events are bars; nested events sit in
+    sub-lanes inside their parent's band; simultaneous unrelated events stack. An entity's
+    <span class="src">$</span> references are joined into a thread that dips through each bar it
+    appears in — and splits when it's in two places at once.
+  </p>
+
+  <div class="frame">
+    <div class="frame-bar">
+      <span>timeline · lanes</span>
+      <span class="grow"></span>
+      <label class="ctl-lbl">span
+        <input type="range" id="a-zoom" min="0" max="2" step="1" value="1" aria-label="Time span shown">
+      </label>
+      <span id="a-zoom-lbl" style="min-width:86px">1204 – 1212</span>
+      <button class="ctl" id="a-threads" aria-pressed="true">threads on</button>
+    </div>
+
+    <div class="frame-bar" style="background:var(--box); border-bottom:1px solid var(--line-2)">
+      <span style="color:var(--ink-3)">thread:</span>
+      <div class="ent-picker" id="a-ents"></div>
+    </div>
+
+    <div class="tl-scroll">
+      <svg class="tl-svg" id="a-svg" viewBox="0 0 900 330" role="img"
+           aria-label="Horizontal timeline of The Amber Chain with entity threads"></svg>
+    </div>
+
+    <div class="rail" id="a-rail">
+      <span class="rail-lbl">Not placed</span>
+    </div>
+    <div class="frame-bar" style="border-top:1px solid var(--line-2); border-bottom:0">
+      <span style="color:var(--warn)" id="a-dropped"></span>
+    </div>
+  </div>
+
+  <p class="anno"><b>Reading it:</b> the pale band is the selected entity's thread. Dashed bar
+  outlines mean approximate time. The two bars sitting at the same x, both carrying Vess, are the
+  split the card describes — she's at the siege and at the parley in the same season.</p>
+
+  <p class="anno q"><b>Open — two, and both are real:</b> lane assignment is greedy left-to-right, so
+  with forty events it will thrash — a note jumps a row every time you add something earlier. Stable
+  assignment is genuine work. And <em>names don't fit</em>: short events get a sliver of a bar and
+  the label has nowhere to go. The counter above is live — widen the span slider and watch it climb.
+  Every real timeline tool solves this with hover, and hover is not a phone gesture.</p>
+
+  <dl class="verdict">
+    <div class="good"><dt>Buys</dt><p>Duration is legible at a glance — a long siege looks long. Nesting reads as containment. It is the shape people already expect from a timeline.</p></div>
+    <div class="bad"><dt>Costs</dt><p>Thread crossings get ugly fast, and minimising them is a graph-layout problem. Narrow windows force horizontal scroll. Phone needs a wholly different rendering.</p></div>
+    <div><dt>Fits when</dt><p>The book has a tight, dense span — one war, one year — and durations matter more than who's involved.</p></div>
+  </dl>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block" id="takeB">
+  <h2>Timeline, take B — vertical spine</h2>
+  <p class="lede">
+    Time runs top to bottom, like a document. Events are cards on a spine; nesting is indentation;
+    simultaneity is an explicit paired row rather than a geometric accident. Entities appear as
+    <span class="src">$</span> lists on each card — no threads at all.
+  </p>
+
+  <div class="frame">
+    <div class="frame-bar"><span>timeline · spine</span><span class="grow"></span><span style="color:var(--ink-3)">scrolls like prose</span></div>
+    <div class="frame-body flush">
+      <div class="spine">
+
+        <div class="spine-row">
+          <div class="spine-when">1204, spring</div>
+          <div class="spine-node"></div>
+          <div class="spine-card">
+            <h4>Vess leaves Harrowgate</h4>
+            <div class="refs">$Vess Calloran</div>
+          </div>
+        </div>
+
+        <div class="spine-row">
+          <div class="spine-when">1206.1 – 1206.8</div>
+          <div class="spine-node"></div>
+          <div>
+            <div class="spine-card">
+              <h4>The Siege of Vaun</h4>
+              <div class="refs">$Vess Calloran · $Corin Ade · $The Sable Order</div>
+            </div>
+            <div class="spine-nest">
+              <div class="spine-row" style="grid-template-columns:70px 24px 1fr; margin-bottom:var(--s2)">
+                <div class="spine-when">1206.4</div><div class="spine-node"></div>
+                <div class="spine-card"><h4>The breach at Low Gate</h4><div class="refs">$Vess Calloran · $The Sable Order</div></div>
+              </div>
+              <div class="spine-row" style="grid-template-columns:70px 24px 1fr; margin-bottom:0">
+                <div class="spine-when">1206.5 – 1206.6</div><div class="spine-node"></div>
+                <div class="spine-card"><h4>Corin's ride</h4><div class="refs">$Corin Ade</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="spine-row">
+          <div class="spine-when">1206.5</div>
+          <div class="spine-node"></div>
+          <div class="spine-pair">
+            <div class="spine-simul-lbl">— at the same time —</div>
+            <div class="spine-card"><h4>The parley at Vaun</h4><div class="refs">$Vess Calloran · $The Sable Order</div></div>
+            <div class="spine-card"><h4>Maera takes the Needle</h4><div class="refs">$Maera Sun · $The Needle</div></div>
+          </div>
+        </div>
+
+        <div class="spine-row fuzzy">
+          <div class="spine-when">~1207 – 1208</div>
+          <div class="spine-node"></div>
+          <div class="spine-card">
+            <h4>The long winter</h4>
+            <div class="refs">$Vess Calloran · $Maera Sun <span style="color:var(--warn)">· approximate</span></div>
+          </div>
+        </div>
+
+        <div class="spine-row fuzzy">
+          <div class="spine-when">after ↑</div>
+          <div class="spine-node"></div>
+          <div class="spine-card">
+            <h4>Vess and Maera meet again</h4>
+            <div class="refs" style="color:var(--warn)">relative to $The Siege of Vaun · no date</div>
+          </div>
+        </div>
+
+        <div class="spine-row">
+          <div class="spine-when">1211</div>
+          <div class="spine-node"></div>
+          <div class="spine-card">
+            <h4>The Amber Chain is broken</h4>
+            <div class="refs">$Vess Calloran · $Corin Ade · $Maera Sun · $The Sable Order</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <p class="anno"><b>Note what disappears:</b> there is no lane-packing problem, no crossing
+  minimisation, and no undated rail — an undated note just sits inline where its relative
+  constraint puts it. The cost is that duration stops being visible: the long winter and the
+  parley occupy the same amount of page.</p>
+
+  <dl class="verdict">
+    <div class="good"><dt>Buys</dt><p>Phone and desktop are the same layout. Handles a 3,000-year span and a single afternoon equally. Undated and relative notes have an obvious home.</p></div>
+    <div class="bad"><dt>Costs</dt><p>Duration and overlap are told, not shown. Entity threads — the card's most distinctive idea — don't survive the transposition.</p></div>
+    <div><dt>Fits when</dt><p>Notes are mostly read and edited rather than surveyed, and the book's span is long or uneven.</p></div>
+  </dl>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block" id="takeC">
+  <h2>Timeline, take C — entity swimlanes</h2>
+  <p class="lede">
+    Transpose take A. Each entity gets a permanent horizontal lane; time still runs left to right;
+    an event is a vertical band that ties together the lanes of everyone <span class="src">$</span>
+    referenced in it. The thread you had to compute in take A is simply the lane — it never crosses
+    anything, because it never leaves its row.
+  </p>
+
+  <div class="frame">
+    <div class="frame-bar">
+      <span>timeline · swimlanes</span>
+      <span class="grow"></span>
+      <button class="ctl" id="c-sortmode">order: by first appearance</button>
+    </div>
+    <div class="frame-bar" style="background:var(--box); border-bottom:1px solid var(--line-2)">
+      <span style="color:var(--ink-3)">highlight:</span>
+      <div class="ent-picker" id="c-ents"></div>
+    </div>
+    <div class="tl-scroll">
+      <svg class="sw-svg" id="c-svg" viewBox="0 0 900 300" role="img"
+           aria-label="Entity swimlane timeline of The Amber Chain"></svg>
+    </div>
+  </div>
+
+  <p class="anno"><b>The trade this makes:</b> it answers "where was Corin during the siege" instantly
+  and "how long was the siege" less well — the band gives duration, but nesting has nowhere to go.
+  <em>The breach at Low Gate</em> inside <em>The Siege of Vaun</em> renders as two bands that happen
+  to overlap, not as containment.</p>
+
+  <p class="anno q"><b>Open:</b> lanes are per-entity, so a book with sixty characters has sixty rows.
+  Needs a "pin these entities" set, or lanes driven by the current filter, to stay usable.</p>
+
+  <dl class="verdict">
+    <div class="good"><dt>Buys</dt><p>Flow lines for free, with zero crossings and no layout algorithm. Presence and absence both read clearly — a gap in a lane is a character off-page.</p></div>
+    <div class="bad"><dt>Costs</dt><p>Nesting is lost, and events with no entities have nowhere to live — both answered by stacking a ribbon above it. Row count still scales with cast, not with plot.</p></div>
+    <div><dt>Fits when</dt><p>The book is character-driven and the question you bring to the timeline is usually about a person, not a date.</p></div>
+  </dl>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block" id="hybrid">
+  <h2>The chosen shape — A and C stacked</h2>
+  <p class="lede">
+    Not a toggle between two views. One view in two zones on a shared time axis: an
+    <strong>event ribbon</strong> up top carrying nesting and duration, <strong>entity lanes</strong>
+    below carrying presence. Each event's tie rises from the lanes into its own bar, so the two zones
+    read as one drawing.
+  </p>
+
+  <div class="frame">
+    <div class="frame-bar">
+      <span>timeline · ribbon + lanes</span>
+      <span class="grow"></span>
+      <div class="ctl-group">
+        <button class="ctl on" id="h-ribbon" aria-pressed="true">ribbon</button>
+        <button class="ctl on" id="h-lanes" aria-pressed="true">lanes</button>
+      </div>
+    </div>
+    <div class="frame-bar" style="background:var(--box); border-bottom:1px solid var(--line-2)">
+      <span style="color:var(--ink-3)">follow:</span>
+      <div class="ent-picker" id="h-ents"></div>
+    </div>
+    <div class="tl-scroll">
+      <svg class="tl-svg" id="h-svg" viewBox="0 0 900 420" role="img"
+           aria-label="Hybrid timeline: nested event ribbon above entity swimlanes"></svg>
+    </div>
+  </div>
+
+  <p class="anno"><b>Nesting survives, and it's the point.</b> <em>The breach at Low Gate</em> and
+  <em>Corin's ride</em> sit inside the siege's band in the ribbon. Turn the ribbon off and you have
+  take C exactly; turn the lanes off and you have take A without the thread-crossing problem, because
+  presence has moved downstairs.</p>
+
+  <p class="anno"><b>Why this beats the toggle:</b> a toggle makes you choose which question you're
+  asking before you can look. Stacked, "how long was the siege" and "where was Corin during it" are
+  answered by the same glance — the tie line is literally the join between the two answers.</p>
+
+  <p class="anno q"><b>Needs your call — the span rule for nested events.</b> Drawn here as
+  <em>parent auto-fits the union of its children unless pinned</em>: add a scene to the siege and the
+  siege grows to contain it. The alternatives are clamping children to the parent's declared span, or
+  letting a child escape its parent and flagging it. Auto-fit means you rarely type a date for a
+  parent event at all, which seems right for drafting — but it does mean the siege's dates move
+  without you touching them.</p>
+
+  <dl class="verdict">
+    <div class="good"><dt>Buys</dt><p>Both readings at once. Nesting kept. Zero thread crossings — the thread is the lane. The expensive layout problem in take A never has to be solved.</p></div>
+    <div class="bad"><dt>Costs</dt><p>Vertical space: ribbon rows plus one row per followed entity. Needs a pinned-entity set once the cast grows past a dozen.</p></div>
+    <div><dt>Degrades to</dt><p>Ribbon only on a narrow desktop window; take B's spine on a phone. Both are one flag, not a second renderer.</p></div>
+  </dl>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block">
+  <h2>Browsing: two takes on the tree</h2>
+  <p class="lede">
+    Replacing today's horizontal drag-and-drop card tree. Same notes in both.
+  </p>
+
+  <div class="side-by-side" style="align-items:stretch">
+    <div style="flex:1 1 320px">
+      <h3 class="sub">Take D — sectioned by facet <span class="tag">card's proposal</span></h3>
+      <div class="frame">
+        <div class="frame-bar"><span>tree · sectioned</span></div>
+        <div class="frame-body">
+          <div class="tree">
+            <div class="tree-sect">
+              <h5>Entities <span class="count">·</span> <span>5</span></h5>
+              <div class="tnode"><span class="twist">▾</span><span class="glyph ent">◇</span> House Vaun</div>
+              <div class="tchildren">
+                <div class="tnode"><span class="twist"></span><span class="glyph ent">◇</span> Vess Calloran</div>
+                <div class="tnode"><span class="twist"></span><span class="glyph ent">◇</span> Corin Ade</div>
+              </div>
+              <div class="tnode"><span class="twist"></span><span class="glyph ent">◇</span> Maera Sun</div>
+              <div class="tnode"><span class="twist"></span><span class="glyph ent">◇</span> The Needle</div>
+            </div>
+            <div class="tree-sect">
+              <h5>Events <span class="count">·</span> <span>sorted by time</span></h5>
+              <div class="tnode"><span class="twist"></span><span class="glyph ev">▭</span> Vess leaves Harrowgate <span class="when">1204.3</span></div>
+              <div class="tnode"><span class="twist">▾</span><span class="glyph ev">▭</span> The Siege of Vaun <span class="when">1206.1</span></div>
+              <div class="tchildren">
+                <div class="tnode"><span class="twist"></span><span class="glyph ev">▭</span> The breach at Low Gate <span class="when">1206.4</span></div>
+                <div class="tnode"><span class="twist"></span><span class="glyph ev">▭</span> Corin's ride <span class="when">1206.5</span></div>
+              </div>
+              <div class="tnode"><span class="twist"></span><span class="glyph ev">▭</span> The long winter <span class="when">~1207</span></div>
+            </div>
+            <div class="tree-sect">
+              <h5>Lore</h5>
+              <div class="tnode"><span class="twist">▾</span><span class="glyph lore">▢</span> The Accord calendar</div>
+              <div class="tchildren">
+                <div class="tnode"><span class="twist"></span><span class="glyph lore">▢</span> Seasons and naming</div>
+              </div>
+              <div class="tnode"><span class="twist"></span><span class="glyph lore">▢</span> Amberwork</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="anno"><b>Snag:</b> facets are not exclusive. A character with a lifespan is both an
+      entity and an event — it has to appear twice, or the sections stop being a partition.</p>
+    </div>
+
+    <div style="flex:1 1 320px">
+      <h3 class="sub">Take E — one tree, facet in the gutter <span class="tag">chosen</span></h3>
+      <div class="frame">
+        <div class="frame-bar">
+          <span>tree · unified</span><span class="grow"></span>
+          <div class="ctl-group">
+            <button class="ctl on" data-facet="all">all</button>
+            <button class="ctl" data-facet="ent">◇</button>
+            <button class="ctl" data-facet="ev">▭</button>
+            <button class="ctl" data-facet="lore">▢</button>
+          </div>
+        </div>
+        <div class="frame-body">
+          <div class="tree" id="tree-e">
+            <div class="tnode" data-f="lore"><span class="twist">▾</span><span class="glyph lore">▢</span> The Accord</div>
+            <div class="tchildren">
+              <div class="tnode" data-f="lore"><span class="twist"></span><span class="glyph lore">▢</span> The Accord calendar</div>
+              <div class="tnode" data-f="ent"><span class="twist"></span><span class="glyph ent">◇</span> The Sable Order <span class="when">1198 –</span></div>
+            </div>
+            <div class="tnode" data-f="ent"><span class="twist">▾</span><span class="glyph ent">◇</span> House Vaun</div>
+            <div class="tchildren">
+              <div class="tnode" data-f="ent"><span class="twist"></span><span class="glyph ent">◇</span> Vess Calloran <span class="when">1181 – 1211</span></div>
+              <div class="tnode" data-f="ent"><span class="twist"></span><span class="glyph ent">◇</span> Corin Ade</div>
+            </div>
+            <div class="tnode" data-f="ev"><span class="twist">▾</span><span class="glyph ev">▭</span> The Siege of Vaun <span class="when">1206.1</span></div>
+            <div class="tchildren">
+              <div class="tnode" data-f="ev"><span class="twist"></span><span class="glyph ev">▭</span> The breach at Low Gate <span class="when">1206.4</span></div>
+              <div class="tnode" data-f="ev"><span class="twist"></span><span class="glyph ev">▭</span> Corin's ride <span class="when">1206.5</span></div>
+            </div>
+            <div class="tnode" data-f="ev"><span class="twist"></span><span class="glyph ev">▭</span> The long winter <span class="when">~1207</span></div>
+          </div>
+        </div>
+      </div>
+      <p class="anno"><b>Why it wins:</b> the tree keeps meaning the thing the author built —
+      "everything about House Vaun in one place", regardless of facet. Facet becomes a filter, which
+      it already has to be for the query bar anyway. Note that <em>Vess Calloran</em> carries a
+      lifespan and stays a single node.</p>
+
+      <p class="anno"><b>Look at what the tree here doesn't do:</b> <em>The breach at Low Gate</em> is
+      filed under <em>The Siege of Vaun</em> because that's a sensible place to keep it — but it
+      needn't be. It could sit under <em>House Vaun</em>, or at the root, and the ribbon would still
+      draw it inside the siege. The tree is filing; the ribbon is chronology. Keeping them apart is
+      what lets the tree stay the author's own shape.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block">
+  <h2>Filtering, shared by every view</h2>
+  <p class="lede">
+    Click a chip to cycle <b>may</b> → <b>must</b> → <b>mustn't</b> → off. One filter state drives
+    tree, timeline and graph identically, so switching view never loses your place.
+  </p>
+
+  <div class="frame">
+    <div class="frame-bar"><span>filter</span><span class="grow"></span><span id="f-count" style="color:var(--ink-3)"></span></div>
+    <div class="frame-body">
+      <div class="fbar" id="fbar"></div>
+      <div class="fresult" id="f-result"></div>
+    </div>
+  </div>
+
+  <p class="anno q"><b>Open:</b> "may" is the default for an unselected chip, so a chip in the
+  <em>may</em> state and a chip that's off do the same thing unless at least one <em>may</em> exists —
+  at which point <em>may</em> means "at least one of these". That's an OR group, and it needs a
+  clearer name in the UI than "may".</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block">
+  <h2>The note itself</h2>
+  <p class="lede">
+    Facet strip at the top, sigils inline in the body, context rail on the right showing what points
+    here and what this points at.
+  </p>
+
+  <div class="frame">
+    <div class="frame-bar"><span>note · editor</span><span class="grow"></span><span style="color:var(--ink-3)">saved</span></div>
+    <div class="ed">
+      <div class="ed-main">
+        <h3 class="ed-title">The Siege of Vaun</h3>
+        <div class="facet-strip">
+          <button class="facet on" aria-pressed="true"><span class="box"></span> event</button>
+          <button class="facet" aria-pressed="false"><span class="box"></span> entity</button>
+          <span style="font-family:var(--mono); font-size:11px; color:var(--ink-3); margin-left:var(--s2)">
+            1206.1 → 1206.8 · <span style="color:var(--warn)">end approximate</span>
+          </span>
+        </div>
+        <div class="ed-prose">
+          <p>The Order moved on Vaun at the turn of the wet season. <span class="sig">$House Vaun</span>
+          held the outer wall for two hundred days — longer than <span class="sig">@Corin Ade</span>
+          later admitted in his account.</p>
+          <p>Low Gate broke first. See <span class="sig">@The breach at Low Gate</span>.
+          <span class="sig hash">#siege</span> <span class="sig hash">#act-two</span></p>
+          <p style="color:var(--ink-3)">Typing <b>$</b> here opens:</p>
+          <div class="ac" role="listbox" aria-label="Reference autocomplete">
+            <div class="ac-head">$ — reference an entity</div>
+            <div class="ac-item on"><span class="glyph ent" style="width:14px;height:14px">◇</span> Vess Calloran</div>
+            <div class="ac-item"><span class="glyph ent" style="width:14px;height:14px">◇</span> The Sable Order</div>
+            <div class="ac-item"><span class="glyph ent" style="width:14px;height:14px">◇</span> The Needle</div>
+            <div class="ac-item" style="color:var(--ink-3)">+ new entity “Vau…”</div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="ed-rail">
+        <div class="rail-sect">
+          <h6>In the timeline</h6>
+          <div class="rail-item"><span class="dir">↑</span> The Accord, year 1206</div>
+          <div class="rail-item"><span class="dir">▾</span> The breach at Low Gate</div>
+          <div class="rail-item"><span class="dir">▾</span> Corin's ride</div>
+          <div class="rail-item" style="color:var(--warn)"><span class="dir">↔</span> The parley at Vaun</div>
+        </div>
+        <div class="rail-sect">
+          <h6>References ($)</h6>
+          <div class="rail-item"><span class="dir">→</span> House Vaun</div>
+          <div class="rail-item"><span class="dir">→</span> Vess Calloran</div>
+          <div class="rail-item"><span class="dir">→</span> The Sable Order</div>
+        </div>
+        <div class="rail-sect">
+          <h6>Mentioned by (@)</h6>
+          <div class="rail-item"><span class="dir">←</span> Corin Ade</div>
+          <div class="rail-item"><span class="dir">←</span> Amberwork</div>
+          <div class="rail-item"><span class="dir">←</span> Ch. 14 — “The Wet Season”</div>
+        </div>
+        <div class="rail-sect">
+          <h6>Tags</h6>
+          <div class="rail-item">#siege · #act-two</div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <p class="anno"><b>Worth deciding here:</b> the rail's last item is a <em>chapter</em>, not a note.
+  If chapters can be <span class="src">@</span>mentioned, the notes graph becomes the manuscript
+  index too — and the timeline can show which chapter covers which event. That's a large, cheap win,
+  and it's not in the card.</p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block" id="shell">
+  <h2>Placement and the phone</h2>
+  <p class="lede">Notes as a top-level workspace view, and what survives at 390px.</p>
+
+  <div class="side-by-side">
+    <div style="flex:1 1 380px">
+      <h3 class="sub">Desktop shell</h3>
+      <div class="frame">
+        <div class="shell">
+          <nav class="shell-nav">
+            <div class="nav-item">Chapters</div>
+            <div class="nav-item on">Notes</div>
+            <div class="nav-item">Beta readers</div>
+            <div class="nav-item">Settings</div>
+            <div style="height:var(--s4)"></div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--ink-3);letter-spacing:.1em">TOOLS</div>
+            <div class="nav-item">Import</div>
+            <div class="nav-item">Export</div>
+          </nav>
+          <div class="shell-main">
+            <div class="viewtabs">
+              <span class="viewtab">Tree</span>
+              <span class="viewtab on">Timeline</span>
+              <span class="viewtab" style="color:var(--line)">Graph · later</span>
+            </div>
+            <div class="ghost" style="height:26px"></div>
+            <div class="ghost" style="flex:1; min-height:120px"></div>
+          </div>
+        </div>
+      </div>
+      <p class="anno">Filter state and selection live above the tabs, so switching view is a
+      re-render, not a navigation.</p>
+    </div>
+
+    <div>
+      <h3 class="sub">Phone — take B, no toggle</h3>
+      <div class="phone">
+        <div class="phone-bar">◂ The Amber Chain · Notes</div>
+        <div class="phone-body">
+          <div style="display:flex; gap:var(--s1); margin-bottom:var(--s3)">
+            <span class="viewtab">Tree</span><span class="viewtab on">Time</span>
+          </div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--ink-3)">1206.1 – 1206.8</div>
+          <div class="spine-card" style="margin:4px 0 var(--s2)">
+            <h4>The Siege of Vaun</h4><div class="refs">$Vess · $Corin · $Order</div>
+          </div>
+          <div style="margin-left:var(--s3); border-left:2px solid var(--line-2); padding-left:var(--s2)">
+            <div class="spine-card" style="margin-bottom:var(--s1)"><h4>The breach at Low Gate</h4></div>
+            <div class="spine-card"><h4>Corin's ride</h4></div>
+          </div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-top:var(--s3)">~1207 – 1208</div>
+          <div class="spine-card" style="margin-top:4px; border-style:dashed">
+            <h4>The long winter</h4>
+          </div>
+        </div>
+      </div>
+      <p class="anno" style="max-width:270px">Lanes and swimlanes both need width phones don't have.
+      The spine is the phone timeline regardless of which desktop take wins.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block">
+  <h2>The calendar, sketched</h2>
+  <p class="lede">
+    A base unit and an ordered list of divisors. Every timestamp is stored as one number in base
+    units plus a precision level; display is a format string. Sorting stays trivial and invented
+    calendars work without special cases.
+  </p>
+
+  <div class="frame">
+    <div class="frame-bar"><span>book · calendar</span><span class="grow"></span><span style="color:var(--ink-3)">The Accord</span></div>
+    <div class="frame-body">
+      <div class="tbl-scroll">
+      <table class="dec">
+        <thead><tr><th>Unit</th><th>Defined as</th><th>Label</th><th>Shown in timeline when</th></tr></thead>
+        <tbody>
+          <tr><td>Year</td><td class="src">base</td><td>“yr 1206 of the Accord”</td><td>always</td></tr>
+          <tr><td>Season</td><td class="src">1 / 4 year</td><td>wet · dry · high · low</td><td>span &lt; 40 years</td></tr>
+          <tr><td>Day</td><td class="src">1 / 320 year</td><td>ordinal</td><td>span &lt; 2 years</td></tr>
+          <tr><td>Bell</td><td class="src">1 / 16 day</td><td>ordinal</td><td>span &lt; 20 days</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p class="anno" style="margin-top:var(--s4)"><b>Default is Gregorian-shaped:</b> year base,
+      months at 1/12, days at 1/365, hours at 1/24 day — so a contemporary book needs no setup at
+      all and never sees this screen.</p>
+      <p class="anno"><b>Settled: no real Gregorian, for now.</b> A divisor stack can't produce true
+      calendar dates — leap years and unequal months don't divide. That's accepted: a day is
+      <span class="src">1/365</span> of a year and nothing in the model knows otherwise. A genuine
+      Gregorian mode arrives later as its own built-in, or as configuration, if a book ever needs
+      “14 March 2019” to be exactly right. <b>Nothing here should special-case it in the meantime</b> —
+      that's the whole value of deferring it.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<section class="block">
+  <h2>Build order</h2>
+  <p class="lede">Each step is independently shippable and leaves notes working.</p>
+  <ol class="steps">
+    <li><b>Model and migration.</b> Add facets, span, <span class="src">event_parent</span> (distinct
+      from the existing tree parent), and a derived link index; mirror span, facet and edges into the
+      book structure doc so the timeline never has to open a note body. Every existing note migrates
+      as lore with its tree intact — nothing breaks, nothing new is visible yet.</li>
+    <li><b>Sigils and the context rail.</b> <span class="src">#</span>/<span class="src">@</span>/<span class="src">$</span>
+      autocomplete in the note editor, backlinks in the rail. Useful on its own, before any new view exists.</li>
+    <li><b>Tree view — take E.</b> Replaces the horizontal card tree, and retires
+      <span class="src">render_note_card</span>, the 20-parameter recursive function the last design
+      pass deliberately left alone.</li>
+    <li><b>Calendar and time entry.</b> Units, fuzzy and relative spans, the holding rail. Still no
+      timeline; spans just show in the tree gutter.</li>
+    <li><b>The lanes — take C.</b> Entity rows, ties, dots. The cheaper half of the hybrid, and the
+      half that can't look broken. Shippable on its own.</li>
+    <li><b>The ribbon.</b> Nested event bars above the lanes, sharing the axis, with drag-into-bar
+      setting <span class="src">event_parent</span>. This is where nesting arrives.</li>
+    <li><b>Phone — take B's spine,</b> behind the same data and filter state.</li>
+    <li><b>Graph.</b> Deferred, as the card says.</li>
+  </ol>
+  <p class="anno" style="margin-top:var(--s5)"><b>Steps 1–4 carry no risk from the timeline design.</b>
+  They're model, editor and tree work that the ribbon and lanes then sit on top of — so the span rule
+  above only has to be settled before step 6.</p>
+</section>
+
+</div>
+
+<script>
+"use strict";
+/* ═══════════════════════════════════════════════════════════════
+   Shared sample data — The Amber Chain
+   ═══════════════════════════════════════════════════════════════ */
+const ENTITIES = [
+  {id:"vess",   name:"Vess Calloran"},
+  {id:"corin",  name:"Corin Ade"},
+  {id:"maera",  name:"Maera Sun"},
+  {id:"needle", name:"The Needle"},
+  {id:"order",  name:"The Sable Order"},
+];
+
+const EVENTS = [
+  {id:"leave",  name:"Vess leaves Harrowgate", t0:1204.30, t1:1204.42, parent:null,    refs:["vess"]},
+  {id:"siege",  name:"The Siege of Vaun",      t0:1206.10, t1:1206.80, parent:null,    refs:["vess","corin","order"]},
+  {id:"breach", name:"The breach at Low Gate", t0:1206.32, t1:1206.44, parent:"siege", refs:["vess","order"]},
+  {id:"ride",   name:"Corin's ride",           t0:1206.52, t1:1206.66, parent:"siege", refs:["corin"]},
+  {id:"parley", name:"The parley at Vaun",     t0:1206.50, t1:1206.70, parent:null,    refs:["vess","order"]},
+  {id:"needled",name:"Maera takes the Needle", t0:1206.52, t1:1206.60, parent:null,    refs:["maera","needle"]},
+  {id:"winter", name:"The long winter",        t0:1207.00, t1:1208.40, parent:null,    refs:["vess","maera"], fuzzy:true},
+  {id:"chain",  name:"The Amber Chain broken", t0:1211.00, t1:1211.10, parent:null,    refs:["vess","corin","maera","order"]},
+];
+
+const UNDATED = [
+  {id:"reunion", name:"Vess and Maera meet again", hint:"after $The Siege of Vaun"},
+  {id:"schism",  name:"The Order's schism",        hint:"no date yet"},
+];
+
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, text){
+  const n = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (text != null) n.textContent = text;
+  return n;
+}
+function entName(id){ const e = ENTITIES.find(x => x.id === id); return e ? e.name : id; }
+
+/* Rough text metrics — good enough to keep labels from colliding, which is the
+   whole point of showing these takes side by side. */
+function textW(s, px){ return s.length * px * 0.55; }
+function fitText(s, maxPx, px){
+  if (textW(s, px) <= maxPx) return s;
+  const keep = Math.max(0, Math.floor(maxPx / (px * 0.55)) - 1);
+  return keep < 3 ? "" : s.slice(0, keep) + "…";
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TAKE A — horizontal lanes with threads
+   ═══════════════════════════════════════════════════════════════ */
+const A = {
+  svg:  document.getElementById("a-svg"),
+  zoom: document.getElementById("a-zoom"),
+  zlbl: document.getElementById("a-zoom-lbl"),
+  tbtn: document.getElementById("a-threads"),
+  ents: document.getElementById("a-ents"),
+  rail: document.getElementById("a-rail"),
+  sel: "vess",
+  threads: true,
+  windows: [[1206.0, 1207.0], [1204, 1212], [1196, 1216]],
+};
+
+/* Pack root events into vertical blocks; each root reserves sub-lanes for its children. */
+function layoutLanes(){
+  const roots = EVENTS.filter(e => !e.parent).slice().sort((a,b) => a.t0 - b.t0);
+  const blocks = [];
+  for (const r of roots){
+    const kids = EVENTS.filter(e => e.parent === r.id).slice().sort((a,b) => a.t0 - b.t0);
+    // pack children into sub-lanes
+    const subEnd = [];
+    for (const k of kids){
+      let s = 0;
+      while (s < subEnd.length && subEnd[s] > k.t0) s++;
+      k._sub = s;
+      subEnd[s] = k.t1;
+    }
+    blocks.push({root:r, kids, height: 1 + Math.max(0, subEnd.length)});
+  }
+  // greedily stack blocks that overlap in time
+  const occupied = []; // per row index -> end time
+  for (const b of blocks){
+    let row = 0;
+    for(;;){
+      let clash = false;
+      for (let i = row; i < row + b.height; i++){
+        if (occupied[i] != null && occupied[i] > b.root.t0){ clash = true; break; }
+      }
+      if (!clash) break;
+      row++;
+    }
+    b.row = row;
+    for (let i = row; i < row + b.height; i++) occupied[i] = b.root.t1;
+  }
+  return blocks;
+}
+
+function drawA(){
+  const svg = A.svg;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  const W = 900, PAD_L = 14, PAD_R = 14, AXIS_Y = 32;
+  const [lo, hi] = A.windows[+A.zoom.value];
+  A.zlbl.textContent = lo + " – " + hi;
+
+  const laneH = 30, laneGap = 6, topY = AXIS_Y + 18;
+  const x = t => PAD_L + ((t - lo) / (hi - lo)) * (W - PAD_L - PAD_R);
+
+  const blocks = layoutLanes();
+  const rows = blocks.reduce((m,b) => Math.max(m, b.row + b.height), 1);
+  const H = topY + rows * (laneH + laneGap) + 16;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  // axis
+  svg.appendChild(el("line", {class:"axis-line", x1:PAD_L, y1:AXIS_Y, x2:W - PAD_R, y2:AXIS_Y}));
+  const span = hi - lo;
+  const step = span > 12 ? 4 : (span > 3 ? 1 : 0.25);
+  for (let t = Math.ceil(lo / step) * step; t <= hi + 1e-9; t += step){
+    svg.appendChild(el("line", {class:"tick", x1:x(t), y1:AXIS_Y, x2:x(t), y2:H - 8}));
+    const lbl = step < 1 ? t.toFixed(2) : String(Math.round(t));
+    svg.appendChild(el("text", {class:"tick-label", x:x(t) + 4, y:AXIS_Y - 6}, lbl));
+  }
+
+  const rowY = r => topY + r * (laneH + laneGap);
+  const boxes = {}; // id -> {cx, cy}
+
+  // 1. collect every bar's geometry before drawing anything, so labels can see neighbours
+  const bars = [];
+  for (const b of blocks){
+    bars.push({
+      ev: b.root, row: b.row, depth: 0,
+      x0: x(b.root.t0), x1: Math.max(x(b.root.t0) + 4, x(b.root.t1)),
+      y: rowY(b.row), h: laneH
+    });
+    for (const k of b.kids){
+      bars.push({
+        ev: k, row: b.row + 1 + k._sub, depth: 1,
+        x0: x(k.t0), x1: Math.max(x(k.t0) + 4, x(k.t1)),
+        y: rowY(b.row + 1 + k._sub), h: laneH - 8
+      });
+    }
+  }
+
+  // 2. containment bands behind each root that has children
+  for (const b of blocks){
+    if (!b.kids.length) continue;
+    svg.appendChild(el("rect", {
+      class:"contain",
+      x: x(b.root.t0) - 3, y: rowY(b.row) - 3,
+      width: Math.max(10, x(b.root.t1) - x(b.root.t0)) + 6,
+      height: b.height * (laneH + laneGap) - laneGap + 6, rx: 3
+    }));
+  }
+
+  // 3. bars (each carries its full name as a tooltip — the real mitigation for
+  //    labels that can't fit at this density)
+  for (const bar of bars){
+    const r = el("rect", {
+      class:"ev-box" + (bar.depth ? " depth1" : "") + (bar.ev.fuzzy ? " fuzzy" : ""),
+      x: bar.x0, y: bar.y, width: bar.x1 - bar.x0, height: bar.h, rx: 2
+    });
+    r.appendChild(el("title", {}, bar.ev.name));
+    svg.appendChild(r);
+    boxes[bar.ev.id] = {cx: (bar.x0 + bar.x1) / 2, cy: bar.y + bar.h / 2};
+  }
+
+  // 4. labels — inside if the bar is wide enough, otherwise spilling right into
+  //    whatever gap exists before the next bar on the same row.
+  const FS = 11;
+  let dropped = 0;
+  for (const bar of bars){
+    const inner = bar.x1 - bar.x0 - 10;
+    let tx, avail, cls = "ev-label" + (bar.depth ? " dim" : "");
+    if (inner >= 36){
+      // wide enough to hold a readable stub — truncate inside rather than spill
+      tx = bar.x0 + 6; avail = inner;
+    } else {
+      const nextX0 = bars
+        .filter(o => o !== bar && o.row === bar.row && o.x0 >= bar.x1)
+        .reduce((m, o) => Math.min(m, o.x0), W - PAD_R);
+      tx = bar.x1 + 5; avail = nextX0 - tx - 6;
+    }
+    const label = fitText(bar.ev.name, avail, FS);
+    if (!label){ dropped++; continue; }
+    svg.appendChild(el("text", {
+      class: cls, x: tx, y: bar.y + (bar.h / 2) + 4
+    }, label));
+  }
+  const dropNote = document.getElementById("a-dropped");
+  if (dropNote){
+    dropNote.textContent = dropped
+      ? dropped + " label" + (dropped > 1 ? "s" : "") + " with nowhere to go — hover the bar"
+      : "all labels placed";
+  }
+
+  // thread for the selected entity
+  if (A.threads && A.sel){
+    const mine = EVENTS
+      .filter(e => e.refs.includes(A.sel) && boxes[e.id] && e.t1 >= lo && e.t0 <= hi)
+      .sort((a,b) => a.t0 - b.t0);
+
+    // group into simultaneous, non-nested clusters -> the "split"
+    const clusters = [];
+    for (const e of mine){
+      const last = clusters[clusters.length - 1];
+      const overlapsLast = last && last.some(o =>
+        e.t0 < o.t1 && o.t0 < e.t1 && e.parent !== o.id && o.parent !== e.id
+      );
+      if (overlapsLast) last.push(e); else clusters.push([e]);
+    }
+
+    for (let i = 0; i < clusters.length - 1; i++){
+      for (const from of clusters[i]){
+        for (const to of clusters[i + 1]){
+          const p = boxes[from.id], q = boxes[to.id];
+          const mx = (p.cx + q.cx) / 2;
+          svg.appendChild(el("path", {
+            class:"thread",
+            d:"M" + p.cx + "," + p.cy + " C" + mx + "," + p.cy + " " + mx + "," + q.cy + " " + q.cx + "," + q.cy
+          }));
+        }
+      }
+    }
+    for (const e of mine){
+      const p = boxes[e.id];
+      svg.appendChild(el("circle", {class:"thread-node", cx:p.cx, cy:p.cy, r:3.5}));
+    }
+  }
+
+  // undated rail
+  A.rail.querySelectorAll(".chip-undated").forEach(n => n.remove());
+  for (const u of UNDATED){
+    const c = document.createElement("div");
+    c.className = "chip-undated";
+    c.setAttribute("draggable", "true");
+    c.innerHTML = "<span></span><small></small>";
+    c.firstChild.textContent = u.name;
+    c.lastChild.textContent = u.hint;
+    A.rail.appendChild(c);
+  }
+}
+
+function buildEntPicker(host, selected, onPick){
+  host.textContent = "";
+  for (const e of ENTITIES){
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ent-chip" + (e.id === selected() ? " on" : "");
+    b.textContent = e.name;
+    b.setAttribute("aria-pressed", String(e.id === selected()));
+    b.addEventListener("click", () => { onPick(e.id === selected() ? null : e.id); });
+    host.appendChild(b);
+  }
+}
+
+function refreshAPicker(){
+  buildEntPicker(A.ents, () => A.sel, id => { A.sel = id; refreshAPicker(); drawA(); });
+}
+refreshAPicker();
+
+A.zoom.addEventListener("input", drawA);
+A.tbtn.addEventListener("click", () => {
+  A.threads = !A.threads;
+  A.tbtn.setAttribute("aria-pressed", String(A.threads));
+  A.tbtn.textContent = A.threads ? "threads on" : "threads off";
+  drawA();
+});
+drawA();
+
+/* ═══════════════════════════════════════════════════════════════
+   TAKE C — entity swimlanes
+   ═══════════════════════════════════════════════════════════════ */
+const C = {
+  svg:  document.getElementById("c-svg"),
+  ents: document.getElementById("c-ents"),
+  sort: document.getElementById("c-sortmode"),
+  sel: "corin",
+  byName: false,
+};
+
+function drawC(){
+  const svg = C.svg;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  const W = 900, PAD_L = 118, PAD_R = 22, topY = 118, laneH = 34;
+  const lo = 1204, hi = 1212;
+  const x = t => PAD_L + ((t - lo) / (hi - lo)) * (W - PAD_L - PAD_R);
+
+  let lanes = ENTITIES.slice();
+  if (C.byName){
+    lanes.sort((a,b) => a.name.localeCompare(b.name));
+  } else {
+    const first = e => Math.min.apply(null, EVENTS.filter(v => v.refs.includes(e.id)).map(v => v.t0).concat([9999]));
+    lanes.sort((a,b) => first(a) - first(b));
+  }
+  const laneY = {};
+  lanes.forEach((e, i) => { laneY[e.id] = topY + i * laneH; });
+
+  const H = topY + lanes.length * laneH + 20;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  // axis
+  svg.appendChild(el("line", {class:"axis-line", x1:PAD_L, y1:26, x2:W - PAD_R, y2:26}));
+  for (let t = lo; t <= hi; t += 1){
+    svg.appendChild(el("line", {class:"tick", x1:x(t), y1:26, x2:x(t), y2:H - 10}));
+    svg.appendChild(el("text", {class:"tick-label", x:x(t) + 3, y:20}, String(t)));
+  }
+
+  // event bands first, so lanes draw over them
+  for (const ev of EVENTS){
+    const ys = ev.refs.map(r => laneY[r]).filter(v => v != null);
+    if (!ys.length) continue;
+    const y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    const bw = Math.max(5, x(ev.t1) - x(ev.t0));
+    svg.appendChild(el("rect", {
+      class:"ev-band" + (ev.fuzzy ? " fuzzy" : ""),
+      x:x(ev.t0), y:y0 - 11, width:bw, height:(y1 - y0) + 22, rx:2
+    }));
+  }
+
+  // captions in staggered tiers above the lanes — dense moments (1206 here) would
+  // otherwise overprint into mush
+  const CAP_FS = 10, TIER_H = 13;
+  const tierEnd = [];
+  const caps = EVENTS
+    .filter(ev => ev.refs.some(r => laneY[r] != null))
+    .slice().sort((a, b) => a.t0 - b.t0);
+  for (const ev of caps){
+    const cx = x(ev.t0);
+    let tier = 0;
+    while (tier < 6 && tierEnd[tier] != null && tierEnd[tier] > cx) tier++;
+    if (tier >= 6) tier = 0;  // give up stacking and overprint rather than hit the axis
+    const label = fitText(ev.name, (W - PAD_R) - cx, CAP_FS);
+    if (!label) continue;
+    tierEnd[tier] = cx + textW(label, CAP_FS) + 10;
+    const ys = ev.refs.map(r => laneY[r]).filter(v => v != null);
+    const y0 = Math.min.apply(null, ys);
+    const capY = topY - 16 - (tier * TIER_H);
+    svg.appendChild(el("line", {
+      class:"cap-leader", x1:cx + 1, y1:capY + 3, x2:cx + 1, y2:y0 - 12
+    }));
+    svg.appendChild(el("text", {class:"ev-cap", x:cx + 4, y:capY}, label));
+  }
+
+  // lanes
+  for (const e of lanes){
+    const on = e.id === C.sel;
+    svg.appendChild(el("line", {
+      class:"lane-line" + (on ? " on" : ""),
+      x1:PAD_L, y1:laneY[e.id], x2:W - PAD_R, y2:laneY[e.id]
+    }));
+    svg.appendChild(el("text", {
+      class:"lane-name" + (on ? " on" : ""), x:PAD_L - 8, y:laneY[e.id] + 4, "text-anchor":"end"
+    }, e.name));
+  }
+
+  // ties + participation dots
+  for (const ev of EVENTS){
+    const ys = ev.refs.map(r => laneY[r]).filter(v => v != null);
+    if (!ys.length) continue;
+    const cx = x(ev.t0) + Math.max(5, x(ev.t1) - x(ev.t0)) / 2;
+    svg.appendChild(el("line", {
+      class:"ev-tie", x1:cx, y1:Math.min.apply(null, ys), x2:cx, y2:Math.max.apply(null, ys)
+    }));
+    for (const r of ev.refs){
+      if (laneY[r] == null) continue;
+      svg.appendChild(el("circle", {
+        class:"ev-dot" + (r === C.sel ? " on" : ""), cx:cx, cy:laneY[r], r: r === C.sel ? 5 : 3.5
+      }));
+    }
+  }
+}
+
+function refreshCPicker(){
+  buildEntPicker(C.ents, () => C.sel, id => { C.sel = id; refreshCPicker(); drawC(); });
+}
+refreshCPicker();
+C.sort.addEventListener("click", () => {
+  C.byName = !C.byName;
+  C.sort.textContent = C.byName ? "order: alphabetical" : "order: by first appearance";
+  drawC();
+});
+drawC();
+
+/* ═══════════════════════════════════════════════════════════════
+   THE HYBRID — nested event ribbon over entity swimlanes,
+   one shared time axis, ties joining the two zones.
+   ═══════════════════════════════════════════════════════════════ */
+const H = {
+  svg:  document.getElementById("h-svg"),
+  ents: document.getElementById("h-ents"),
+  rib:  document.getElementById("h-ribbon"),
+  lan:  document.getElementById("h-lanes"),
+  sel: "vess",
+  showRibbon: true,
+  showLanes: true,
+};
+
+/* Parent events auto-fit the union of their children unless pinned. */
+function fittedSpan(ev){
+  const kids = EVENTS.filter(k => k.parent === ev.id);
+  if (!kids.length || ev.pinned) return {t0: ev.t0, t1: ev.t1};
+  let t0 = ev.t0, t1 = ev.t1;
+  for (const k of kids){
+    const ks = fittedSpan(k);
+    t0 = Math.min(t0, ks.t0);
+    t1 = Math.max(t1, ks.t1);
+  }
+  return {t0: t0, t1: t1};
+}
+
+function drawH(){
+  const svg = H.svg;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+
+  const W = 900, PAD_L = 130, PAD_R = 22;
+  const lo = 1204, hi = 1212;
+  const x = t => PAD_L + ((t - lo) / (hi - lo)) * (W - PAD_L - PAD_R);
+
+  const AXIS_Y = 26;
+  const ribTop = 46, ribRowH = 22, ribGap = 4;
+  const laneH = 30;
+
+  // ── ribbon layout: roots with children in sub-rows beneath ──
+  const blocks = layoutLanes();
+  const ribRows = H.showRibbon ? blocks.reduce((m, b) => Math.max(m, b.row + b.height), 1) : 0;
+  const ribH = H.showRibbon ? ribRows * (ribRowH + ribGap) + 10 : 0;
+
+  const laneTop = ribTop + ribH + (H.showRibbon && H.showLanes ? 18 : 0);
+  const lanes = H.showLanes ? ENTITIES.slice() : [];
+  const first = e => Math.min.apply(null,
+    EVENTS.filter(v => v.refs.includes(e.id)).map(v => fittedSpan(v).t0).concat([9999]));
+  lanes.sort((a, b) => first(a) - first(b));
+  const laneY = {};
+  lanes.forEach((e, i) => { laneY[e.id] = laneTop + 14 + i * laneH; });
+
+  const totalH = (H.showLanes ? laneTop + 14 + lanes.length * laneH + 14 : ribTop + ribH + 14);
+  svg.setAttribute("viewBox", "0 0 " + W + " " + Math.max(120, totalH));
+
+  // ── axis ──
+  svg.appendChild(el("line", {class:"axis-line", x1:PAD_L, y1:AXIS_Y, x2:W - PAD_R, y2:AXIS_Y}));
+  for (let t = lo; t <= hi; t++){
+    svg.appendChild(el("line", {class:"tick", x1:x(t), y1:AXIS_Y, x2:x(t), y2:totalH - 8}));
+    if (x(t) < W - PAD_R - 10){
+      svg.appendChild(el("text", {class:"tick-label", x:x(t) + 3, y:AXIS_Y - 7}, String(t)));
+    }
+  }
+
+  const evX = {}; // event id -> {x0, x1, cx, barY, barH}
+
+  // ── zone 1: the event ribbon ──
+  if (H.showRibbon){
+    const rowY = r => ribTop + r * (ribRowH + ribGap);
+
+    // containment bands behind parents
+    for (const b of blocks){
+      if (!b.kids.length) continue;
+      const s = fittedSpan(b.root);
+      svg.appendChild(el("rect", {
+        class:"contain",
+        x:x(s.t0) - 3, y:rowY(b.row) - 3,
+        width:Math.max(12, x(s.t1) - x(s.t0)) + 6,
+        height:b.height * (ribRowH + ribGap) - ribGap + 6, rx:3
+      }));
+    }
+
+    const ribBars = [];
+    for (const b of blocks){
+      const s = fittedSpan(b.root);
+      ribBars.push({ev:b.root, row:b.row, depth:0, x0:x(s.t0), x1:Math.max(x(s.t0) + 4, x(s.t1))});
+      for (const k of b.kids){
+        const ks = fittedSpan(k);
+        ribBars.push({ev:k, row:b.row + 1 + k._sub, depth:1,
+                      x0:x(ks.t0), x1:Math.max(x(ks.t0) + 4, x(ks.t1))});
+      }
+    }
+
+    for (const bar of ribBars){
+      const y = rowY(bar.row);
+      const mine = bar.ev.refs.includes(H.sel);
+      const r = el("rect", {
+        class:"ev-box" + (bar.depth ? " depth1" : "") + (bar.ev.fuzzy ? " fuzzy" : "") + (mine ? " mine" : ""),
+        x:bar.x0, y:y, width:bar.x1 - bar.x0, height:ribRowH, rx:2
+      });
+      r.appendChild(el("title", {}, bar.ev.name));
+      svg.appendChild(r);
+      evX[bar.ev.id] = {x0:bar.x0, x1:bar.x1, cx:(bar.x0 + bar.x1) / 2, barY:y, barH:ribRowH};
+
+      // label: inside when there's room, else into the gap on this row
+      // label: inside if it fits, else into the gap to the right, else the gap
+      // to the left — narrow child bars usually only have room on one side
+      const FS = 11, inner = bar.x1 - bar.x0 - 8;
+      let tx, avail, anchor = "start";
+      if (inner >= 34){
+        tx = bar.x0 + 5; avail = inner;
+      } else {
+        const nextX0 = ribBars
+          .filter(o => o !== bar && o.row === bar.row && o.x0 >= bar.x1)
+          .reduce((m, o) => Math.min(m, o.x0), W - PAD_R);
+        const rightRoom = nextX0 - (bar.x1 + 5) - 6;
+        const prevX1 = ribBars
+          .filter(o => o !== bar && o.row === bar.row && o.x1 <= bar.x0)
+          .reduce((m, o) => Math.max(m, o.x1), PAD_L);
+        const leftRoom = (bar.x0 - 5) - prevX1 - 6;
+        if (rightRoom >= leftRoom){ tx = bar.x1 + 5; avail = rightRoom; }
+        else { tx = bar.x0 - 5; avail = leftRoom; anchor = "end"; }
+      }
+      const label = fitText(bar.ev.name, avail, FS);
+      if (label){
+        svg.appendChild(el("text", {
+          class:"ev-label" + (bar.depth ? " dim" : "") + (mine ? " mine" : ""),
+          x:tx, y:y + 15, "text-anchor":anchor
+        }, label));
+      }
+    }
+
+    svg.appendChild(el("text", {class:"zone-lbl", x:PAD_L - 10, y:ribTop + 12, "text-anchor":"end"}, "events"));
+  }
+
+  // ── zone 2: entity lanes ──
+  if (H.showLanes){
+    if (H.showRibbon){
+      svg.appendChild(el("line", {
+        class:"zone-rule", x1:PAD_L - 6, y1:laneTop, x2:W - PAD_R, y2:laneTop
+      }));
+    }
+    svg.appendChild(el("text", {
+      class:"zone-lbl", x:PAD_L - 10, y:laneTop - 5, "text-anchor":"end"
+    }, "who"));
+
+    for (const e of lanes){
+      const on = e.id === H.sel;
+      svg.appendChild(el("line", {
+        class:"lane-line" + (on ? " on" : ""),
+        x1:PAD_L, y1:laneY[e.id], x2:W - PAD_R, y2:laneY[e.id]
+      }));
+      svg.appendChild(el("text", {
+        class:"lane-name" + (on ? " on" : ""),
+        x:PAD_L - 10, y:laneY[e.id] + 4, "text-anchor":"end"
+      }, e.name));
+    }
+
+    // ties: from the lanes up to the event's bar in the ribbon
+    for (const ev of EVENTS){
+      const ys = ev.refs.map(r => laneY[r]).filter(v => v != null);
+      if (!ys.length) continue;
+      const s = fittedSpan(ev);
+      const cx = evX[ev.id] ? evX[ev.id].cx : (x(s.t0) + Math.max(x(s.t0) + 4, x(s.t1))) / 2;
+      const yTop = H.showRibbon && evX[ev.id]
+        ? evX[ev.id].barY + evX[ev.id].barH
+        : Math.min.apply(null, ys);
+      svg.appendChild(el("line", {
+        class:"ev-tie" + (ev.refs.includes(H.sel) ? " on" : ""),
+        x1:cx, y1:yTop, x2:cx, y2:Math.max.apply(null, ys)
+      }));
+      for (const r of ev.refs){
+        if (laneY[r] == null) continue;
+        svg.appendChild(el("circle", {
+          class:"ev-dot" + (r === H.sel ? " on" : ""),
+          cx:cx, cy:laneY[r], r: r === H.sel ? 5 : 3.5
+        }));
+      }
+    }
+  }
+}
+
+function refreshHPicker(){
+  buildEntPicker(H.ents, () => H.sel, id => { H.sel = id; refreshHPicker(); drawH(); });
+}
+refreshHPicker();
+H.rib.addEventListener("click", () => {
+  H.showRibbon = !H.showRibbon;
+  if (!H.showRibbon && !H.showLanes){ H.showLanes = true; syncH(); }
+  syncH(); drawH();
+});
+H.lan.addEventListener("click", () => {
+  H.showLanes = !H.showLanes;
+  if (!H.showRibbon && !H.showLanes){ H.showRibbon = true; }
+  syncH(); drawH();
+});
+function syncH(){
+  H.rib.classList.toggle("on", H.showRibbon);
+  H.rib.setAttribute("aria-pressed", String(H.showRibbon));
+  H.lan.classList.toggle("on", H.showLanes);
+  H.lan.setAttribute("aria-pressed", String(H.showLanes));
+}
+syncH();
+drawH();
+
+/* ═══════════════════════════════════════════════════════════════
+   TAKE E — facet filter on the unified tree
+   ═══════════════════════════════════════════════════════════════ */
+(function(){
+  const host = document.getElementById("tree-e");
+  const btns = host.closest(".frame").querySelectorAll("[data-facet]");
+  btns.forEach(b => b.addEventListener("click", () => {
+    btns.forEach(o => o.classList.toggle("on", o === b));
+    const want = b.dataset.facet;
+    host.querySelectorAll(".tnode").forEach(n => {
+      n.style.opacity = (want === "all" || n.dataset.f === want) ? "" : ".28";
+    });
+  }));
+})();
+
+/* ═══════════════════════════════════════════════════════════════
+   FILTER BAR — must / may / mustn't cycling
+   ═══════════════════════════════════════════════════════════════ */
+(function(){
+  const TERMS = [
+    {k:"#siege",            f:n => n.tags.includes("siege")},
+    {k:"#act-two",          f:n => n.tags.includes("act-two")},
+    {k:"$Vess Calloran",    f:n => n.refs.includes("vess")},
+    {k:"$Corin Ade",        f:n => n.refs.includes("corin")},
+    {k:"@The Sable Order",  f:n => n.refs.includes("order")},
+  ];
+  const NOTES = EVENTS.map(e => ({
+    name: e.name,
+    refs: e.refs,
+    tags: e.id === "siege" || e.id === "breach" || e.id === "parley" ? ["siege","act-two"]
+        : e.id === "ride" ? ["act-two"] : [],
+  }));
+
+  const ORDER = ["off", "must", "may", "mustnt"];
+  const GLYPH = {off:"·", must:"+", may:"~", mustnt:"−"};
+  const state = TERMS.map(() => "off");
+
+  const bar = document.getElementById("fbar");
+  const out = document.getElementById("f-result");
+  const cnt = document.getElementById("f-count");
+
+  function apply(){
+    const musts   = TERMS.filter((_, i) => state[i] === "must");
+    const mays    = TERMS.filter((_, i) => state[i] === "may");
+    const mustnts = TERMS.filter((_, i) => state[i] === "mustnt");
+    const hits = NOTES.filter(n =>
+      musts.every(t => t.f(n)) &&
+      mustnts.every(t => !t.f(n)) &&
+      (mays.length === 0 || mays.some(t => t.f(n)))
+    );
+    cnt.textContent = hits.length + " of " + NOTES.length + " events";
+    out.textContent = hits.length ? hits.map(h => h.name).join("  ·  ") : "nothing matches";
+  }
+
+  TERMS.forEach((t, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "fchip";
+    b.dataset.state = "off";
+    b.innerHTML = '<span class="op"></span><span class="lbl"></span>';
+    b.querySelector(".op").textContent = GLYPH.off;
+    b.querySelector(".lbl").textContent = t.k;
+    b.addEventListener("click", () => {
+      state[i] = ORDER[(ORDER.indexOf(state[i]) + 1) % ORDER.length];
+      b.dataset.state = state[i];
+      b.querySelector(".op").textContent = GLYPH[state[i]];
+      apply();
+    });
+    bar.appendChild(b);
+  });
+  apply();
+})();
+</script>
