@@ -455,6 +455,7 @@ impl BookStore {
         title: Option<&str>,
         content: Option<&str>,
         color: Option<Option<&str>>,
+        facets: note::NoteFacetPatch,
     ) -> Result<()> {
         let lock = self.notes_lock(book_id);
         let _guard = lock.lock().await;
@@ -472,6 +473,7 @@ impl BookStore {
                 title.as_deref(),
                 content.as_deref(),
                 color.as_ref().map(|o| o.as_deref()),
+                &facets,
             )
         })
         .await

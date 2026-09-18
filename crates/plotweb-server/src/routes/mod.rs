@@ -292,6 +292,43 @@ pub async fn apply_cutover_structure(state: &AppState, book_id: &str, removable:
     apply_cutover_structure_with(state, book_id, &input, removable).await;
 }
 
+/// The same, for a save that carries a note body fresher than git's.
+///
+/// The link index (`#tag` / `@mention` / `$ref`) is derived from a note's body and
+/// mirrored into the `book:` structure document, so that the timeline can be drawn
+/// without opening every `note:{id}` document. That derivation normally happens against
+/// git — but on a cut-over book whose body sync owns, the REST write deliberately does
+/// **not** reach git, so re-reading it would rebuild the index from the *previous*
+/// text and write that over the canonical copy.
+///
+/// So the body just saved is passed in, and only this note's edges are computed from it.
+/// Everything else still comes from git, exactly as [`apply_cutover_structure`]
+/// describes.
+pub async fn apply_cutover_structure_with_note_body(
+    state: &AppState,
+    book_id: &str,
+    note_id: &str,
+    content: &str,
+) {
+    if !state.cutover.is_cut_over(book_id) {
+        return;
+    }
+    let Some(mut input) = crate::structure::read_structure_input(&state.books, book_id).await
+    else {
+        eprintln!("[cutover] book:{book_id}: no readable structure in git, nothing applied");
+        return;
+    };
+    let links = plotweb_common::extract_note_links(content);
+    match input.notes.iter_mut().find(|n| n.id == note_id) {
+        Some(note) => note.links = links,
+        // git has never heard of this note (created on a device, not yet mirrored).
+        // `apply_book_structure` keeps such a note as the canonical copy has it, so
+        // adding a title-less entry here would rename it to nothing.
+        None => {}
+    }
+    apply_cutover_structure_with(state, book_id, &input, &[]).await;
+}
+
 /// The applying half, for a caller that has already read the structure it wants written.
 async fn apply_cutover_structure_with(
     state: &AppState,

@@ -359,6 +359,12 @@ pub struct ImportChapter {
 
 // ── Notes ──
 
+pub mod note_links;
+pub mod note_time;
+
+pub use note_links::{extract_note_links, note_plain_text, NoteLinks};
+pub use note_time::{RelativeTime, TimePoint, TimeRelation, TimeSpan, TICKS_PER_BASE_UNIT};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Note {
     pub id: String,
@@ -368,6 +374,40 @@ pub struct Note {
     pub color: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// When this note happens, if it happens at all. `Some` is what makes a note act
+    /// as an **event**; `None` is lore. See [`note_time`] for the representation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<TimeSpan>,
+    /// A constraint against another note ("after the parley") for a note whose place
+    /// in time is known only relative to something else. Independent of [`Note::span`]:
+    /// a note may carry both, neither, or either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative: Option<RelativeTime>,
+    /// The **entity** facet: this note is a person, place or thing that can appear in
+    /// events and gets a lane on the timeline. Orthogonal to the event facet — a
+    /// character with a lifespan is one note carrying both.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_entity: bool,
+    /// The note that contains this one **in time** — the siege that holds the breach.
+    ///
+    /// Deliberately **not** the tree parent. [`NoteTree`] says where the author filed
+    /// a note; this says what contains it on the timeline. Neither implies the other,
+    /// and this is only ever set explicitly — never inferred from two spans
+    /// overlapping, because two events can coincide without one containing the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_parent: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Note {
+    /// Whether this note is placed in time at all — by a span, or by a constraint
+    /// against another note. The **event** facet; [`Note::is_entity`] is the other.
+    pub fn is_event(&self) -> bool {
+        self.span.is_some() || self.relative.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -391,13 +431,38 @@ pub struct CreateNoteRequest {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateNoteRequest {
     pub title: Option<String>,
     pub content: Option<String>,
     /// See [`UpdateChapterRequest::content`]. Title and colour are structure, which
     /// REST still carries for every book.
     pub color: Option<String>,
+    /// The facet fields are **patches**: absent leaves the stored value alone, an
+    /// explicit `null` clears it, a value sets it. A bare `Option` cannot say "clear
+    /// this note's span", which is a gesture card 4 needs.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub span: Option<Option<TimeSpan>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub relative: Option<Option<RelativeTime>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_entity: Option<bool>,
+    /// Containment in time. Always stated by the client, never derived here — see
+    /// [`Note::event_parent`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub event_parent: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

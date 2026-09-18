@@ -400,9 +400,9 @@ async fn the_notes_tree_comes_from_the_canonical_structure() {
 
     let parent = n1.clone();
     canonical_ahead(&app, &book_id, move |input| {
-        input.notes[0].1 = "Cast".into();
-        input.notes[0].2 = Some("teal".into());
-        input.notes.push(("n-new".into(), "Alice".into(), None));
+        input.notes[0].title = "Cast".into();
+        input.notes[0].color = Some("teal".into());
+        input.notes.push(plotweb_crdt::NoteEntry::lore("n-new", "Alice", None));
         input.children.insert(parent.clone(), vec!["n-new".into()]);
         input.collapsed.push(parent);
     })
@@ -690,7 +690,7 @@ fn removed_by(
         i.chapters
             .iter()
             .map(|(id, _)| id.clone())
-            .chain(i.notes.iter().map(|(id, _, _)| id.clone()))
+            .chain(i.notes.iter().map(|n| n.id.clone()))
             .collect()
     };
     let before = ids(input);

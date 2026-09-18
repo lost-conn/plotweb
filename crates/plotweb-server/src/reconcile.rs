@@ -151,7 +151,7 @@ pub async fn reconcile_body(
                     .await
                     .map_err(|e| format!("git write failed: {e}"))?,
                 BodyKind::Note => books
-                    .update_note(book_id, id, None, Some(&content), None)
+                    .update_note(book_id, id, None, Some(&content), None, Default::default())
                     .await
                     .map_err(|e| format!("git write failed: {e}"))?,
             }

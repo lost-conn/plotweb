@@ -1073,6 +1073,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
             // Local-first: mirror the rename/recolor into the `book:` doc's note
             // titles/colors Maps (structure decoupled), beside the REST PUT below.
             crate::local_book::note_meta(&bid, &nid, Some(&title_val), color_val.as_deref());
+            // And the link index derived from the body just serialized. It lives in the
+            // `book:` doc so the timeline can be drawn without opening every note, and
+            // it is refreshed here because this device is the only one holding the new
+            // text until sync carries it.
+            crate::local_book::note_links(&bid, &nid, &content);
 
             note_save_status.set("saving");
             panes::note_editor::save_note_body(

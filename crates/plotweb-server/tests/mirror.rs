@@ -447,7 +447,7 @@ async fn a_notes_tree_rearranged_on_a_device_reaches_git() {
 
     let parent = n1.clone();
     device_changes(&mut app, &book_id, move |input| {
-        input.notes.push(("n-new".into(), "Alice".into(), Some("teal".into())));
+        input.notes.push(plotweb_crdt::NoteEntry::lore("n-new", "Alice", Some("teal".into())));
         input.children.insert(parent.clone(), vec!["n-new".into()]);
         input.collapsed.push(parent);
     })
@@ -459,6 +459,40 @@ async fn a_notes_tree_rearranged_on_a_device_reaches_git() {
     assert_eq!(git.note_colors.get("n-new").map(String::as_str), Some("teal"));
     assert_eq!(git.children.get(&n1), Some(&vec!["n-new".to_string()]));
     assert!(git.collapsed.contains(&n1));
+}
+
+#[tokio::test]
+async fn a_span_set_on_a_device_reaches_git() {
+    // Facets are structure, so a device that dates an event pushes it through the
+    // `book:` document and never touches git. Without the mirror carrying them back,
+    // git's copy of the note would disagree with the canonical one forever — and the
+    // next unrelated structure write, which is built from git, would undate the event.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, _, _, n1) = structured_book(&mut app).await;
+
+    let dated = n1.clone();
+    device_changes(&mut app, &book_id, move |input| {
+        let note = input.notes.iter_mut().find(|n| n.id == dated).expect("the note");
+        note.span = Some(plotweb_common::TimeSpan::at(
+            plotweb_common::TimePoint::base_unit(1204),
+        ));
+        note.is_entity = true;
+        note.event_parent = Some("some-other-note".into());
+    })
+    .await;
+
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
+    let git = git_structure(&app, &book_id).await;
+    assert_eq!(
+        git.note_spans.get(&n1).map(|s| s.start.tick),
+        Some(1204 * plotweb_common::TICKS_PER_BASE_UNIT)
+    );
+    assert!(git.note_entities.contains(&n1));
+    assert_eq!(
+        git.note_event_parents.get(&n1).map(String::as_str),
+        Some("some-other-note")
+    );
 }
 
 #[tokio::test]
@@ -526,7 +560,7 @@ fn removed_by(
         i.chapters
             .iter()
             .map(|(id, _)| id.clone())
-            .chain(i.notes.iter().map(|(id, _, _)| id.clone()))
+            .chain(i.notes.iter().map(|n| n.id.clone()))
             .collect()
     };
     let before = ids(input);

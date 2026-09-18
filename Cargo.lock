@@ -1909,6 +1909,7 @@ name = "plotweb-common"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1920,6 +1921,7 @@ dependencies = [
  "rinch-editor-collab",
  "rinch-editor-core",
  "rusty-leveldb",
+ "serde",
  "serde_json",
  "yrs",
 ]

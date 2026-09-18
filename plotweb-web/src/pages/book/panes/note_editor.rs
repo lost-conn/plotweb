@@ -27,10 +27,13 @@ pub(in crate::pages::book) fn save_note_body(
     note_save_status: Signal<&'static str>,
     save_alert: Signal<Option<String>>,
 ) {
+    // Facets are left absent, which means "leave them alone" — this is the body save,
+    // and it must not undate an event as a side effect of a keystroke.
     let build = move |body: Option<String>| UpdateNoteRequest {
         title: Some(title.clone()),
         content: body,
         color: color.clone(),
+        ..Default::default()
     };
     let req = build((!cut_over).then(|| content.clone()));
     let retry_url = url.clone();

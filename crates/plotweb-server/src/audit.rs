@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use plotweb_crdt::{
-    BodyKind, BookStructureInput, RoundTrip, UserIndexInput, roundtrip_body,
+    BodyKind, RoundTrip, UserIndexInput, roundtrip_body,
     roundtrip_book_structure, roundtrip_user_index,
 };
 use plotweb_git::BookStore;
@@ -156,24 +156,10 @@ async fn audit_one_book(
     // book: structure
     let structure = match &book_data {
         Some(d) => {
-            let input = BookStructureInput {
-                title: d.title.clone(),
-                description: d.description.clone(),
-                font_settings: d.font_settings.clone(),
-                cover_ref: d.cover_image.clone(),
-                created_at: d.created_at.clone(),
-                chapters: chapters
-                    .iter()
-                    .map(|c| (c.id.clone(), c.title.clone()))
-                    .collect(),
-                root_order: notes_tree.root_order.clone(),
-                children: notes_tree.children.clone(),
-                collapsed: notes_tree.collapsed.clone(),
-                notes: notes_list
-                    .iter()
-                    .map(|n| (n.id.clone(), n.title.clone(), n.color.clone()))
-                    .collect(),
-            };
+            // The one adaptation, shared with the write path and the mirror — see
+            // `crate::structure`. Adapting it a second time here is exactly how the
+            // audit would start certifying a shape nothing else writes.
+            let input = crate::structure::structure_input(d, &chapters, &notes_list, &notes_tree);
             roundtrip_book_structure(&input)
         }
         None => RoundTrip::flag(format!(

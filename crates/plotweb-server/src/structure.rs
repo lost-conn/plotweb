@@ -7,7 +7,8 @@
 //! slightly differently, the shadow pass would report a divergence the reconciler could
 //! never resolve — so the adaptation lives here, once.
 
-use plotweb_crdt::BookStructureInput;
+use plotweb_common::extract_note_links;
+use plotweb_crdt::{BookStructureInput, NoteEntry};
 use plotweb_git::note::{NoteData, NotesTreeJson};
 use plotweb_git::{BookData, BookStore, ChapterData};
 
@@ -34,10 +35,29 @@ pub fn structure_input(
         root_order: tree.root_order.clone(),
         children: tree.children.clone(),
         collapsed: tree.collapsed.clone(),
-        notes: notes
-            .iter()
-            .map(|n| (n.id.clone(), n.title.clone(), n.color.clone()))
-            .collect(),
+        notes: notes.iter().map(note_entry).collect(),
+    }
+}
+
+/// One note, with its link index derived from its body.
+///
+/// The index is **derived here rather than stored**, so it cannot drift from the body:
+/// there is no second source to keep in step, and a body edited by any path produces a
+/// fresh index the next time the structure is written. The cost is that a cut-over
+/// book's index tracks git's copy of the body, which lags the canonical copy by the
+/// mirror's debounce — the client writes its own index into its local document beside
+/// the REST save (`local_book::note_meta`), which is what closes that gap for the device
+/// doing the typing.
+fn note_entry(n: &NoteData) -> NoteEntry {
+    NoteEntry {
+        id: n.id.clone(),
+        title: n.title.clone(),
+        color: n.color.clone(),
+        span: n.span.clone(),
+        relative: n.relative.clone(),
+        is_entity: n.is_entity,
+        event_parent: n.event_parent.clone(),
+        links: extract_note_links(&n.content),
     }
 }
 

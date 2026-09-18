@@ -12,9 +12,47 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 
-use plotweb_common::FontSettings;
+use plotweb_common::{FontSettings, NoteLinks, RelativeTime, TimeSpan};
 
 use crate::RoundTrip;
+
+/// One note, as the structure document holds it.
+///
+/// Everything the tree and the timeline need to draw a note **except its body**. That
+/// is the point of the type: the timeline has to know when each event happens, which
+/// notes are entities, what contains what, and who participates in what — and reading
+/// any of that out of the note bodies would mean opening every `note:{id}` Automerge
+/// document to draw one screen.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NoteEntry {
+    pub id: String,
+    pub title: String,
+    pub color: Option<String>,
+    /// When it happens, if it does — the **event** facet.
+    pub span: Option<TimeSpan>,
+    /// Placed against another note rather than against the calendar.
+    pub relative: Option<RelativeTime>,
+    /// The **entity** facet: gets a lane on the timeline.
+    pub is_entity: bool,
+    /// Contained in time by this note. **Not** the tree parent, which lives in
+    /// `root_order` / `children` and means only where the author filed the note.
+    pub event_parent: Option<String>,
+    /// `#tag` / `@mention` / `$ref` edges, derived from the body. Never authored here —
+    /// a write recomputes it from the body it just saved.
+    pub links: NoteLinks,
+}
+
+impl NoteEntry {
+    /// The plain note every book already has: a title, maybe a colour, no facets.
+    pub fn lore(id: impl Into<String>, title: impl Into<String>, color: Option<String>) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            color,
+            ..Default::default()
+        }
+    }
+}
 
 /// Raw inputs for a `book:` structure doc — the fields the git store holds, adapted
 /// off `BookData` / `ChapterData` / `NotesTreeJson` / `NoteData` by the caller.
@@ -36,8 +74,8 @@ pub struct BookStructureInput {
     pub children: HashMap<String, Vec<String>>,
     /// Notes tree: collapsed note ids.
     pub collapsed: Vec<String>,
-    /// `(note_id, title, color?)` for every note in the book.
-    pub notes: Vec<(String, String, Option<String>)>,
+    /// Every note in the book, with its title, colour and facets.
+    pub notes: Vec<NoteEntry>,
 }
 
 /// The normalized, comparable view of a book structure. `List`s (chapter order, note
@@ -62,6 +100,19 @@ pub struct BookStructure {
     pub collapsed: BTreeSet<String>,
     pub note_titles: BTreeMap<String, String>,
     pub note_colors: BTreeMap<String, String>,
+    /// Only notes that carry one — the map's keys *are* the set of events.
+    pub note_spans: BTreeMap<String, TimeSpan>,
+    /// Only notes placed against another note.
+    pub note_relatives: BTreeMap<String, RelativeTime>,
+    /// The notes carrying the entity facet.
+    pub note_entities: BTreeSet<String>,
+    /// `note -> the note that contains it in time`. A separate hierarchy from
+    /// `root_order` / `children`, which stay exactly what they were: where the author
+    /// filed each note. A note can sit anywhere in the tree and nest under an unrelated
+    /// note here, and neither placement implies the other.
+    pub note_event_parents: BTreeMap<String, String>,
+    /// Only notes whose body carries at least one sigil.
+    pub note_links: BTreeMap<String, NoteLinks>,
 }
 
 fn font_settings_json(fs: &Option<FontSettings>) -> String {
@@ -80,10 +131,30 @@ impl BookStructureInput {
         }
         let mut note_titles = BTreeMap::new();
         let mut note_colors = BTreeMap::new();
-        for (id, title, color) in &self.notes {
-            note_titles.insert(id.clone(), title.clone());
-            if let Some(c) = color {
-                note_colors.insert(id.clone(), c.clone());
+        let mut note_spans = BTreeMap::new();
+        let mut note_relatives = BTreeMap::new();
+        let mut note_entities = BTreeSet::new();
+        let mut note_event_parents = BTreeMap::new();
+        let mut note_links = BTreeMap::new();
+        for note in &self.notes {
+            note_titles.insert(note.id.clone(), note.title.clone());
+            if let Some(c) = &note.color {
+                note_colors.insert(note.id.clone(), c.clone());
+            }
+            if let Some(span) = &note.span {
+                note_spans.insert(note.id.clone(), span.clone());
+            }
+            if let Some(relative) = &note.relative {
+                note_relatives.insert(note.id.clone(), relative.clone());
+            }
+            if note.is_entity {
+                note_entities.insert(note.id.clone());
+            }
+            if let Some(parent) = &note.event_parent {
+                note_event_parents.insert(note.id.clone(), parent.clone());
+            }
+            if !note.links.is_empty() {
+                note_links.insert(note.id.clone(), note.links.clone());
             }
         }
         BookStructure {
@@ -98,8 +169,39 @@ impl BookStructureInput {
             collapsed: self.collapsed.iter().cloned().collect(),
             note_titles,
             note_colors,
+            note_spans,
+            note_relatives,
+            note_entities,
+            note_event_parents,
+            note_links,
         }
     }
+}
+
+// ── Facet values as whole-value JSON ─────────────────────────────────────────
+//
+// A span, a relative constraint and a link index are each small, self-consistent
+// values that only ever change as a unit — half a span is not a span. So they are
+// stored the way `font_settings` is (schema §2 v1): one JSON string per note, LWW.
+// Modelling them as nested Automerge objects would buy per-field merge on values where
+// a mixed merge is *wrong*: two devices retyping a date should produce one of the two
+// dates, not a start from one and an end from the other.
+
+fn to_json_map<T: serde::Serialize>(values: &BTreeMap<String, T>) -> BTreeMap<String, String> {
+    values
+        .iter()
+        .filter_map(|(id, v)| serde_json::to_string(v).ok().map(|json| (id.clone(), json)))
+        .collect()
+}
+
+/// Parse a stored JSON map back. A value this build cannot read is **dropped**, not
+/// defaulted: an unreadable span must not become a note dated to the epoch.
+fn from_json_map<T: serde::de::DeserializeOwned>(
+    raw: BTreeMap<String, String>,
+) -> BTreeMap<String, T> {
+    raw.into_iter()
+        .filter_map(|(id, json)| serde_json::from_str(&json).ok().map(|v| (id, v)))
+        .collect()
 }
 
 /// Round-trip a `book:` structure: build the Automerge doc, persist + reload it,
@@ -265,6 +367,46 @@ pub fn apply_book_structure(
         &want.note_colors,
     );
 
+    // Facets. Each is a whole-value JSON map beside titles/colors, reconciled the same
+    // way — so setting a span is one small change, and clearing it is a delete rather
+    // than a rewrite of the notes section.
+    let spans_obj = ensure_obj(&mut doc, &notes_obj, "spans", ObjType::Map)?;
+    reconcile_string_map(
+        &mut doc,
+        &spans_obj,
+        &to_json_map(&current.note_spans),
+        &to_json_map(&want.note_spans),
+    );
+    let relatives_obj = ensure_obj(&mut doc, &notes_obj, "relatives", ObjType::Map)?;
+    reconcile_string_map(
+        &mut doc,
+        &relatives_obj,
+        &to_json_map(&current.note_relatives),
+        &to_json_map(&want.note_relatives),
+    );
+    let event_parents_obj = ensure_obj(&mut doc, &notes_obj, "event_parents", ObjType::Map)?;
+    reconcile_string_map(
+        &mut doc,
+        &event_parents_obj,
+        &current.note_event_parents,
+        &want.note_event_parents,
+    );
+    let links_obj = ensure_obj(&mut doc, &notes_obj, "links", ObjType::Map)?;
+    reconcile_string_map(
+        &mut doc,
+        &links_obj,
+        &to_json_map(&current.note_links),
+        &to_json_map(&want.note_links),
+    );
+
+    let entities_obj = ensure_obj(&mut doc, &notes_obj, "entities", ObjType::Map)?;
+    for id in current.note_entities.difference(&want.note_entities) {
+        let _ = doc.delete(&entities_obj, id.as_str());
+    }
+    for id in want.note_entities.difference(&current.note_entities) {
+        let _ = doc.put(&entities_obj, id.as_str(), true);
+    }
+
     Ok(doc.save())
 }
 
@@ -324,6 +466,24 @@ fn keeping_unmirrored(
         want.note_titles.insert(id.clone(), title.clone());
         if let Some(color) = current.note_colors.get(id) {
             want.note_colors.insert(id.clone(), color.clone());
+        }
+        // Its facets come back with it, for the same reason its title does: git has
+        // not heard of this note at all, so its absence from `want` is not the author
+        // clearing a span.
+        if let Some(span) = current.note_spans.get(id) {
+            want.note_spans.insert(id.clone(), span.clone());
+        }
+        if let Some(relative) = current.note_relatives.get(id) {
+            want.note_relatives.insert(id.clone(), relative.clone());
+        }
+        if current.note_entities.contains(id) {
+            want.note_entities.insert(id.clone());
+        }
+        if let Some(parent) = current.note_event_parents.get(id) {
+            want.note_event_parents.insert(id.clone(), parent.clone());
+        }
+        if let Some(links) = current.note_links.get(id) {
+            want.note_links.insert(id.clone(), links.clone());
         }
         // Its place in the tree comes back with it; a note present but unreachable
         // would be invisible in the sidebar, which is indistinguishable from lost.
@@ -464,10 +624,39 @@ fn build_book_doc(doc: &mut AutoCommit, input: &BookStructureInput) {
 
     let titles = doc.put_object(&notes_obj, "titles", ObjType::Map).unwrap();
     let colors = doc.put_object(&notes_obj, "colors", ObjType::Map).unwrap();
-    for (id, title, color) in &input.notes {
-        let _ = doc.put(&titles, id.as_str(), title.as_str());
-        if let Some(c) = color {
-            let _ = doc.put(&colors, id.as_str(), c.as_str());
+    let spans = doc.put_object(&notes_obj, "spans", ObjType::Map).unwrap();
+    let relatives = doc.put_object(&notes_obj, "relatives", ObjType::Map).unwrap();
+    let entities = doc.put_object(&notes_obj, "entities", ObjType::Map).unwrap();
+    let event_parents = doc
+        .put_object(&notes_obj, "event_parents", ObjType::Map)
+        .unwrap();
+    let links = doc.put_object(&notes_obj, "links", ObjType::Map).unwrap();
+    for note in &input.notes {
+        let id = note.id.as_str();
+        let _ = doc.put(&titles, id, note.title.as_str());
+        if let Some(c) = &note.color {
+            let _ = doc.put(&colors, id, c.as_str());
+        }
+        if let Some(json) = note.span.as_ref().and_then(|s| serde_json::to_string(s).ok()) {
+            let _ = doc.put(&spans, id, json.as_str());
+        }
+        if let Some(json) = note
+            .relative
+            .as_ref()
+            .and_then(|r| serde_json::to_string(r).ok())
+        {
+            let _ = doc.put(&relatives, id, json.as_str());
+        }
+        if note.is_entity {
+            let _ = doc.put(&entities, id, true);
+        }
+        if let Some(parent) = &note.event_parent {
+            let _ = doc.put(&event_parents, id, parent.as_str());
+        }
+        if !note.links.is_empty()
+            && let Ok(json) = serde_json::to_string(&note.links)
+        {
+            let _ = doc.put(&links, id, json.as_str());
         }
     }
 }
@@ -550,6 +739,33 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
         .map(|o| read_map_strings_sorted(doc, &o))
         .unwrap_or_default();
 
+    let facet_map = |prop: &str| {
+        notes_obj
+            .as_ref()
+            .and_then(|n| get_obj(doc, n, prop))
+            .map(|o| read_map_strings_sorted(doc, &o))
+            .unwrap_or_default()
+    };
+    let note_spans = from_json_map(facet_map("spans"));
+    let note_relatives = from_json_map(facet_map("relatives"));
+    let note_links = from_json_map(facet_map("links"));
+    let note_event_parents = facet_map("event_parents");
+
+    let mut note_entities = BTreeSet::new();
+    if let Some(entities_obj) = notes_obj.as_ref().and_then(|n| get_obj(doc, n, "entities")) {
+        for key in doc.keys(&entities_obj) {
+            if doc
+                .get(&entities_obj, key.as_str())
+                .ok()
+                .flatten()
+                .and_then(|(v, _)| v.to_bool())
+                .unwrap_or(false)
+            {
+                note_entities.insert(key);
+            }
+        }
+    }
+
     BookStructure {
         title,
         description,
@@ -562,6 +778,11 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
         collapsed,
         note_titles,
         note_colors,
+        note_spans,
+        note_relatives,
+        note_entities,
+        note_event_parents,
+        note_links,
     }
 }
 
@@ -599,6 +820,21 @@ fn describe_book_diff(expected: &BookStructure, actual: &BookStructure) -> Strin
     }
     if expected.note_colors != actual.note_colors {
         parts.push("notes.colors".to_string());
+    }
+    if expected.note_spans != actual.note_spans {
+        parts.push("notes.spans".to_string());
+    }
+    if expected.note_relatives != actual.note_relatives {
+        parts.push("notes.relatives".to_string());
+    }
+    if expected.note_entities != actual.note_entities {
+        parts.push("notes.entities".to_string());
+    }
+    if expected.note_event_parents != actual.note_event_parents {
+        parts.push("notes.event_parents".to_string());
+    }
+    if expected.note_links != actual.note_links {
+        parts.push("notes.links".to_string());
     }
     format!("book structure differs at: {}", parts.join(", "))
 }
@@ -687,11 +923,35 @@ mod tests {
             children: HashMap::from([("n1".to_string(), vec!["n2".to_string()])]),
             collapsed: vec!["n1".into()],
             notes: vec![
-                ("n1".into(), "Characters".into(), Some("teal".into())),
-                ("n2".into(), "Alice".into(), Some("red".into())),
-                ("n3".into(), "Places".into(), None),
+                NoteEntry::lore("n1", "Characters", Some("teal".into())),
+                NoteEntry::lore("n2", "Alice", Some("red".into())),
+                NoteEntry::lore("n3", "Places", None),
             ],
         }
+    }
+
+    /// The same book with the notes revamp's facets on it: n2 is an entity with a
+    /// lifespan that the siege (n3) contains in time, and its body names two others.
+    fn faceted() -> BookStructureInput {
+        let mut input = sample();
+        input.notes[1].span = Some(TimeSpan {
+            start: plotweb_common::TimePoint::base_unit(1204),
+            end: Some(plotweb_common::TimePoint::base_unit(1261)),
+            approximate: true,
+            open_ended: false,
+        });
+        input.notes[1].is_entity = true;
+        input.notes[1].event_parent = Some("n3".into());
+        input.notes[1].links = NoteLinks {
+            tags: vec!["cast".into()],
+            mentions: vec!["Karel".into()],
+            refs: vec!["Vess".into()],
+        };
+        input.notes[2].relative = Some(RelativeTime {
+            relation: plotweb_common::TimeRelation::After,
+            note_id: "n2".into(),
+        });
+        input
     }
 
     /// What a peer device holding the canonical document ends up with after the
@@ -782,8 +1042,8 @@ mod tests {
         changed.children.clear();
         changed.root_order = vec!["n1".into(), "n2".into(), "n3".into()];
         changed.collapsed.clear();
-        changed.notes[2].1 = "Settings".into();
-        changed.notes[1].2 = None;
+        changed.notes[2].title = "Settings".into();
+        changed.notes[1].color = None;
 
         let applied = apply_book_structure(&bytes, &changed, &[]).expect("apply");
         let merged = merged_with(&bytes, &applied);
@@ -924,6 +1184,136 @@ mod tests {
             notes: vec![],
         };
         assert_eq!(roundtrip_book_structure(&input), RoundTrip::Clean);
+    }
+
+    #[test]
+    fn note_facets_and_link_edges_round_trip() {
+        // The load-bearing property of card 1: the timeline has to be drawable from the
+        // structure document alone, which means every facet has to survive the trip.
+        let input = faceted();
+        let bytes = project_book_structure(&input).expect("project");
+        let got = materialize_book_structure(&bytes).expect("materialize");
+        assert_eq!(got, input.structure());
+        assert_eq!(roundtrip_book_structure(&input), RoundTrip::Clean);
+    }
+
+    #[test]
+    fn a_structure_written_before_the_facets_existed_reads_as_lore() {
+        // Every book in production has one of these documents. Reading it must produce
+        // notes with no span, no entity mark and no event parent — not an error, and not
+        // a note dated to the epoch.
+        let bytes = project_book_structure(&sample()).expect("project");
+        let mut doc = AutoCommit::load(&bytes).expect("load");
+        // Strip the facet maps entirely, as a pre-revamp writer would have left it.
+        let notes = get_obj(&doc, &ROOT, "notes").expect("notes");
+        for prop in ["spans", "relatives", "entities", "event_parents", "links"] {
+            doc.delete(&notes, prop).expect("delete");
+        }
+        let older = doc.save();
+
+        let got = materialize_book_structure(&older).expect("materialize");
+        assert_eq!(got, sample().structure());
+        assert!(got.note_spans.is_empty());
+        assert!(got.note_entities.is_empty());
+        assert!(got.note_event_parents.is_empty());
+        assert!(got.note_links.is_empty());
+    }
+
+    #[test]
+    fn a_facet_applied_to_an_older_document_reaches_a_device_holding_it() {
+        let input = sample();
+        let bytes = project_book_structure(&input).expect("project");
+        let applied = apply_book_structure(&bytes, &faceted(), &[]).expect("apply");
+        assert_eq!(merged_with(&bytes, &applied), faceted().structure());
+    }
+
+    #[test]
+    fn clearing_a_span_removes_it_rather_than_leaving_the_old_date() {
+        let bytes = project_book_structure(&faceted()).expect("project");
+        let mut undated = faceted();
+        undated.notes[1].span = None;
+        undated.notes[1].event_parent = None;
+        undated.notes[1].links = NoteLinks::default();
+
+        let applied = apply_book_structure(&bytes, &undated, &[]).expect("apply");
+        let merged = merged_with(&bytes, &applied);
+        assert!(!merged.note_spans.contains_key("n2"));
+        assert!(!merged.note_event_parents.contains_key("n2"));
+        assert!(!merged.note_links.contains_key("n2"));
+        assert!(
+            merged.note_entities.contains("n2"),
+            "undating an event must not also un-entity it — the facets are independent"
+        );
+    }
+
+    #[test]
+    fn the_event_parent_is_independent_of_the_tree_parent() {
+        // n2 is filed under n1 in the tree and contained by n3 in time. Refiling it at
+        // the root must leave the containment alone, and vice versa: the two
+        // hierarchies answer different questions and neither implies the other.
+        let input = faceted();
+        assert_eq!(input.children.get("n1"), Some(&vec!["n2".to_string()]));
+        assert_eq!(
+            input.structure().note_event_parents.get("n2"),
+            Some(&"n3".to_string())
+        );
+
+        let bytes = project_book_structure(&input).expect("project");
+        let mut refiled = input.clone();
+        refiled.children.clear();
+        refiled.root_order = vec!["n1".into(), "n2".into(), "n3".into()];
+
+        let applied = apply_book_structure(&bytes, &refiled, &[]).expect("apply");
+        let merged = merged_with(&bytes, &applied);
+        assert!(merged.children.is_empty(), "the tree move happened");
+        assert_eq!(
+            merged.note_event_parents.get("n2"),
+            Some(&"n3".to_string()),
+            "and left containment in time exactly where it was"
+        );
+
+        // Now the other direction: re-parent in time, leave the tree alone.
+        let mut renested = refiled.clone();
+        renested.notes[1].event_parent = Some("n1".into());
+        let applied = apply_book_structure(&applied, &renested, &[]).expect("apply");
+        let merged = materialize_book_structure(&applied).expect("materialize");
+        assert_eq!(merged.note_event_parents.get("n2"), Some(&"n1".to_string()));
+        assert_eq!(
+            merged.root_order,
+            vec!["n1".to_string(), "n2".to_string(), "n3".to_string()],
+            "and left the tree exactly where it was"
+        );
+    }
+
+    #[test]
+    fn a_note_only_the_canonical_copy_knows_about_keeps_its_facets() {
+        // git lags the canonical document, so a note created on a device is simply
+        // absent from a structure read out of git. Keeping the note but dropping its
+        // span would silently undate somebody's event.
+        let bytes = project_book_structure(&faceted()).expect("project");
+        let mut git_view = faceted();
+        git_view.notes.retain(|n| n.id != "n2");
+        git_view.children.clear();
+
+        let applied = apply_book_structure(&bytes, &git_view, &[]).expect("apply");
+        let merged = materialize_book_structure(&applied).expect("materialize");
+        assert_eq!(
+            merged.note_spans.get("n2"),
+            faceted().structure().note_spans.get("n2")
+        );
+        assert!(merged.note_entities.contains("n2"));
+        assert_eq!(merged.note_event_parents.get("n2"), Some(&"n3".to_string()));
+    }
+
+    #[test]
+    fn applying_an_unchanged_faceted_structure_writes_nothing() {
+        let input = faceted();
+        let bytes = project_book_structure(&input).expect("project");
+        assert_eq!(
+            apply_book_structure(&bytes, &input, &[]).expect("apply"),
+            bytes,
+            "a facet that re-serializes differently each time would sync on every save"
+        );
     }
 
     #[test]

@@ -5,3 +5,6 @@ edition.workspace = true
 
 [dependencies]
 serde.workspace = true
+# Note bodies are stored as the editor's DocNode JSON; the link index reads them
+# structurally rather than pulling the editor schema into the shared types crate.
+serde_json.workspace = true

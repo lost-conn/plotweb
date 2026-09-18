@@ -483,6 +483,65 @@ fn write_notes(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note], tree: &N
             put_if_changed(doc, &colors, n.id.as_str(), c.as_str());
         }
     }
+
+    write_note_facets(doc, notes_obj, notes);
+}
+
+/// The notes revamp's facet maps: span, relative constraint, entity mark, containment
+/// in time, and the link index derived from each body.
+///
+/// They live beside `titles` / `colors` in the `book:` document rather than in each
+/// `note:{id}` body document, because the timeline is drawn from them — and opening
+/// every note body to draw one screen is the thing this arrangement exists to avoid.
+///
+/// Spans, constraints and link indices are stored as whole-value JSON, the way
+/// `font_settings` is: half a span is not a span, and a per-field merge of two retyped
+/// dates would produce a third date neither author typed.
+fn write_note_facets(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note]) {
+    let spans = ensure_obj(doc, notes_obj, "spans", ObjType::Map);
+    let relatives = ensure_obj(doc, notes_obj, "relatives", ObjType::Map);
+    let entities = ensure_obj(doc, notes_obj, "entities", ObjType::Map);
+    let event_parents = ensure_obj(doc, notes_obj, "event_parents", ObjType::Map);
+
+    let with = |f: &dyn Fn(&Note) -> bool| -> Vec<String> {
+        notes.iter().filter(|n| f(n)).map(|n| n.id.clone()).collect()
+    };
+    retain_keys(doc, &spans, &with(&|n| n.span.is_some()));
+    retain_keys(doc, &relatives, &with(&|n| n.relative.is_some()));
+    retain_keys(doc, &entities, &with(&|n| n.is_entity));
+    retain_keys(doc, &event_parents, &with(&|n| n.event_parent.is_some()));
+    // The link index is derived from the body, and a full note list carries bodies only
+    // for notes this device has actually loaded. Rebuilding the map from that would
+    // erase the edges of every note the author has not opened, so the map is left alone
+    // here and maintained per note by `note_meta`, which is called with the body it just
+    // saved.
+
+    for n in notes {
+        let id = n.id.as_str();
+        if let Some(json) = n.span.as_ref().and_then(|s| serde_json::to_string(s).ok()) {
+            put_if_changed(doc, &spans, id, &json);
+        }
+        if let Some(json) = n
+            .relative
+            .as_ref()
+            .and_then(|r| serde_json::to_string(r).ok())
+        {
+            put_if_changed(doc, &relatives, id, &json);
+        }
+        if n.is_entity
+            && !doc
+                .get(&entities, id)
+                .ok()
+                .flatten()
+                .and_then(|(v, _)| v.to_bool())
+                .unwrap_or(false)
+        {
+            let _ = doc.put(&entities, id, true);
+        }
+        if let Some(parent) = &n.event_parent {
+            put_if_changed(doc, &event_parents, id, parent.as_str());
+        }
+    }
 }
 
 // ── Mutations (dual-write; called beside the existing REST PUTs) ─────────────
@@ -525,6 +584,86 @@ pub fn note_meta(book_id: &str, note_id: &str, title: Option<&str>, color: Optio
         if let Some(c) = color {
             let colors = ensure_obj(doc, &notes_obj, "colors", ObjType::Map);
             let _ = doc.put(&colors, note_id, c);
+        }
+    });
+}
+
+/// Refresh one note's link index from the body just saved.
+///
+/// Called beside the REST save rather than derived on read, and derived from the body
+/// in hand rather than from the note list, because this device is the only one that has
+/// the new text yet: on a cut-over book the server's copy arrives through sync, and
+/// until it does a server-side derivation would rebuild the index from the previous
+/// draft.
+///
+/// An empty index is written as a **removal** — a note whose last `$ref` was deleted has
+/// no edges, and leaving the old entry would keep a character in a scene they were
+/// written out of.
+pub fn note_links(book_id: &str, note_id: &str, content: &str) {
+    let links = plotweb_common::extract_note_links(content);
+    with_book(book_id, |doc| {
+        let notes_obj = ensure_obj(doc, &ROOT, "notes", ObjType::Map);
+        let links_obj = ensure_obj(doc, &notes_obj, "links", ObjType::Map);
+        match serde_json::to_string(&links) {
+            Ok(json) if !links.is_empty() => put_if_changed(doc, &links_obj, note_id, &json),
+            _ => {
+                if doc.get(&links_obj, note_id).ok().flatten().is_some() {
+                    let _ = doc.delete(&links_obj, note_id);
+                }
+            }
+        }
+    });
+}
+
+/// Targeted facet write for one note: span, relative constraint, entity mark and
+/// containment in time, as a patch. `None` leaves the stored value alone; `Some(None)`
+/// clears it.
+///
+/// `event_parent` is written exactly as given and is never derived from spans
+/// overlapping — see `plotweb_common::Note::event_parent`. Setting it does not touch
+/// the note's place in `root_order` / `children`, and moving it in the tree does not
+/// touch this.
+pub fn note_facets(
+    book_id: &str,
+    note_id: &str,
+    span: Option<Option<plotweb_common::TimeSpan>>,
+    relative: Option<Option<plotweb_common::RelativeTime>>,
+    is_entity: Option<bool>,
+    event_parent: Option<Option<String>>,
+) {
+    with_book(book_id, |doc| {
+        let notes_obj = ensure_obj(doc, &ROOT, "notes", ObjType::Map);
+
+        let mut put_json = |prop: &str, json: Option<String>| {
+            let obj = ensure_obj(doc, &notes_obj, prop, ObjType::Map);
+            match json {
+                Some(json) => put_if_changed(doc, &obj, note_id, &json),
+                None => {
+                    if doc.get(&obj, note_id).ok().flatten().is_some() {
+                        let _ = doc.delete(&obj, note_id);
+                    }
+                }
+            }
+        };
+        if let Some(span) = span {
+            put_json("spans", span.and_then(|s| serde_json::to_string(&s).ok()));
+        }
+        if let Some(relative) = relative {
+            put_json(
+                "relatives",
+                relative.and_then(|r| serde_json::to_string(&r).ok()),
+            );
+        }
+        if let Some(parent) = event_parent {
+            put_json("event_parents", parent);
+        }
+        if let Some(is_entity) = is_entity {
+            let obj = ensure_obj(doc, &notes_obj, "entities", ObjType::Map);
+            if is_entity {
+                let _ = doc.put(&obj, note_id, true);
+            } else if doc.get(&obj, note_id).ok().flatten().is_some() {
+                let _ = doc.delete(&obj, note_id);
+            }
         }
     });
 }
@@ -649,12 +788,41 @@ pub fn project_notes(store: AppStore) {
         let colors = get_obj(doc, &notes_obj, "colors")
             .map(|o| read_map_strings(doc, &o))
             .unwrap_or_default();
+        // Facets, from the same document. They are structure, not body: the note list's
+        // REST copy is whatever the last fetch said, and the document is what this
+        // device and its peers have actually done since.
+        let spans: HashMap<String, plotweb_common::TimeSpan> =
+            read_json_map(doc, &notes_obj, "spans");
+        let relatives: HashMap<String, plotweb_common::RelativeTime> =
+            read_json_map(doc, &notes_obj, "relatives");
+        let event_parents = get_obj(doc, &notes_obj, "event_parents")
+            .map(|o| read_map_strings(doc, &o))
+            .unwrap_or_default();
+        let mut entities: std::collections::HashSet<String> = std::collections::HashSet::new();
+        if let Some(entities_obj) = get_obj(doc, &notes_obj, "entities") {
+            for key in doc.keys(&entities_obj) {
+                if doc
+                    .get(&entities_obj, key.as_str())
+                    .ok()
+                    .flatten()
+                    .and_then(|(v, _)| v.to_bool())
+                    .unwrap_or(false)
+                {
+                    entities.insert(key);
+                }
+            }
+        }
+
         let mut notes = store.notes.get();
         for n in notes.iter_mut() {
             if let Some(t) = titles.get(&n.id) {
                 n.title = t.clone();
             }
             n.color = colors.get(&n.id).cloned();
+            n.span = spans.get(&n.id).cloned();
+            n.relative = relatives.get(&n.id).cloned();
+            n.is_entity = entities.contains(&n.id);
+            n.event_parent = event_parents.get(&n.id).cloned();
         }
         // Notes that exist in the doc's tree but have no REST record came from another
         // device via sync — materialize them, same reasoning as chapters above.
@@ -680,6 +848,10 @@ pub fn project_notes(store: AppStore) {
                 color: colors.get(&id).cloned(),
                 created_at: String::new(),
                 updated_at: String::new(),
+                span: spans.get(&id).cloned(),
+                relative: relatives.get(&id).cloned(),
+                is_entity: entities.contains(&id),
+                event_parent: event_parents.get(&id).cloned(),
             });
         }
         store.notes.set(notes);
@@ -759,6 +931,23 @@ fn read_map_strings(doc: &AutoCommit, obj: &ObjId) -> HashMap<String, String> {
         }
     }
     out
+}
+
+/// Read a whole-value JSON map (a note's span, relative constraint, link index) back
+/// into typed values. A value this build cannot parse is **dropped**, not defaulted: an
+/// unreadable span must not become a note dated to the epoch.
+fn read_json_map<T: serde::de::DeserializeOwned>(
+    doc: &AutoCommit,
+    parent: &ObjId,
+    prop: &str,
+) -> HashMap<String, T> {
+    let Some(obj) = get_obj(doc, parent, prop) else {
+        return HashMap::new();
+    };
+    read_map_strings(doc, &obj)
+        .into_iter()
+        .filter_map(|(id, json)| serde_json::from_str(&json).ok().map(|v| (id, v)))
+        .collect()
 }
 
 /// Overwrite a `List` with `items` (clear all, then insert in order).
@@ -893,6 +1082,8 @@ mod tests {
         }
     }
 
+    /// A plain lore note: no span, no entity mark, no event parent — what every note
+    /// in every existing book is.
     fn note(id: &str, title: &str, color: Option<&str>) -> Note {
         Note {
             id: id.into(),
@@ -902,6 +1093,10 @@ mod tests {
             color: color.map(|c| c.to_string()),
             created_at: "2026-01-01 00:00:00".into(),
             updated_at: "2026-01-01 00:00:00".into(),
+            span: None,
+            relative: None,
+            is_entity: false,
+            event_parent: None,
         }
     }
 
@@ -1068,5 +1263,138 @@ mod tests {
         let (title, desc, _fs) = read_meta(&doc).expect("meta");
         assert_eq!(title, "The Book");
         assert_eq!(desc, "desc");
+    }
+
+    /// The facets a note can carry, read back out of a document the way `project_notes`
+    /// does. Everything the timeline needs has to survive a reload from the `book:`
+    /// document alone — if it did not, drawing a timeline would mean opening every
+    /// `note:{id}` body document.
+    fn read_note_facets(
+        doc: &AutoCommit,
+    ) -> (
+        HashMap<String, plotweb_common::TimeSpan>,
+        HashMap<String, plotweb_common::RelativeTime>,
+        Vec<String>,
+        HashMap<String, String>,
+        HashMap<String, plotweb_common::NoteLinks>,
+    ) {
+        let notes_obj = get_obj(doc, &ROOT, "notes").unwrap();
+        let mut entities: Vec<String> = get_obj(doc, &notes_obj, "entities")
+            .map(|o| doc.keys(&o).collect())
+            .unwrap_or_default();
+        entities.sort();
+        (
+            read_json_map(doc, &notes_obj, "spans"),
+            read_json_map(doc, &notes_obj, "relatives"),
+            entities,
+            get_obj(doc, &notes_obj, "event_parents")
+                .map(|o| read_map_strings(doc, &o))
+                .unwrap_or_default(),
+            read_json_map(doc, &notes_obj, "links"),
+        )
+    }
+
+    #[test]
+    fn note_facets_and_links_survive_a_reload_and_stay_off_the_tree() {
+        use plotweb_common::{RelativeTime, TimePoint, TimeRelation, TimeSpan};
+
+        // n2 is filed under n1 in the tree, and contained in time by n3. The two say
+        // different things and must not be confused for one another.
+        let span = TimeSpan {
+            start: TimePoint::base_unit(1204),
+            end: Some(TimePoint::base_unit(1261)),
+            approximate: true,
+            open_ended: false,
+        };
+        let mut n2 = note("n2", "Vess", Some("red"));
+        n2.span = Some(span.clone());
+        n2.is_entity = true;
+        n2.event_parent = Some("n3".into());
+        let mut n3 = note("n3", "The siege", None);
+        n3.relative = Some(RelativeTime {
+            relation: TimeRelation::After,
+            note_id: "n2".into(),
+        });
+        let notes = vec![note("n1", "Characters", Some("teal")), n2, n3];
+        let tree = NoteTree {
+            root_order: vec!["n1".into(), "n3".into()],
+            children: HashMap::from([("n1".to_string(), vec!["n2".to_string()])]),
+            collapsed: vec![],
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let store: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+            let ds = DocStore::with_backend(store, "book:facets");
+            let mut doc = AutoCommit::new();
+            build_doc(&mut doc, &sample_book(), &[], &notes, &tree);
+
+            // The link index is written per note from the body just saved, the way
+            // `note_links` does it beside a save.
+            let notes_obj = ensure_obj(&mut doc, &ROOT, "notes", ObjType::Map);
+            let links_obj = ensure_obj(&mut doc, &notes_obj, "links", ObjType::Map);
+            let links = plotweb_common::extract_note_links(
+                r#"{"type":"doc","content":[{"type":"paragraph","content":[
+                    {"type":"text","text":"$Vess held the wall. #siege @Karel"}]}]}"#,
+            );
+            doc.put(&links_obj, "n3", serde_json::to_string(&links).unwrap())
+                .unwrap();
+
+            block_on(ds.publish_snapshot(&doc.save())).unwrap();
+        }
+
+        let reopened: Rc<dyn Store> = Rc::new(FsStore::open(dir.path()).unwrap());
+        let ds = DocStore::with_backend(reopened, "book:facets");
+        let persisted = block_on(ds.load()).unwrap().expect("a persisted book doc");
+        let doc = AutoCommit::load(&persisted.snapshot).unwrap();
+
+        let (spans, relatives, entities, event_parents, links) = read_note_facets(&doc);
+        assert_eq!(spans.get("n2"), Some(&span));
+        assert_eq!(entities, vec!["n2".to_string()]);
+        assert_eq!(
+            relatives.get("n3").map(|r| r.relation),
+            Some(TimeRelation::After)
+        );
+        assert_eq!(links.get("n3").map(|l| l.refs.clone()), Some(vec!["Vess".to_string()]));
+        assert_eq!(links.get("n3").map(|l| l.tags.clone()), Some(vec!["siege".to_string()]));
+
+        // The two hierarchies, side by side and disagreeing on purpose.
+        let (rt_tree, _, _) = read_notes(&doc);
+        assert_eq!(
+            rt_tree.children.get("n1"),
+            Some(&vec!["n2".to_string()]),
+            "n2 is still filed under n1"
+        );
+        assert_eq!(
+            event_parents.get("n2").map(String::as_str),
+            Some("n3"),
+            "and still contained in time by n3 — neither placement implies the other"
+        );
+        assert!(
+            !rt_tree.root_order.contains(&"n2".to_string())
+                && rt_tree.children.get("n3").is_none(),
+            "setting an event parent must not have moved n2 under n3 in the tree"
+        );
+    }
+
+    #[test]
+    fn a_note_without_facets_writes_nothing_into_the_facet_maps() {
+        // What every existing note must look like: indistinguishable from before the
+        // revamp, with no entry anywhere new.
+        let notes = vec![note("n1", "Characters", Some("teal"))];
+        let tree = NoteTree {
+            root_order: vec!["n1".into()],
+            children: HashMap::new(),
+            collapsed: vec![],
+        };
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &sample_book(), &[], &notes, &tree);
+
+        let (spans, relatives, entities, event_parents, links) = read_note_facets(&doc);
+        assert!(spans.is_empty());
+        assert!(relatives.is_empty());
+        assert!(entities.is_empty());
+        assert!(event_parents.is_empty());
+        assert!(links.is_empty());
     }
 }
