@@ -539,35 +539,6 @@ where
                             content: String::new(),
                         }
                     }
-
-                    // Footer: word count + save state. Moved out of the topbar
-                    // (task 5) into a quiet strip that fades with the rest of
-                    // the chrome — visible when you look, invisible when you
-                    // write. The "Saved" / "Saved on this device" distinction
-                    // is load-bearing for cut-over books (`saved_here_only`)
-                    // and keeps its exact wording and dot here.
-                    div { class: "editor-footer",
-                        div {
-                            class: "editor-word-count",
-                            {move || format!("{} words", editor_word_count.get())}
-                        }
-                        div {
-                            class: {|| format!("save-indicator {}", save_status.get())},
-                            {move || match save_status.get() {
-                                "saving" => "Saving...".to_string(),
-                                // "Saved" has to mean the same thing everywhere.
-                                // For a cut-over book sync is how an edit reaches
-                                // the server, so with sync off this save reached
-                                // this device and nothing else — say so.
-                                "saved" if saved_here_only() => {
-                                    "Saved on this device".to_string()
-                                }
-                                "saved" => "Saved".to_string(),
-                                "error" => "Save failed — retry".to_string(),
-                                _ => "Unsaved".to_string(),
-                            }}
-                        }
-                    }
                 }
 
                 // Editor feedback backdrop (mobile)
@@ -609,6 +580,40 @@ where
                             }
                         }
                     }
+                }
+            }
+
+            // Footer: word count + save state. Moved out of the topbar (task 5)
+            // into a quiet strip that fades with the rest of the chrome —
+            // visible when you look, invisible when you write. The "Saved" /
+            // "Saved on this device" distinction is load-bearing for cut-over
+            // books (`saved_here_only`) and keeps its exact wording and dot.
+            //
+            // It sits in the layout column *after* the content row, not inside
+            // the scroller: placed within `.editor-scroll` it followed the prose
+            // and was pushed below the fold, so the word count and save state
+            // were only reachable by scrolling to the end of the chapter —
+            // strictly worse than the topbar it replaced.
+            div { class: "editor-footer",
+                div {
+                    class: "editor-word-count",
+                    {move || format!("{} words", editor_word_count.get())}
+                }
+                div {
+                    class: {|| format!("save-indicator {}", save_status.get())},
+                    {move || match save_status.get() {
+                        "saving" => "Saving...".to_string(),
+                        // "Saved" has to mean the same thing everywhere. For a
+                        // cut-over book sync is how an edit reaches the server,
+                        // so with sync off this save reached this device and
+                        // nothing else — say so.
+                        "saved" if saved_here_only() => {
+                            "Saved on this device".to_string()
+                        }
+                        "saved" => "Saved".to_string(),
+                        "error" => "Save failed — retry".to_string(),
+                        _ => "Unsaved".to_string(),
+                    }}
                 }
             }
         }

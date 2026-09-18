@@ -373,10 +373,15 @@ pub const EDITOR_CSS: &str = r#"
    but this editor's content can be taller than the viewport (unlike the
    mockup's static sample), so an overlaid footer would sit on top of prose
    rather than below it. It still fades with the rest of the chrome. */
+/* `width: 100%` matters: as a flex item this box otherwise shrinks to its
+   content, so `max-width` never binds and the two readings huddle together
+   mid-column instead of sitting at the ends of the measure they annotate. */
 .editor-footer {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 12px;
+    width: 100%;
     max-width: var(--pw-measure);
     margin: 0 auto;
     padding: 4px 48px 24px;
