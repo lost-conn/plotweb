@@ -5,12 +5,15 @@ import { createBetaLink, createBook, registerNewUser, seedLongChapter } from "./
  * Reader-mode coverage: the paginated beta reader (`/read/{token}`) and the
  * author preview (`/preview/{bookId}`).
  *
- * The reader lays content out in CSS multi-column "pages" (no scroll). The page
- * bar (`.reader-pagebar`) has a prev ActionIcon, an indicator
- * (`.reader-pagebar-indicator`, literal text `"{page+1} / {total}"`) and a next
- * ActionIcon. Pagination is measured asynchronously (rAF + a late second pass),
- * and progress saves are debounced — so every assertion here waits on the
- * indicator text / bookmark items rather than on a fixed timeout.
+ * The reader lays content out in CSS multi-column "pages" (no scroll). Page
+ * turns live in the margins (`.reader-turn.l` / `.reader-turn.r`, ~64px hit
+ * targets down each edge) rather than a bordered page bar; the folio
+ * (`.reader-folio-row`) carries chapter name / page / position-in-book as one
+ * line of text, e.g. "Chapter Two 3 / 11 CH 2 OF 6" — `readIndicator` below
+ * pulls the "{page} / {total}" pair out of that line. Pagination is measured
+ * asynchronously (rAF + a late second pass), and progress saves are
+ * debounced — so every assertion here waits on the folio text / bookmark
+ * items rather than on a fixed timeout.
  *
  * All setup seeds a deliberately long chapter (see `seedLongChapter`) so the
  * chapter spans many pages; each test asserts the total is > 1 before paging.
@@ -19,11 +22,11 @@ import { createBetaLink, createBook, registerNewUser, seedLongChapter } from "./
 const READER_ORIGIN = "http://localhost:3000";
 const CHAPTER = "The Long Chapter";
 
-/** Parse the `"{page} / {total}"` indicator into 1-based numbers. */
+/** Parse the "{page} / {total}" pair out of the folio row's text. */
 async function readIndicator(page: Page): Promise<{ page: number; total: number }> {
-  const text = (await page.locator(".reader-pagebar-indicator").textContent()) ?? "";
+  const text = (await page.locator(".reader-folio-row").textContent()) ?? "";
   const m = text.match(/(\d+)\s*\/\s*(\d+)/);
-  if (!m) throw new Error(`unparseable page indicator: "${text}"`);
+  if (!m) throw new Error(`unparseable folio indicator: "${text}"`);
   return { page: Number(m[1]), total: Number(m[2]) };
 }
 
@@ -33,7 +36,13 @@ async function readIndicator(page: Page): Promise<{ page: number; total: number 
  * passing on a 1-page chapter) if the seeded content wasn't long enough.
  */
 async function openChapterAndAwaitMultiPage(page: Page, chapterTitle: string): Promise<number> {
-  await page.locator(".reader-chapter-item", { hasText: chapterTitle }).click();
+  // Contents is opened on demand now (no permanent sidebar) — the toggle is
+  // the first action-icon in the desktop topbar.
+  const chapterItem = page.locator(".reader-chapter-item", { hasText: chapterTitle });
+  if (!(await chapterItem.isVisible().catch(() => false))) {
+    await page.locator(".reader-topbar .rinch-action-icon").first().click();
+  }
+  await chapterItem.click();
   await expect(page.locator("#reader-content")).toContainText("Paragraph 1.");
   // Pagination is async: poll the indicator until the total settles above 1.
   await expect
@@ -69,23 +78,29 @@ test.describe("beta reader pagination", () => {
       const total = await openChapterAndAwaitMultiPage(reader, CHAPTER);
       expect(total).toBeGreaterThan(1);
 
-      const prev = reader.locator(".reader-pagebar .rinch-action-icon").nth(0);
-      const next = reader.locator(".reader-pagebar .rinch-action-icon").nth(1);
+      const prev = reader.locator(".reader-turn.l");
+      const next = reader.locator(".reader-turn.r");
 
       // Starts on page 1.
       expect(await readIndicator(reader)).toEqual({ page: 1, total });
 
       // Next → page 2.
       await next.click();
-      await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`2 / ${total}`);
+      await expect
+        .poll(async () => (await readIndicator(reader)).page)
+        .toBe(2);
 
       // Prev → back to page 1.
       await prev.click();
-      await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`1 / ${total}`);
+      await expect
+        .poll(async () => (await readIndicator(reader)).page)
+        .toBe(1);
 
-      // Prev at page 1 clamps: stays on page 1.
-      await prev.click();
-      await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`1 / ${total}`);
+      // Prev at page 1 clamps: stays on page 1 (and the left turn reads as
+      // disabled — this is the first chapter, so there's no previous one).
+      await expect(prev).toHaveClass(/disabled/);
+      await prev.click({ force: true });
+      expect((await readIndicator(reader)).page).toBe(1);
     } finally {
       await ctx.close();
     }
@@ -105,13 +120,20 @@ test.describe("beta reader pagination", () => {
       await reader.locator(".reader-topbar").click();
 
       await reader.keyboard.press("ArrowRight");
-      await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`2 / ${total}`);
+      await expect
+        .poll(async () => (await readIndicator(reader)).page)
+        .toBe(2);
 
       await reader.keyboard.press("ArrowRight");
-      await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`3 / ${total}`);
+      await expect
+        .poll(async () => (await readIndicator(reader)).page)
+        .toBe(3);
 
       await reader.keyboard.press("ArrowLeft");
-      await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`2 / ${total}`);
+      await expect
+        .poll(async () => (await readIndicator(reader)).page)
+        .toBe(2);
+      expect((await readIndicator(reader)).total).toBe(total);
     } finally {
       await ctx.close();
     }
@@ -127,15 +149,19 @@ test("bookmark: add at a page, persists, and jumps back to it", async ({ page, b
     await reader.goto(`/read/${token}`);
     const total = await openChapterAndAwaitMultiPage(reader, CHAPTER);
 
-    const next = reader.locator(".reader-pagebar .rinch-action-icon").nth(1);
+    const next = reader.locator(".reader-turn.r");
     // Move to page 2 (index 1) and bookmark there.
     await next.click();
-    await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`2 / ${total}`);
+    await expect
+      .poll(async () => (await readIndicator(reader)).page)
+      .toBe(2);
 
-    // The Bookmark ActionIcon is the first action in the desktop topbar.
+    // The Bookmark ActionIcon is the second action in the desktop topbar (the
+    // first opens Contents).
+    await reader.locator(".reader-topbar .rinch-action-icon").nth(1).click();
+
+    // A bookmark item appears in the Contents panel, labelled with the page.
     await reader.locator(".reader-topbar .rinch-action-icon").nth(0).click();
-
-    // A bookmark item appears in the sidebar, labelled with the page.
     const bookmark = reader.locator(".reader-bookmark-item");
     await expect(bookmark).toHaveCount(1);
     await expect(bookmark.locator(".reader-bookmark-label")).toContainText("p.2");
@@ -149,12 +175,11 @@ test("bookmark: add at a page, persists, and jumps back to it", async ({ page, b
       })
       .toBe(true);
 
-    // Go back to page 1, then click the bookmark → jumps to the bookmarked page.
-    await reader.locator(".reader-pagebar .rinch-action-icon").nth(0).click();
-    await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`1 / ${total}`);
-
+    // Click the bookmark → jumps to the bookmarked page (and closes Contents).
     await bookmark.locator(".reader-bookmark-label").click();
-    await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`2 / ${total}`);
+    await expect
+      .poll(async () => (await readIndicator(reader)).page)
+      .toBe(2);
   } finally {
     await ctx.close();
   }
@@ -170,11 +195,13 @@ test("resume position: reloading returns to the last-read page", async ({ page, 
     const total = await openChapterAndAwaitMultiPage(reader, CHAPTER);
     expect(total).toBeGreaterThan(2);
 
-    const next = reader.locator(".reader-pagebar .rinch-action-icon").nth(1);
+    const next = reader.locator(".reader-turn.r");
     // Advance to page 3 (index 2).
     await next.click();
     await next.click();
-    await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`3 / ${total}`);
+    await expect
+      .poll(async () => (await readIndicator(reader)).page)
+      .toBe(3);
 
     // The progress PUT is debounced (500ms): poll the beta view until it lands.
     await expect
@@ -212,8 +239,10 @@ test("author preview renders and paginates (no persistence)", async ({ page }) =
   expect(await readIndicator(page)).toEqual({ page: 1, total });
 
   // Paginates: next advances the indicator.
-  await page.locator(".reader-pagebar .rinch-action-icon").nth(1).click();
-  await expect(page.locator(".reader-pagebar-indicator")).toHaveText(`2 / ${total}`);
+  await page.locator(".reader-turn.r").click();
+  await expect
+    .poll(async () => (await readIndicator(page)).page)
+    .toBe(2);
 
   // Author preview intentionally has no bookmark control.
   await expect(page.locator(".reader-bookmark-item")).toHaveCount(0);
@@ -264,11 +293,15 @@ test("swipe (touch) turns a page", async ({ page, browser }) => {
 
     // Swipe left → next page.
     await swipe(-120);
-    await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`2 / ${total}`);
+    await expect
+      .poll(async () => (await readIndicator(reader)).page)
+      .toBe(2);
 
     // Swipe right → previous page.
     await swipe(120);
-    await expect(reader.locator(".reader-pagebar-indicator")).toHaveText(`1 / ${total}`);
+    await expect
+      .poll(async () => (await readIndicator(reader)).page)
+      .toBe(1);
   } finally {
     await ctx.close();
   }

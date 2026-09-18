@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 import { createBetaLink, createBook, registerNewUser } from "./helpers";
 
 /**
- * Mobile reader sidebar: the chapter-list drawer must SCROLL under a finger drag
- * without the drag being mistaken for a chapter selection.
+ * Mobile reader Contents panel: the chapter-list drawer must SCROLL under a
+ * finger drag without the drag being mistaken for a chapter selection.
  *
  * rinch dispatches `onclick` on `pointerdown` (for immediate drag arming). That
  * made a list of clickable rows inside an `overflow: auto` container un-scrollable
@@ -43,9 +43,9 @@ test("mobile reader: chapter list scrolls under a drag, taps still open a chapte
   const cdp = await ctx.newCDPSession(reader);
   await reader.goto(`/read/${token}`);
 
-  // Open the sidebar drawer (hamburger = first mobile-topbar icon).
+  // Open the Contents drawer (hamburger = first mobile-topbar icon).
   await reader.locator(".reader-mobile-topbar .rinch-action-icon").nth(0).click();
-  const list = reader.locator(".reader-sidebar-chapters");
+  const list = reader.locator(".reader-contents-chapters");
   await expect(list).toBeVisible();
   await expect(reader.locator(".reader-chapter-item").first()).toBeVisible();
   // No chapter is open yet (fresh beta link → welcome pane, no reading column).
@@ -79,7 +79,7 @@ test("mobile reader: chapter list scrolls under a drag, taps still open a chapte
     .poll(() => list.evaluate((el) => el.scrollTop))
     .toBeGreaterThan(10);
   // …and no chapter opened: drawer still open, still on the welcome pane.
-  await expect(reader.locator(".reader-sidebar.open")).toBeVisible();
+  await expect(reader.locator(".reader-contents.open")).toBeVisible();
   await expect(reader.locator("#reader-content")).toHaveCount(0);
 
   // ── Tap gesture: a stationary tap on a chapter row DOES open it. ───────────
@@ -98,7 +98,7 @@ test("mobile reader: chapter list scrolls under a drag, taps still open a chapte
 
   // Chapter opened: the reading column mounts and the drawer closes.
   await expect(reader.locator("#reader-content")).toBeVisible();
-  await expect(reader.locator(".reader-sidebar.open")).toHaveCount(0);
+  await expect(reader.locator(".reader-contents.open")).toHaveCount(0);
 
   await ctx.close();
   await setup.close();
