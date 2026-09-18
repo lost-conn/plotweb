@@ -1,3 +1,8 @@
+// The book page's modal/pane render functions each take several `impl Fn`
+// closures through nested rsx! expansions; the default recursion limit trips
+// on the resulting trait-resolution depth (see plotweb-web/src/pages/book/).
+#![recursion_limit = "512"]
+
 pub mod api;
 pub mod local_book;
 pub mod local_store;
