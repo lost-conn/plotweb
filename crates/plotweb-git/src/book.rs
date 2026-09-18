@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::error::{GitStoreError, Result};
 use crate::repo;
-use plotweb_common::FontSettings;
+use plotweb_common::{Calendar, FontSettings};
 
 /// On-disk representation of book.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +17,10 @@ pub struct BookJson {
     #[serde(default)]
     pub chapter_order: Vec<String>,
     pub created_at: String,
+    /// The book's calendar, if it has its own. Skipped when absent, so a book that
+    /// never set one keeps a byte-identical `book.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<Calendar>,
 }
 
 /// Data returned from BookStore book operations
@@ -29,6 +33,7 @@ pub struct BookData {
     pub chapter_order: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub calendar: Option<Calendar>,
 }
 
 /// Parent directory for a book (contains manuscript/ and notes/ subdirs).
@@ -67,6 +72,7 @@ pub fn create_book(
         cover_image: None,
         chapter_order: Vec::new(),
         created_at: created_at.to_string(),
+        calendar: None,
     };
 
     repo::write_json(&ms_dir.join("book.json"), &book)?;
@@ -101,6 +107,7 @@ pub fn get_book(base_dir: &PathBuf, book_id: &str) -> Result<BookData> {
         chapter_order: book.chapter_order,
         created_at: book.created_at,
         updated_at,
+        calendar: book.calendar,
     })
 }
 
@@ -111,6 +118,7 @@ pub fn update_book(
     description: Option<&str>,
     font_settings: Option<&FontSettings>,
     cover_image: Option<Option<String>>,
+    calendar: Option<Option<Calendar>>,
 ) -> Result<()> {
     let path = book_json_path(base_dir, book_id);
     if !path.exists() {
@@ -130,6 +138,9 @@ pub fn update_book(
     }
     if let Some(ci) = cover_image {
         book.cover_image = ci;
+    }
+    if let Some(calendar) = calendar {
+        book.calendar = calendar;
     }
 
     repo::write_json(&path, &book)?;
@@ -163,6 +174,7 @@ pub fn get_book_at_commit(base_dir: &PathBuf, book_id: &str, commit_hex: &str) -
         chapter_order: book.chapter_order,
         created_at: book.created_at,
         updated_at: String::new(),
+        calendar: book.calendar,
     })
 }
 

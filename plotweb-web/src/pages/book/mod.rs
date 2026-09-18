@@ -18,6 +18,7 @@ use crate::pages::editor_utils;
 use crate::router;
 use crate::store::{AppStore, Route};
 
+mod calendar_form;
 mod css;
 mod feedback;
 mod flush;
@@ -27,6 +28,7 @@ mod panes;
 mod sidebar;
 pub(crate) mod sigils;
 mod state;
+mod time_entry;
 
 use state::BookState;
 
@@ -46,6 +48,10 @@ enum BookPane {
     Notes,
     NoteEditor(String),
     History,
+    /// The book's calendar (notes card 4). Reached from the notes surface and from a
+    /// note's time field, never from the tools strip: a book that keeps the default
+    /// calendar need never see it.
+    Calendar,
 }
 
 #[component]
@@ -480,6 +486,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             description: Some(desc.clone()),
             font_settings: None,
             cover_image: Some(cover.clone()),
+            calendar: None,
         };
         api::put::<_, serde_json::Value>(
             &format!("/api/books/{}", bid),
@@ -994,8 +1001,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
         store.sidebar_open.set(false);
         // Fetch notes
         let bid = bid_signal.get();
+        let bid_rest = bid.clone();
         api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid), move |result| {
             if let Ok(resp) = result {
+                // What REST said, kept apart from the projection's output — the
+                // fallback for any facet the local document has not heard of yet.
+                crate::local_book::rest_notes(&bid_rest, &resp.notes);
                 store.notes.set(resp.notes);
                 store.note_tree.set(Some(resp.tree));
                 // Read path: re-project the local `book:` doc's structure over the
@@ -1032,9 +1043,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     // Refresh tree
                     api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid_refresh), move |resp_result| {
                         if let Ok(resp) = resp_result {
+                            crate::local_book::rest_notes(&bid_sync, &resp.notes);
                             crate::local_book::sync_notes(&bid_sync, &resp.notes, &resp.tree);
                             store.notes.set(resp.notes);
                             store.note_tree.set(Some(resp.tree));
+                            // The list is REST's; what the author sees is the document's over it.
+                            crate::local_book::project_notes(store);
                         }
                     });
                 }
@@ -1097,8 +1111,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
         active_pane.set(BookPane::Notes);
         // Refresh notes list
         let bid = bid_signal.get();
+        let bid_rest = bid.clone();
         api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid), move |result| {
             if let Ok(resp) = result {
+                // What REST said, kept apart from the projection's output — the
+                // fallback for any facet the local document has not heard of yet.
+                crate::local_book::rest_notes(&bid_rest, &resp.notes);
                 store.notes.set(resp.notes);
                 store.note_tree.set(Some(resp.tree));
                 crate::local_book::project_notes(store);
@@ -1263,7 +1281,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         SectionHeader {
                             label: "Notes",
                             count: {move || Some(store.notes.get().len() as i64)},
-                            active: {move || matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_))},
+                            active: {move || matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_) | BookPane::Calendar)},
                             style: "margin-top: var(--pw-space-sm);",
                             onclick: open_notes_pane,
                             ActionIcon {
@@ -1426,6 +1444,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
                     // History pane (CSS toggle)
                     {panes::history::render(__scope, state)}
+
+                    // Calendar pane (CSS toggle) — notes card 4
+                    {panes::calendar::render(__scope, state, store)}
                 }
             }
 

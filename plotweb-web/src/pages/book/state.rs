@@ -193,6 +193,25 @@ pub(super) struct BookState {
     /// can be a re-render instead of a navigation: changing view keeps the narrowing and
     /// the selected note (`design/04-notes-wireframes.html`, "Placement and the phone").
     pub notes_view: Signal<super::panes::notes::NotesView>,
+    // ── Time and the calendar (notes card 4) ────────────────────
+    /// The note whose time is open for editing in the facet strip. An id rather than a
+    /// flag, so opening another note closes the editor by no longer matching.
+    pub time_editing: Signal<Option<String>>,
+    /// The time field's text, as typed. See [`super::time_entry`].
+    pub time_draft: Signal<String>,
+    /// Why the last commit of the time field was refused, until the next keystroke.
+    pub time_error: Signal<Option<String>>,
+    /// The calendar screen's form: the calendar's name and one row per unit.
+    pub calendar_name_draft: Signal<String>,
+    pub calendar_rows: Signal<Vec<super::calendar_form::UnitDraft>>,
+    /// One key per row, changing only when a row is added or removed. The row loop is
+    /// driven by this rather than by `calendar_rows`, so typing into a field (which
+    /// rewrites `calendar_rows`) never re-renders the row it is typing into.
+    pub calendar_row_ids: Signal<Vec<u32>>,
+    pub calendar_status: Signal<Option<String>>,
+    /// Where the calendar screen's back arrow goes: the note it was opened from, or the
+    /// notes surface.
+    pub calendar_return: Signal<BookPane>,
     /// The shared filter: chips cycling off / must / any of / without, applied
     /// identically by every notes view. See [`super::notes_filter`].
     pub notes_filter: Signal<super::notes_filter::Filter>,
@@ -311,6 +330,14 @@ impl BookState {
             sigil_highlight: Signal::new(0),
             sigil_doc: Signal::new(None),
             notes_view: Signal::new(super::panes::notes::NotesView::Tree),
+            time_editing: Signal::new(None),
+            time_draft: Signal::new(String::new()),
+            time_error: Signal::new(None),
+            calendar_name_draft: Signal::new(String::new()),
+            calendar_rows: Signal::new(Vec::new()),
+            calendar_row_ids: Signal::new(Vec::new()),
+            calendar_status: Signal::new(None),
+            calendar_return: Signal::new(BookPane::Notes),
             notes_filter: Signal::new(super::notes_filter::Filter::default()),
             notes_selected: Signal::new(None),
             dragging_note_id: Signal::new(None),

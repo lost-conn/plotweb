@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 
-use plotweb_common::{FontSettings, NoteLinks, RelativeTime, TimeSpan};
+use plotweb_common::{Calendar, FontSettings, NoteLinks, RelativeTime, TimeSpan};
 
 use crate::RoundTrip;
 
@@ -65,6 +65,10 @@ pub struct BookStructureInput {
     pub font_settings: Option<FontSettings>,
     pub cover_ref: Option<String>,
     pub created_at: String,
+    /// The book's own calendar, if it has one. Whole-value LWW JSON, like font settings,
+    /// and **absent** rather than defaulted when the book has none — so a book that never
+    /// set a calendar holds exactly the document it held before calendars existed.
+    pub calendar: Option<Calendar>,
     /// `(chapter_id, title)` in **authoritative order** (`book.json` `chapter_order`).
     pub chapters: Vec<(String, String)>,
     /// Notes tree: root order.
@@ -93,6 +97,8 @@ pub struct BookStructure {
     pub font_settings_json: String,
     pub cover_ref: Option<String>,
     pub created_at: String,
+    /// The calendar as its stored JSON string, `None` when the book has none.
+    pub calendar_json: Option<String>,
     /// `(chapter_id, title)` in authoritative order.
     pub chapters: Vec<(String, String)>,
     pub root_order: Vec<String>,
@@ -117,6 +123,10 @@ pub struct BookStructure {
 
 fn font_settings_json(fs: &Option<FontSettings>) -> String {
     serde_json::to_string(&fs.clone().unwrap_or_default()).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn calendar_json(calendar: &Option<Calendar>) -> Option<String> {
+    calendar.as_ref().and_then(|c| serde_json::to_string(c).ok())
 }
 
 impl BookStructureInput {
@@ -163,6 +173,7 @@ impl BookStructureInput {
             font_settings_json: font_settings_json(&self.font_settings),
             cover_ref: self.cover_ref.clone(),
             created_at: self.created_at.clone(),
+            calendar_json: calendar_json(&self.calendar),
             chapters: self.chapters.clone(),
             root_order: self.root_order.clone(),
             children,
@@ -316,6 +327,16 @@ pub fn apply_book_structure(
     if current.created_at != want.created_at {
         let _ = doc.put(&meta, "created_at", want.created_at.as_str());
     }
+    if current.calendar_json != want.calendar_json {
+        match &want.calendar_json {
+            Some(json) => {
+                let _ = doc.put(&meta, "calendar", json.as_str());
+            }
+            None => {
+                let _ = doc.delete(&meta, "calendar");
+            }
+        }
+    }
 
     // Chapters: order in a list, titles in a map beside it.
     let chapter_ids: Vec<String> = want.chapters.iter().map(|(id, _)| id.clone()).collect();
@@ -368,28 +389,31 @@ pub fn apply_book_structure(
     );
 
     // Facets. Each is a whole-value JSON map beside titles/colors, reconciled the same
-    // way — so setting a span is one small change, and clearing it is a delete rather
-    // than a rewrite of the notes section.
+    // way — so setting a span is one small change — except that clearing one writes a
+    // **tombstone** rather than deleting the key. See [`FACET_TOMBSTONE`].
     let spans_obj = ensure_obj(&mut doc, &notes_obj, "spans", ObjType::Map)?;
-    reconcile_string_map(
+    reconcile_facet_map(
         &mut doc,
         &spans_obj,
         &to_json_map(&current.note_spans),
         &to_json_map(&want.note_spans),
+        FACET_TOMBSTONE,
     );
     let relatives_obj = ensure_obj(&mut doc, &notes_obj, "relatives", ObjType::Map)?;
-    reconcile_string_map(
+    reconcile_facet_map(
         &mut doc,
         &relatives_obj,
         &to_json_map(&current.note_relatives),
         &to_json_map(&want.note_relatives),
+        FACET_TOMBSTONE,
     );
     let event_parents_obj = ensure_obj(&mut doc, &notes_obj, "event_parents", ObjType::Map)?;
-    reconcile_string_map(
+    reconcile_facet_map(
         &mut doc,
         &event_parents_obj,
         &current.note_event_parents,
         &want.note_event_parents,
+        "",
     );
     let links_obj = ensure_obj(&mut doc, &notes_obj, "links", ObjType::Map)?;
     reconcile_string_map(
@@ -401,10 +425,23 @@ pub fn apply_book_structure(
 
     let entities_obj = ensure_obj(&mut doc, &notes_obj, "entities", ObjType::Map)?;
     for id in current.note_entities.difference(&want.note_entities) {
-        let _ = doc.delete(&entities_obj, id.as_str());
+        // `false`, not a delete: the entity facet's tombstone.
+        let _ = doc.put(&entities_obj, id.as_str(), false);
     }
     for id in want.note_entities.difference(&current.note_entities) {
         let _ = doc.put(&entities_obj, id.as_str(), true);
+    }
+
+    // A note that no longer exists takes its tombstones with it: there is nothing left
+    // for them to protect.
+    for obj in [&spans_obj, &relatives_obj, &event_parents_obj, &entities_obj] {
+        let stale: Vec<String> = doc
+            .keys(obj)
+            .filter(|id| !want.note_titles.contains_key(id))
+            .collect();
+        for id in stale {
+            let _ = doc.delete(obj, id.as_str());
+        }
     }
 
     Ok(doc.save())
@@ -542,6 +579,44 @@ fn reconcile_list(doc: &mut AutoCommit, obj: &ObjId, want: &[String]) {
     }
 }
 
+/// What a cleared span or relative constraint is stored as — the JSON `null` — instead
+/// of deleting the key. (A cleared event parent stores `""`, a cleared entity mark
+/// `false`.)
+///
+/// The point is to make **absence** mean something: "no device has ever written this
+/// note's span", as distinct from "someone cleared it". A client's local `book:`
+/// document only hears of facets written elsewhere once sync delivers them, so while it
+/// waits it fills an absent key from the note list REST last served
+/// (`plotweb-web/src/local_book.rs`, `project_notes`). That is only safe if a *cleared*
+/// span is not also absent — otherwise a clear made on another device would read as
+/// "not heard of yet" and the stale span would come straight back.
+///
+/// Every reader already drops a tombstone: `null` is not a `TimeSpan`, so
+/// `from_json_map` skips it; `""` is filtered from event parents; `false` is not an
+/// entity. The structure this module reads back is therefore unchanged by them.
+pub const FACET_TOMBSTONE: &str = "null";
+
+/// [`reconcile_string_map`] for a facet: a key leaving `want` becomes `tombstone`
+/// rather than being deleted. See [`FACET_TOMBSTONE`].
+fn reconcile_facet_map(
+    doc: &mut AutoCommit,
+    obj: &ObjId,
+    have: &BTreeMap<String, String>,
+    want: &BTreeMap<String, String>,
+    tombstone: &str,
+) {
+    for key in have.keys() {
+        if !want.contains_key(key) {
+            let _ = doc.put(obj, key.as_str(), tombstone);
+        }
+    }
+    for (key, value) in want {
+        if have.get(key) != Some(value) {
+            let _ = doc.put(obj, key.as_str(), value.as_str());
+        }
+    }
+}
+
 fn reconcile_string_map(
     doc: &mut AutoCommit,
     obj: &ObjId,
@@ -589,6 +664,9 @@ fn build_book_doc(doc: &mut AutoCommit, input: &BookStructureInput) {
         let _ = doc.put(&meta, "cover_ref", cover.as_str());
     }
     let _ = doc.put(&meta, "created_at", input.created_at.as_str());
+    if let Some(json) = calendar_json(&input.calendar) {
+        let _ = doc.put(&meta, "calendar", json.as_str());
+    }
 
     // chapters (order List + titles Map)
     let chs = doc.put_object(ROOT, "chapters", ObjType::List).unwrap();
@@ -679,6 +757,7 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
         .as_ref()
         .and_then(|m| get_str(doc, m, "created_at"))
         .unwrap_or_default();
+    let calendar_json = meta.as_ref().and_then(|m| get_str(doc, m, "calendar"));
 
     let order = get_obj(doc, &ROOT, "chapters")
         .map(|o| read_list_strings(doc, &o))
@@ -749,7 +828,9 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
     let note_spans = from_json_map(facet_map("spans"));
     let note_relatives = from_json_map(facet_map("relatives"));
     let note_links = from_json_map(facet_map("links"));
-    let note_event_parents = facet_map("event_parents");
+    // `""` is a cleared event parent's tombstone (see `FACET_TOMBSTONE`).
+    let mut note_event_parents = facet_map("event_parents");
+    note_event_parents.retain(|_, parent| !parent.is_empty());
 
     let mut note_entities = BTreeSet::new();
     if let Some(entities_obj) = notes_obj.as_ref().and_then(|n| get_obj(doc, n, "entities")) {
@@ -772,6 +853,7 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
         font_settings_json,
         cover_ref,
         created_at,
+        calendar_json,
         chapters,
         root_order,
         children,
@@ -802,6 +884,9 @@ fn describe_book_diff(expected: &BookStructure, actual: &BookStructure) -> Strin
     }
     if expected.created_at != actual.created_at {
         parts.push("meta.created_at".to_string());
+    }
+    if expected.calendar_json != actual.calendar_json {
+        parts.push("meta.calendar".to_string());
     }
     if expected.chapters != actual.chapters {
         parts.push("chapters (order/titles)".to_string());
@@ -914,6 +999,7 @@ mod tests {
             font_settings: None,
             cover_ref: Some("cover-hash".into()),
             created_at: "2026-01-01 00:00:00".into(),
+            calendar: None,
             chapters: vec![
                 ("c1".into(), "Opening".into()),
                 ("c2".into(), "The Storm".into()),
@@ -1190,6 +1276,7 @@ mod tests {
             font_settings: None,
             cover_ref: None,
             created_at: "2026-01-01 00:00:00".into(),
+            calendar: None,
             chapters: vec![],
             root_order: vec![],
             children: HashMap::new(),
@@ -1327,6 +1414,112 @@ mod tests {
             bytes,
             "a facet that re-serializes differently each time would sync on every save"
         );
+    }
+
+    /// Raw value at `notes.{prop}.{id}` — what a client reading the document sees,
+    /// tombstones included.
+    fn raw_facet(bytes: &[u8], prop: &str, id: &str) -> Option<String> {
+        let doc = AutoCommit::load(bytes).expect("load");
+        let notes = get_obj(&doc, &ROOT, "notes")?;
+        let obj = get_obj(&doc, &notes, prop)?;
+        doc.get(&obj, id).ok().flatten().map(|(v, _)| match v.to_str() {
+            Some(s) => s.to_string(),
+            None => format!("{:?}", v.to_bool()),
+        })
+    }
+
+    #[test]
+    fn clearing_a_facet_leaves_a_tombstone_that_reads_as_absent() {
+        // Absence has to mean "nobody has written this yet", so a cleared span must not
+        // be absent: a client waiting on sync fills absent keys from REST, and a clear
+        // made elsewhere would otherwise come straight back.
+        let bytes = project_book_structure(&faceted()).expect("project");
+        let mut cleared = faceted();
+        cleared.notes[1].span = None;
+        cleared.notes[1].event_parent = None;
+        cleared.notes[1].is_entity = false;
+        cleared.notes[2].relative = None;
+
+        let applied = apply_book_structure(&bytes, &cleared, &[]).expect("apply");
+        assert_eq!(raw_facet(&applied, "spans", "n2").as_deref(), Some(FACET_TOMBSTONE));
+        assert_eq!(raw_facet(&applied, "relatives", "n3").as_deref(), Some(FACET_TOMBSTONE));
+        assert_eq!(raw_facet(&applied, "event_parents", "n2").as_deref(), Some(""));
+        assert_eq!(raw_facet(&applied, "entities", "n2").as_deref(), Some("Some(false)"));
+
+        // …and every reader sees nothing there, so git and the canonical copy agree.
+        assert_eq!(merged_with(&bytes, &applied), cleared.structure());
+        assert_eq!(
+            apply_book_structure(&applied, &cleared, &[]).expect("apply"),
+            applied,
+            "a tombstone is not a difference, so re-applying writes nothing"
+        );
+    }
+
+    #[test]
+    fn a_deleted_note_takes_its_tombstones_with_it() {
+        let bytes = project_book_structure(&faceted()).expect("project");
+        let mut cleared = faceted();
+        cleared.notes[1].span = None;
+        let applied = apply_book_structure(&bytes, &cleared, &[]).expect("apply");
+        assert!(raw_facet(&applied, "spans", "n2").is_some());
+
+        let mut gone = cleared.clone();
+        gone.notes.retain(|n| n.id != "n2");
+        gone.children.clear();
+        let applied = apply_book_structure(&applied, &gone, &["n2".into()]).expect("apply");
+        for prop in ["spans", "relatives", "event_parents", "entities"] {
+            assert_eq!(raw_facet(&applied, prop, "n2"), None, "{prop}");
+        }
+    }
+
+    #[test]
+    fn a_calendar_round_trips_and_is_absent_until_a_book_sets_one() {
+        let mut input = sample();
+        assert_eq!(input.structure().calendar_json, None);
+        let bytes = project_book_structure(&input).expect("project");
+        let doc = AutoCommit::load(&bytes).expect("load");
+        let meta = get_obj(&doc, &ROOT, "meta").expect("meta");
+        assert_eq!(
+            get_str(&doc, &meta, "calendar"),
+            None,
+            "a book that never set a calendar holds the document it always did"
+        );
+
+        let accord = Calendar {
+            name: "The Accord".into(),
+            units: vec![
+                plotweb_common::CalendarUnit {
+                    name: "Year".into(),
+                    per: 1,
+                    of: 0,
+                    names: vec![],
+                    format: "yr {n}".into(),
+                    first: 0,
+                    shown_below: None,
+                },
+                plotweb_common::CalendarUnit {
+                    name: "Season".into(),
+                    per: 4,
+                    of: 0,
+                    names: vec!["wet".into(), "dry".into(), "high".into(), "low".into()],
+                    format: ", {name}".into(),
+                    first: 1,
+                    shown_below: None,
+                },
+            ],
+        };
+        input.calendar = Some(accord.clone());
+        assert_eq!(roundtrip_book_structure(&input), RoundTrip::Clean);
+
+        // Set through an apply, as a REST write would, and cleared again.
+        let applied = apply_book_structure(&bytes, &input, &[]).expect("apply");
+        let merged = merged_with(&bytes, &applied);
+        assert_eq!(
+            merged.calendar_json.as_deref().map(|j| serde_json::from_str::<Calendar>(j).unwrap()),
+            Some(accord)
+        );
+        let reset = apply_book_structure(&applied, &sample(), &[]).expect("apply");
+        assert_eq!(materialize_book_structure(&reset).unwrap().calendar_json, None);
     }
 
     #[test]

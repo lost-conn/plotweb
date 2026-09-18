@@ -267,7 +267,8 @@ fn describe_structure_change(have: &BookStructure, want: &BookStructure) -> Stri
     let meta = have.title != want.title
         || have.description != want.description
         || have.font_settings_json != want.font_settings_json
-        || have.cover_ref != want.cover_ref;
+        || have.cover_ref != want.cover_ref
+        || have.calendar_json != want.calendar_json;
 
     let mut parts = Vec::new();
     if added > 0 {

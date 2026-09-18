@@ -496,6 +496,44 @@ async fn a_span_set_on_a_device_reaches_git() {
 }
 
 #[tokio::test]
+async fn a_calendar_and_an_undating_set_on_a_device_reach_git() {
+    // Card 4: the calendar rides in the book meta and an undated event is a tombstone
+    // in the document, not an absent key. Both must still land in git as what they
+    // mean — a calendar, and no span.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let (book_id, _, _, n1) = structured_book(&mut app).await;
+
+    let dated = n1.clone();
+    device_changes(&mut app, &book_id, move |input| {
+        input.calendar = Some(plotweb_common::Calendar {
+            name: "The Accord".into(),
+            ..Default::default()
+        });
+        let note = input.notes.iter_mut().find(|n| n.id == dated).expect("the note");
+        note.span = Some(plotweb_common::TimeSpan::at(
+            plotweb_common::TimePoint::base_unit(1206),
+        ));
+    })
+    .await;
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
+    let git = app.state().books.get_book(&book_id).await.expect("book");
+    assert_eq!(git.calendar.map(|c| c.name), Some("The Accord".to_string()));
+    assert!(git_structure(&app, &book_id).await.note_spans.contains_key(&n1));
+
+    let undated = n1.clone();
+    device_changes(&mut app, &book_id, move |input| {
+        let note = input.notes.iter_mut().find(|n| n.id == undated).expect("the note");
+        note.span = None;
+    })
+    .await;
+    assert_eq!(mirror::flush(app.state(), NOW, NOW).await, 1);
+    let git = git_structure(&app, &book_id).await;
+    assert!(!git.note_spans.contains_key(&n1), "the tombstone reached git as no span");
+    assert!(git.calendar_json.is_some(), "and left the calendar alone");
+}
+
+#[tokio::test]
 async fn book_metadata_changed_on_a_device_reaches_git() {
     let mut app = TestApp::new().await;
     app.register("author", "password123").await;

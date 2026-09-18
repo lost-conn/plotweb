@@ -77,6 +77,7 @@ pub async fn migrate_sqlite_to_git(pool: &SqlitePool, base_dir: &PathBuf) -> any
             cover_image: None,
             chapter_order,
             created_at: created_at.clone(),
+            calendar: None,
         };
         repo::write_json(&ms_dir.join("book.json"), &book_json)?;
 

@@ -113,6 +113,10 @@ fn book_fingerprint(input: &BookStructureInput) -> String {
     let _ = writeln!(s, "font\t{font}");
     let _ = writeln!(s, "cover\t{:?}", input.cover_ref);
     let _ = writeln!(s, "created\t{}", input.created_at);
+    // Only when set, so every book without a calendar keeps the fingerprint it had.
+    if let Some(calendar) = &input.calendar {
+        let _ = writeln!(s, "calendar\t{}", serde_json::to_string(calendar).unwrap_or_default());
+    }
     for (id, title) in &input.chapters {
         let _ = writeln!(s, "ch\t{id}\t{title}");
     }

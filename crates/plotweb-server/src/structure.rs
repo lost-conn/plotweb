@@ -29,6 +29,7 @@ pub fn structure_input(
         font_settings: book.font_settings.clone(),
         cover_ref: book.cover_image.clone(),
         created_at: book.created_at.clone(),
+        calendar: book.calendar.clone(),
         chapters: chapters
             .iter()
             .map(|c| (c.id.clone(), c.title.clone()))

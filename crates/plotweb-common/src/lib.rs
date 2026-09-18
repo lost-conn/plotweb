@@ -90,6 +90,11 @@ pub struct Book {
     /// "Saved" meant two different things depending on a flag the author could not see.
     #[serde(default)]
     pub cutover: bool,
+    /// The book's calendar — how a note's time reads. `None` for every book that never
+    /// set one, which reads through [`Calendar::default`]; so a book that never touches
+    /// the calendar serialises exactly as it did before there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<Calendar>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,13 +103,21 @@ pub struct CreateBookRequest {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateBookRequest {
     pub title: Option<String>,
     pub description: Option<String>,
     pub font_settings: Option<FontSettings>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub cover_image: Option<Option<String>>,
+    /// A patch, like `cover_image`: absent leaves the calendar alone, `null` returns the
+    /// book to the default calendar, a value replaces it whole.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub calendar: Option<Option<Calendar>>,
 }
 
 // ── Chapter ──
@@ -359,8 +372,11 @@ pub struct ImportChapter {
 
 // ── Notes ──
 
+pub mod calendar;
 pub mod note_links;
 pub mod note_time;
+
+pub use calendar::{Calendar, CalendarUnit, ShownBelow};
 
 pub use note_links::{
     extract_note_links, extract_note_links_in, fold_token, note_plain_text, token_for_title,

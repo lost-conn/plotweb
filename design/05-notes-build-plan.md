@@ -129,6 +129,27 @@ was unmounted and no routing changed; the Timeline tab renders disabled until ca
 **Done when:** a book can define "The Accord" with seasons and bells, and notes can carry spans
 in it that sort correctly.
 
+**Shipped.** The calendar is `plotweb_common::Calendar`: units coarsest first, each `1/per` of
+an *earlier* unit (`of`), so units need not nest — a Day is 1/365 Year beside a 1/12 Month. When a
+date is written each part is counted inside the part before it by one uniform rule (a unit
+belongs to the coarser unit its start falls in), which is what gives the default calendar its
+30- and 31-day months without anything knowing what a month is. Stored as whole-value JSON in
+`Book::calendar` / `book.json` / the `book:` meta, **absent** for a book that never set one. An
+Accord Bell (1/5120 Year) is 6159.375 ticks, so unit starts round down to a whole tick;
+`index_at` inverts that exactly, so typed dates read back as typed.
+
+Time entry is one text field in the facet strip covering all five states (`~`, `–`/`to`,
+`onward`, `after|before|during <note>`, empty) — see `pages/book/time_entry.rs`. The calendar
+screen is an eighth permanently-mounted pane, reached from the notes header and the time field,
+not the tools strip. The **holding rail** the wireframe's build order lists under step 4 is
+left to card 5, where the build plan puts it; nothing in card 4 draws a timeline to hold it.
+
+Found on the way: the client's `book:` document projected away any facet it had not heard of
+(and a note-list refetch *deleted* every span the server did not hold yet, which sync then
+carried to the server). Fixed by making a cleared facet a tombstone rather than an absent key
+(client and server both), falling back to REST only for a facet the document has never held,
+and letting a REST note list fill but never remove or overwrite a facet.
+
 ## [Notes 5/8] Timeline — entity lanes
 
 The cheaper half of the timeline, and the half that can't look broken. Ships on its own.

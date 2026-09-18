@@ -382,6 +382,13 @@ pub(super) const NOTES_CSS: &str = r#"
     font-size: var(--pw-text-2xs);
     font-variant-numeric: tabular-nums;
     color: var(--rinch-color-dimmed);
+    /* An invented calendar writes longer dates than a bare year ("yr 1206, dry,
+       day 12, bell 9"), so the gutter gives way before the title does. The full
+       reading stays in the row's tooltip and the note's facet strip. */
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .note-row-actions {
     display: flex;
@@ -743,6 +750,179 @@ pub(super) const NOTES_CSS: &str = r#"
 @media (hover: none) {
     .note-row-actions {
         opacity: 1;
+    }
+}
+
+/* ── Time and the calendar (notes card 4) ─────────────────────────────────
+   The time field opens under the facet strip, in the flow of the note rather
+   than over it; the calendar is a pane of its own, one card per unit. */
+.notes-pane-header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--pw-space-xs);
+}
+.note-facets-block {
+    margin-bottom: 16px;
+}
+.note-facets-block .note-facets {
+    margin-bottom: 0;
+}
+.note-facet-span {
+    cursor: pointer;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+    border-bottom: 1px dashed transparent;
+}
+.note-facet-span:hover {
+    color: var(--rinch-color-text);
+    border-bottom-color: var(--rinch-color-teal-6);
+}
+.note-time-editor {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--rinch-radius-sm);
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 5%, transparent);
+}
+.note-time-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.note-time-input {
+    flex: 1 1 240px;
+    min-width: 0;
+}
+.note-time-input input {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.note-time-preview {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--rinch-color-teal-7);
+}
+.note-time-preview.is-error {
+    color: var(--rinch-color-red-7);
+}
+.note-time-help {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--rinch-color-dimmed);
+}
+.note-time-calendar {
+    cursor: pointer;
+    color: var(--rinch-color-teal-7);
+}
+.note-time-calendar:hover {
+    text-decoration: underline;
+}
+
+.calendar-pane {
+    padding-bottom: var(--pw-space-xl);
+}
+.calendar-head {
+    display: flex;
+    align-items: center;
+    gap: var(--pw-space-xs);
+}
+.calendar-lede,
+.calendar-note {
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-dimmed);
+    max-width: 60ch;
+    margin: var(--pw-space-xs) 0 var(--pw-space-md) 0;
+}
+.cal-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+.cal-field-label {
+    font-size: 11px;
+    color: var(--rinch-color-dimmed);
+    letter-spacing: 0.02em;
+}
+.cal-field input {
+    font: inherit;
+    font-size: 13px;
+    padding: 5px 8px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--rinch-radius-sm);
+    background: var(--rinch-color-body);
+    color: var(--rinch-color-text);
+    min-width: 0;
+    width: 100%;
+    box-sizing: border-box;
+}
+.cal-field input:focus {
+    outline: none;
+    border-color: var(--rinch-color-teal-6);
+}
+.calendar-name {
+    max-width: 320px;
+    margin-bottom: var(--pw-space-md);
+}
+.cal-rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-sm);
+}
+.cal-row {
+    border: 1px solid var(--pw-hairline);
+    border-radius: var(--rinch-radius-sm);
+    padding: 10px 12px 12px;
+}
+.cal-row-head {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--rinch-color-dimmed);
+    margin-bottom: 6px;
+}
+.cal-row-fields {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px 12px;
+}
+.cal-row-actions,
+.calendar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--pw-space-xs);
+    flex-wrap: wrap;
+    margin-top: var(--pw-space-sm);
+}
+.calendar-preview {
+    margin-top: var(--pw-space-md);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    color: var(--rinch-color-text);
+}
+.calendar-preview.is-error {
+    font-family: inherit;
+    color: var(--rinch-color-red-7);
+}
+.calendar-status {
+    font-size: 12px;
+    color: var(--rinch-color-dimmed);
+}
+@media (max-width: 768px) {
+    .cal-row-fields {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+@media (max-width: 420px) {
+    .cal-row-fields {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .note-when {
+        max-width: 38%;
     }
 }
 "#;

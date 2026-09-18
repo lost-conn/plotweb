@@ -410,6 +410,7 @@ pub fn project_books(store: AppStore) {
                     // was told last time it could ask. It is corrected the moment the
                     // book itself is fetched.
                     cutover: cut_over,
+                    calendar: None,
                 });
             }
         }
@@ -509,6 +510,7 @@ mod tests {
             font_settings: None,
             cover_image: cover.map(|c| c.to_string()),
             cutover: false,
+            calendar: None,
         }
     }
 

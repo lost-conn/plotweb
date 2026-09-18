@@ -12,7 +12,8 @@
 //!
 //! ```text
 //! ROOT
-//!   meta:           Map { title, description, font_settings (JSON str), cover_ref?, created_at }
+//!   meta:           Map { title, description, font_settings (JSON str), cover_ref?, created_at,
+//!                         calendar? (JSON str — absent for a book on the default calendar) }
 //!   chapters:       List<chapter_id>            // AUTHORITATIVE order
 //!   chapter_titles: Map<chapter_id, String>
 //!   notes:          Map {
@@ -21,6 +22,12 @@
 //!     collapsed:  Map<note_id, bool>,
 //!     titles:     Map<note_id, String>,
 //!     colors:     Map<note_id, String>,
+//!     // notes revamp — facets, whole-value; a cleared one is a tombstone, not absent:
+//!     spans:         Map<note_id, JSON str | "null">,
+//!     relatives:     Map<note_id, JSON str | "null">,
+//!     entities:      Map<note_id, bool>,          // false = cleared
+//!     event_parents: Map<note_id, note_id | "">,  // ""   = cleared
+//!     links:         Map<note_id, JSON str>,      // derived from the body
 //!   }
 //! ```
 //!
@@ -153,6 +160,13 @@ struct BookState {
     /// (§D9 — a whole-state write whose source had moved on, here a signal rather than a
     /// CRDT).
     rest: Vec<Chapter>,
+    /// Each note's facets as **REST** last served them — the fallback [`project_notes`]
+    /// reads for a facet this document has never held.
+    ///
+    /// Same rule as `rest` above, and for the same reason: the projection reads this and
+    /// never writes it, so a facet cannot be resurrected from the projection's own
+    /// previous output. See [`resolve_facets`] for why the fallback is needed at all.
+    rest_facets: HashMap<String, Facets>,
 }
 
 thread_local! {
@@ -249,6 +263,42 @@ pub fn set_font_settings(book_id: &str, font_settings: &plotweb_common::FontSett
             return;
         };
         let _ = doc.put(&meta, "font_settings", json);
+    });
+}
+
+/// Record a calendar change in the book document — the same dual-write, for the same
+/// reason, as [`set_font_settings`]. `None` returns the book to the default calendar,
+/// which the document says by holding no `calendar` at all.
+pub fn set_calendar(book_id: &str, calendar: Option<&plotweb_common::Calendar>) {
+    let json = calendar.and_then(|c| serde_json::to_string(c).ok());
+    with_book(book_id, |doc| {
+        let Some(meta) = get_obj(doc, &ROOT, "meta") else {
+            return;
+        };
+        match json {
+            Some(json) => put_if_changed(doc, &meta, "calendar", &json),
+            None => {
+                if doc.get(&meta, "calendar").ok().flatten().is_some() {
+                    let _ = doc.delete(&meta, "calendar");
+                }
+            }
+        }
+    });
+}
+
+/// Replace the snapshot of what REST last said about each note's facets.
+///
+/// Call it wherever a fresh note list arrives **from REST** — never with `store.notes`,
+/// which is this module's own projection output (see [`BookState::rest_facets`]).
+/// No-op unless that book is open.
+pub fn rest_notes(book_id: &str, notes: &[Note]) {
+    BOOK.with(|b| {
+        let mut slot = b.borrow_mut();
+        let Some(state) = slot.as_mut() else { return };
+        if state.book_id != book_id {
+            return;
+        }
+        state.rest_facets = facets_of(notes);
     });
 }
 
@@ -373,6 +423,7 @@ pub fn enter(
                 doc,
                 persister,
                 rest: chapters,
+                rest_facets: facets_of(&notes),
             });
         });
 
@@ -413,6 +464,10 @@ fn build_doc(doc: &mut AutoCommit, book: &Book, chapters: &[Chapter], notes: &[N
         let _ = doc.put(&meta, "cover_ref", cover.as_str());
     }
     let _ = doc.put(&meta, "created_at", book.created_at.as_str());
+    // Absent unless the book has its own — mirror of `plotweb_crdt::book`.
+    if let Some(json) = book.calendar.as_ref().and_then(|c| serde_json::to_string(c).ok()) {
+        let _ = doc.put(&meta, "calendar", json);
+    }
 
     // chapters (order List + titles Map)
     let chs = doc.put_object(ROOT, "chapters", ObjType::List).unwrap();
@@ -497,6 +552,26 @@ fn write_notes(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note], tree: &N
 /// Spans, constraints and link indices are stored as whole-value JSON, the way
 /// `font_settings` is: half a span is not a span, and a per-field merge of two retyped
 /// dates would produce a third date neither author typed.
+///
+/// # A note list only *fills* facets; it never overwrites or removes one
+///
+/// This is called with a note list fetched over REST (and on first open, to seed). For a
+/// facet the document has never held, that list is the best information there is, so it
+/// is written in. For one the document *does* hold — a value, or a cleared tombstone —
+/// the list is not evidence of anything newer:
+///
+/// - The document is where this device's own facet writes land first
+///   ([`note_facets`]). If the REST write beside one failed, the list simply has not
+///   heard of it, and on a cut-over book sync will still carry it to the server — so
+///   letting the list delete it here would destroy the only copy. This was a real
+///   data-loss path before card 4: a list fetched by any tree edit (create, move,
+///   delete, collapse) removed every span the server did not hold yet, and sync then
+///   carried the removal to the server.
+/// - A change made elsewhere reaches a synced document by sync, as a change — not
+///   through this list.
+///
+/// So existing entries are left alone and only the keys of notes that no longer exist
+/// are dropped. (That is the rule `links` already followed, for the same reason.)
 fn write_note_facets(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note]) {
     let spans = ensure_obj(doc, notes_obj, "spans", ObjType::Map);
     let relatives = ensure_obj(doc, notes_obj, "relatives", ObjType::Map);
@@ -504,58 +579,55 @@ fn write_note_facets(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note]) {
     let event_parents = ensure_obj(doc, notes_obj, "event_parents", ObjType::Map);
     let links = ensure_obj(doc, notes_obj, "links", ObjType::Map);
 
-    let with = |f: &dyn Fn(&Note) -> bool| -> Vec<String> {
-        notes.iter().filter(|n| f(n)).map(|n| n.id.clone()).collect()
-    };
-    retain_keys(doc, &spans, &with(&|n| n.span.is_some()));
-    retain_keys(doc, &relatives, &with(&|n| n.relative.is_some()));
-    retain_keys(doc, &entities, &with(&|n| n.is_entity));
-    retain_keys(doc, &event_parents, &with(&|n| n.event_parent.is_some()));
-    // The link index now rides on the note itself (`Note::links`, derived server-side
-    // from the body the server holds), so a full note list can seed it — without which
-    // a device that has only ever fetched would project an empty index over a perfectly
-    // good one and show a rail with nothing in it.
-    //
-    // Only the keys of notes that no longer exist are dropped. An entry is **not**
-    // removed just because the incoming note carries no edges: on a cut-over book the
-    // server derives its copy from git, which lags the canonical body by the mirror's
-    // debounce, so an empty answer there is as likely to mean "not seen yet" as "no
-    // edges". Emptying is the job of `note_links`, which runs beside the save that
-    // emptied it, holding the body that did.
-    retain_keys(doc, &links, &notes.iter().map(|n| n.id.clone()).collect::<Vec<_>>());
+    let live: Vec<String> = notes.iter().map(|n| n.id.clone()).collect();
+    for obj in [&spans, &relatives, &entities, &event_parents, &links] {
+        retain_keys(doc, obj, &live);
+    }
 
+    let held = |doc: &AutoCommit, obj: &ObjId, id: &str| doc.get(obj, id).ok().flatten().is_some();
     for n in notes {
         let id = n.id.as_str();
-        if let Some(json) = n.span.as_ref().and_then(|s| serde_json::to_string(s).ok()) {
-            put_if_changed(doc, &spans, id, &json);
-        }
-        if let Some(json) = n
-            .relative
-            .as_ref()
-            .and_then(|r| serde_json::to_string(r).ok())
+        if !held(doc, &spans, id)
+            && let Some(json) = n.span.as_ref().and_then(|s| serde_json::to_string(s).ok())
         {
-            put_if_changed(doc, &relatives, id, &json);
+            let _ = doc.put(&spans, id, json);
         }
-        if n.is_entity
-            && !doc
-                .get(&entities, id)
-                .ok()
-                .flatten()
-                .and_then(|(v, _)| v.to_bool())
-                .unwrap_or(false)
+        if !held(doc, &relatives, id)
+            && let Some(json) = n.relative.as_ref().and_then(|r| serde_json::to_string(r).ok())
         {
+            let _ = doc.put(&relatives, id, json);
+        }
+        if n.is_entity && !held(doc, &entities, id) {
             let _ = doc.put(&entities, id, true);
         }
-        if let Some(parent) = &n.event_parent {
-            put_if_changed(doc, &event_parents, id, parent.as_str());
+        if !held(doc, &event_parents, id)
+            && let Some(parent) = &n.event_parent
+        {
+            let _ = doc.put(&event_parents, id, parent.as_str());
         }
+        // The link index now rides on the note itself (`Note::links`, derived
+        // server-side from the body the server holds), so a full note list can seed it.
+        // On a cut-over book the server's copy lags the canonical body by the mirror's
+        // debounce, so an empty answer is as likely to mean "not seen yet" as "no
+        // edges" — emptying is the job of `note_links`, which runs beside the save that
+        // emptied it, holding the body that did.
         if !n.links.is_empty()
+            && !held(doc, &links, id)
             && let Ok(json) = serde_json::to_string(&n.links)
         {
-            put_if_changed(doc, &links, id, &json);
+            let _ = doc.put(&links, id, json);
         }
     }
 }
+
+/// What a cleared span or relative constraint is stored as, instead of deleting the key
+/// — the JSON `null`. A cleared event parent is `""`, a cleared entity mark `false`.
+/// Mirror of `plotweb_crdt::book::FACET_TOMBSTONE`, which the server writes too.
+///
+/// It makes an **absent** key mean exactly one thing — "nothing has ever been written
+/// here" — which is what lets [`resolve_facets`] fall back to REST for an absent key
+/// without resurrecting a span somebody cleared.
+const FACET_TOMBSTONE: &str = "null";
 
 // ── Mutations (dual-write; called beside the existing REST PUTs) ─────────────
 
@@ -673,40 +745,56 @@ pub fn note_facets(
     event_parent: Option<Option<String>>,
 ) {
     with_book(book_id, |doc| {
-        let notes_obj = ensure_obj(doc, &ROOT, "notes", ObjType::Map);
-
-        let mut put_json = |prop: &str, json: Option<String>| {
-            let obj = ensure_obj(doc, &notes_obj, prop, ObjType::Map);
-            match json {
-                Some(json) => put_if_changed(doc, &obj, note_id, &json),
-                None => {
-                    if doc.get(&obj, note_id).ok().flatten().is_some() {
-                        let _ = doc.delete(&obj, note_id);
-                    }
-                }
-            }
-        };
-        if let Some(span) = span {
-            put_json("spans", span.and_then(|s| serde_json::to_string(&s).ok()));
-        }
-        if let Some(relative) = relative {
-            put_json(
-                "relatives",
-                relative.and_then(|r| serde_json::to_string(&r).ok()),
-            );
-        }
-        if let Some(parent) = event_parent {
-            put_json("event_parents", parent);
-        }
-        if let Some(is_entity) = is_entity {
-            let obj = ensure_obj(doc, &notes_obj, "entities", ObjType::Map);
-            if is_entity {
-                let _ = doc.put(&obj, note_id, true);
-            } else if doc.get(&obj, note_id).ok().flatten().is_some() {
-                let _ = doc.delete(&obj, note_id);
-            }
-        }
+        write_facets(doc, note_id, span, relative, is_entity, event_parent);
     });
+}
+
+/// The document half of [`note_facets`], apart from the open-book plumbing so it can be
+/// tested on the host.
+fn write_facets(
+    doc: &mut AutoCommit,
+    note_id: &str,
+    span: Option<Option<plotweb_common::TimeSpan>>,
+    relative: Option<Option<plotweb_common::RelativeTime>>,
+    is_entity: Option<bool>,
+    event_parent: Option<Option<String>>,
+) {
+    let notes_obj = ensure_obj(doc, &ROOT, "notes", ObjType::Map);
+
+    // A clear writes the tombstone rather than deleting the key — see
+    // `FACET_TOMBSTONE` for why absence has to stay reserved for "never written".
+    let mut put = |prop: &str, value: Option<String>, tombstone: &str| {
+        let obj = ensure_obj(doc, &notes_obj, prop, ObjType::Map);
+        put_if_changed(doc, &obj, note_id, value.as_deref().unwrap_or(tombstone));
+    };
+    if let Some(span) = span {
+        put(
+            "spans",
+            span.and_then(|s| serde_json::to_string(&s).ok()),
+            FACET_TOMBSTONE,
+        );
+    }
+    if let Some(relative) = relative {
+        put(
+            "relatives",
+            relative.and_then(|r| serde_json::to_string(&r).ok()),
+            FACET_TOMBSTONE,
+        );
+    }
+    if let Some(parent) = event_parent {
+        put("event_parents", parent, "");
+    }
+    if let Some(is_entity) = is_entity {
+        let obj = ensure_obj(doc, &notes_obj, "entities", ObjType::Map);
+        let held = doc
+            .get(&obj, note_id)
+            .ok()
+            .flatten()
+            .and_then(|(v, _)| v.to_bool());
+        if held != Some(is_entity) {
+            let _ = doc.put(&obj, note_id, is_entity);
+        }
+    }
 }
 
 // ── Projection (doc → AppStore signals; local doc wins) ──────────────────────
@@ -829,35 +917,12 @@ pub fn project_notes(store: AppStore) {
         let colors = get_obj(doc, &notes_obj, "colors")
             .map(|o| read_map_strings(doc, &o))
             .unwrap_or_default();
-        // Facets, from the same document. They are structure, not body: the note list's
-        // REST copy is whatever the last fetch said, and the document is what this
-        // device and its peers have actually done since.
-        let spans: HashMap<String, plotweb_common::TimeSpan> =
-            read_json_map(doc, &notes_obj, "spans");
-        let relatives: HashMap<String, plotweb_common::RelativeTime> =
-            read_json_map(doc, &notes_obj, "relatives");
-        let event_parents = get_obj(doc, &notes_obj, "event_parents")
-            .map(|o| read_map_strings(doc, &o))
-            .unwrap_or_default();
-        // The link index, from the same document and for the same reason: the context
-        // rail draws the graph from the note list alone, and re-deriving it here would
-        // mean holding every note's body in memory.
+        // The link index, from the same document: the context rail draws the graph from
+        // the note list alone, and re-deriving it here would mean holding every note's
+        // body in memory.
         let links: HashMap<String, plotweb_common::NoteLinks> =
             read_json_map(doc, &notes_obj, "links");
-        let mut entities: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if let Some(entities_obj) = get_obj(doc, &notes_obj, "entities") {
-            for key in doc.keys(&entities_obj) {
-                if doc
-                    .get(&entities_obj, key.as_str())
-                    .ok()
-                    .flatten()
-                    .and_then(|(v, _)| v.to_bool())
-                    .unwrap_or(false)
-                {
-                    entities.insert(key);
-                }
-            }
-        }
+        let facets = resolve_facets(doc, &notes_obj, &state.rest_facets);
 
         let mut notes = store.notes.get();
         for n in notes.iter_mut() {
@@ -865,10 +930,11 @@ pub fn project_notes(store: AppStore) {
                 n.title = t.clone();
             }
             n.color = colors.get(&n.id).cloned();
-            n.span = spans.get(&n.id).cloned();
-            n.relative = relatives.get(&n.id).cloned();
-            n.is_entity = entities.contains(&n.id);
-            n.event_parent = event_parents.get(&n.id).cloned();
+            let f = facets.get(&n.id).cloned().unwrap_or_default();
+            n.span = f.span;
+            n.relative = f.relative;
+            n.is_entity = f.is_entity;
+            n.event_parent = f.event_parent;
             // Unlike the facets above, an absent entry does **not** clear: the index
             // is derived, and a device that has not written one yet should show the
             // server's rather than nothing at all.
@@ -892,6 +958,7 @@ pub fn project_notes(store: AppStore) {
         in_tree.retain(|id| !known.contains(id));
         in_tree.dedup();
         for id in in_tree {
+            let f = facets.get(&id).cloned().unwrap_or_default();
             notes.push(Note {
                 id: id.clone(),
                 book_id: state.book_id.clone(),
@@ -900,15 +967,140 @@ pub fn project_notes(store: AppStore) {
                 color: colors.get(&id).cloned(),
                 created_at: String::new(),
                 updated_at: String::new(),
-                span: spans.get(&id).cloned(),
-                relative: relatives.get(&id).cloned(),
-                is_entity: entities.contains(&id),
-                event_parent: event_parents.get(&id).cloned(),
+                span: f.span,
+                relative: f.relative,
+                is_entity: f.is_entity,
+                event_parent: f.event_parent,
                 links: links.get(&id).cloned().unwrap_or_default(),
             });
         }
         store.notes.set(notes);
     });
+}
+
+/// A note's time and entity facets, as one unit.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Facets {
+    pub span: Option<plotweb_common::TimeSpan>,
+    pub relative: Option<plotweb_common::RelativeTime>,
+    pub is_entity: bool,
+    pub event_parent: Option<String>,
+}
+
+fn facets_of(notes: &[Note]) -> HashMap<String, Facets> {
+    notes
+        .iter()
+        .map(|n| {
+            (
+                n.id.clone(),
+                Facets {
+                    span: n.span.clone(),
+                    relative: n.relative.clone(),
+                    is_entity: n.is_entity,
+                    event_parent: n.event_parent.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// What the document says about one facet of one note: `Some(Some(v))` a value,
+/// `Some(None)` cleared (a tombstone), and — by the key's absence from the map —
+/// never written.
+type Held<T> = HashMap<String, Option<T>>;
+
+fn held_json<T: serde::de::DeserializeOwned>(doc: &AutoCommit, notes_obj: &ObjId, prop: &str) -> Held<T> {
+    let Some(obj) = get_obj(doc, notes_obj, prop) else {
+        return HashMap::new();
+    };
+    read_map_strings(doc, &obj)
+        .into_iter()
+        .filter_map(|(id, json)| {
+            if json == FACET_TOMBSTONE {
+                return Some((id, None));
+            }
+            // A value this build cannot read is treated as unwritten — never as a
+            // date at the epoch — so what REST says is shown instead.
+            serde_json::from_str(&json).ok().map(|v| (id, Some(v)))
+        })
+        .collect()
+}
+
+/// Every note's facets as this device should show them: the document's, and where the
+/// document has never held one, REST's.
+///
+/// # Why absent is not "none"
+///
+/// The document is seeded from REST only on a book's first open, and after that it hears
+/// about a facet only when this device writes one or sync delivers one. Reading an
+/// absent key as "no span" therefore hides every span it has not heard of *yet*: one
+/// written over HTTP, by a second device with sync off, or on this book before sync's
+/// first exchange completes. Card 3 found this and worked around it in its specs; card 4
+/// makes writing spans routine, so it is fixed here. An absent key falls back to what
+/// REST last served ([`BookState::rest_facets`]).
+///
+/// That is only safe because a **clear** is not absent: [`note_facets`] and the server
+/// both write a tombstone instead of deleting the key, so an author's "undated" beats a
+/// stale REST copy that still carries the old span. A document that does hold a value
+/// still wins over REST, as every other structural field does here.
+fn resolve_facets(
+    doc: &AutoCommit,
+    notes_obj: &ObjId,
+    rest: &HashMap<String, Facets>,
+) -> HashMap<String, Facets> {
+    let spans: Held<plotweb_common::TimeSpan> = held_json(doc, notes_obj, "spans");
+    let relatives: Held<plotweb_common::RelativeTime> = held_json(doc, notes_obj, "relatives");
+    let event_parents: Held<String> = get_obj(doc, notes_obj, "event_parents")
+        .map(|o| {
+            read_map_strings(doc, &o)
+                .into_iter()
+                .map(|(id, p)| (id, (!p.is_empty()).then_some(p)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let entities: HashMap<String, bool> = get_obj(doc, notes_obj, "entities")
+        .map(|o| {
+            doc.keys(&o)
+                .map(|id| {
+                    let on = doc
+                        .get(&o, id.as_str())
+                        .ok()
+                        .flatten()
+                        .and_then(|(v, _)| v.to_bool())
+                        .unwrap_or(false);
+                    (id, on)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    fn pick<T: Clone>(held: &Held<T>, id: &str, rest: Option<&T>) -> Option<T> {
+        match held.get(id) {
+            Some(value) => value.clone(),
+            None => rest.cloned(),
+        }
+    }
+
+    let mut ids: std::collections::BTreeSet<&String> = rest.keys().collect();
+    ids.extend(spans.keys());
+    ids.extend(relatives.keys());
+    ids.extend(event_parents.keys());
+    ids.extend(entities.keys());
+    ids.into_iter()
+        .map(|id| {
+            let r = rest.get(id);
+            let facets = Facets {
+                span: pick(&spans, id, r.and_then(|r| r.span.as_ref())),
+                relative: pick(&relatives, id, r.and_then(|r| r.relative.as_ref())),
+                is_entity: entities
+                    .get(id)
+                    .copied()
+                    .unwrap_or_else(|| r.is_some_and(|r| r.is_entity)),
+                event_parent: pick(&event_parents, id, r.and_then(|r| r.event_parent.as_ref())),
+            };
+            (id.clone(), facets)
+        })
+        .collect()
 }
 
 /// Read the current book meta out of the doc (used by tests / future consumers).
@@ -1166,6 +1358,7 @@ mod tests {
             font_settings: None,
             cover_image: None,
             cutover: false,
+            calendar: None,
         }
     }
 
@@ -1455,5 +1648,149 @@ mod tests {
         assert!(entities.is_empty());
         assert!(event_parents.is_empty());
         assert!(links.is_empty());
+    }
+
+    // ── The `project_notes` hazard (notes card 4) ────────────────────────────
+    //
+    // The document is seeded from REST on a book's first open only. These pin the three
+    // ways a span used to be lost or hidden, each in both directions.
+
+    fn dated(id: &str, year: i64) -> Note {
+        let mut n = note(id, id, None);
+        n.span = Some(plotweb_common::TimeSpan::at(plotweb_common::TimePoint::base_unit(year)));
+        n
+    }
+
+    fn one_root(ids: &[&str]) -> NoteTree {
+        NoteTree {
+            root_order: ids.iter().map(|s| s.to_string()).collect(),
+            children: HashMap::new(),
+            collapsed: vec![],
+        }
+    }
+
+    fn resolved(doc: &AutoCommit, rest: &[Note]) -> HashMap<String, Facets> {
+        let notes_obj = get_obj(doc, &ROOT, "notes").unwrap();
+        resolve_facets(doc, &notes_obj, &facets_of(rest))
+    }
+
+    fn year_of(f: &Facets) -> Option<i64> {
+        f.span.as_ref().map(|s| s.start.tick / plotweb_common::TICKS_PER_BASE_UNIT)
+    }
+
+    #[test]
+    fn a_span_written_after_the_first_open_is_shown_not_projected_away() {
+        // Seeded while the note was lore; the span arrives later over HTTP (or from a
+        // device with sync off). The document has never held one, so REST is believed.
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &sample_book(), &[], &[note("n1", "Siege", None)], &one_root(&["n1"]));
+        let later = vec![dated("n1", 1206)];
+        assert_eq!(year_of(&resolved(&doc, &later)["n1"]), Some(1206));
+    }
+
+    #[test]
+    fn a_cleared_span_is_not_resurrected_by_a_stale_rest_copy() {
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &sample_book(), &[], &[dated("n1", 1206)], &one_root(&["n1"]));
+        // The author undates it; REST has not caught up yet.
+        write_facets(&mut doc, "n1", Some(None), None, Some(false), None);
+        let stale = vec![{
+            let mut n = dated("n1", 1206);
+            n.is_entity = true;
+            n
+        }];
+        let f = &resolved(&doc, &stale)["n1"];
+        assert_eq!(f.span, None, "the author's clear wins");
+        assert!(!f.is_entity);
+        // And it is a tombstone, not an absence — which is what makes that so.
+        let notes_obj = get_obj(&doc, &ROOT, "notes").unwrap();
+        let spans = get_obj(&doc, &notes_obj, "spans").unwrap();
+        assert_eq!(
+            doc.get(&spans, "n1").unwrap().and_then(|(v, _)| v.to_str().map(String::from)),
+            Some(FACET_TOMBSTONE.to_string())
+        );
+    }
+
+    #[test]
+    fn a_span_the_document_holds_beats_rest_in_both_directions() {
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &sample_book(), &[], &[note("n1", "Siege", None)], &one_root(&["n1"]));
+        // Dated on this device; the REST write beside it failed.
+        write_facets(
+            &mut doc,
+            "n1",
+            Some(Some(plotweb_common::TimeSpan::at(plotweb_common::TimePoint::base_unit(1300)))),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(year_of(&resolved(&doc, &[note("n1", "Siege", None)])["n1"]), Some(1300));
+        assert_eq!(year_of(&resolved(&doc, &[dated("n1", 1206)])["n1"]), Some(1300));
+    }
+
+    #[test]
+    fn a_rest_note_list_never_removes_or_overwrites_a_span_it_has_not_heard_of() {
+        // The data-loss path: any tree edit refetches the note list and writes it into
+        // the document. It used to delete every span the server did not hold yet — and
+        // on a cut-over book sync then carried that deletion to the server.
+        let mut doc = AutoCommit::new();
+        build_doc(
+            &mut doc,
+            &sample_book(),
+            &[],
+            &[note("n1", "Siege", None), note("n2", "Parley", None)],
+            &one_root(&["n1", "n2"]),
+        );
+        write_facets(
+            &mut doc,
+            "n1",
+            Some(Some(plotweb_common::TimeSpan::at(plotweb_common::TimePoint::base_unit(1300)))),
+            None,
+            None,
+            None,
+        );
+        let notes_obj = get_obj(&doc, &ROOT, "notes").unwrap();
+
+        // A list that has not heard of it, and one that says something older.
+        write_notes(&mut doc, &notes_obj, &[note("n1", "Siege", None), note("n2", "Parley", None)], &one_root(&["n1", "n2"]));
+        write_notes(&mut doc, &notes_obj, &[dated("n1", 1206), note("n2", "Parley", None)], &one_root(&["n1", "n2"]));
+        let spans: HashMap<String, plotweb_common::TimeSpan> = read_json_map(&doc, &notes_obj, "spans");
+        assert_eq!(
+            spans.get("n1").map(|s| s.start.tick / plotweb_common::TICKS_PER_BASE_UNIT),
+            Some(1300)
+        );
+
+        // But a facet the document never held *is* filled in from the list…
+        write_notes(&mut doc, &notes_obj, &[note("n1", "Siege", None), dated("n2", 1207)], &one_root(&["n1", "n2"]));
+        let spans: HashMap<String, plotweb_common::TimeSpan> = read_json_map(&doc, &notes_obj, "spans");
+        assert!(spans.contains_key("n2"));
+
+        // …and a note that is gone takes its facets with it.
+        write_notes(&mut doc, &notes_obj, &[note("n2", "Parley", None)], &one_root(&["n2"]));
+        let spans: HashMap<String, plotweb_common::TimeSpan> = read_json_map(&doc, &notes_obj, "spans");
+        assert!(!spans.contains_key("n1"));
+    }
+
+    #[test]
+    fn a_calendar_rides_in_the_book_meta_only_when_the_book_has_one() {
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &sample_book(), &[], &[], &one_root(&[]));
+        let meta = get_obj(&doc, &ROOT, "meta").unwrap();
+        assert!(doc.get(&meta, "calendar").unwrap().is_none());
+
+        let mut book = sample_book();
+        book.calendar = Some(plotweb_common::Calendar::default());
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &book, &[], &[], &one_root(&[]));
+        let meta = get_obj(&doc, &ROOT, "meta").unwrap();
+        let json = doc
+            .get(&meta, "calendar")
+            .unwrap()
+            .and_then(|(v, _)| v.to_str().map(String::from))
+            .expect("stored");
+        assert_eq!(
+            serde_json::from_str::<plotweb_common::Calendar>(&json).unwrap(),
+            plotweb_common::Calendar::default()
+        );
     }
 }

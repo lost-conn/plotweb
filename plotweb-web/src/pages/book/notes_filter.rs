@@ -24,7 +24,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use plotweb_common::{fold_token, Note, NoteTree, TimeRelation, TICKS_PER_BASE_UNIT};
+use plotweb_common::{fold_token, Calendar, Note, NoteTree};
 
 /// A facet a note can carry. Facets are **not exclusive** — a character with a lifespan
 /// is both an entity and an event — which is precisely why the tree does not section by
@@ -391,49 +391,22 @@ pub fn chips_for(notes: &[Note]) -> Vec<Term> {
     terms
 }
 
-/// What the right-hand gutter says about when a note happens.
+/// What the right-hand gutter says about when a note happens, read through the book's
+/// calendar — `1206`, `1817 Mar 4 – 1817 Apr`, `yr 1198 –`, `~yr 1206, low`, `after The
+/// Siege`. It is exactly the text the facet strip's field would hold for this note
+/// ([`super::time_entry::format_entry`]), so the gutter never says something the author
+/// could not have typed.
 ///
-/// Card 4 brings the per-book calendar that turns a tick into "3 Frostmonth"; until then
-/// the base unit is the only thing that can be said without inventing units the book has
-/// not defined, so that is what is said — `1206`, `1181 – 1211`, `1198 –`, `~1207` —
-/// matching the wireframe's gutter. `None` means the note is undated and the gutter stays
-/// empty rather than carrying a word like "undated" on every row of a mostly-lore tree.
-pub fn span_label(note: &Note, notes: &[Note]) -> Option<String> {
-    if let Some(span) = &note.span {
-        let start = base_unit(span.start.tick);
-        let mut out = String::new();
-        if span.approximate {
-            out.push('~');
-        }
-        out.push_str(&start.to_string());
-        match (&span.end, span.open_ended) {
-            (Some(end), _) => {
-                out.push_str(" \u{2013} ");
-                out.push_str(&base_unit(end.tick).to_string());
-            }
-            (None, true) => out.push_str(" \u{2013}"),
-            (None, false) => {}
-        }
-        return Some(out);
-    }
-    let rel = note.relative.as_ref()?;
-    let word = match rel.relation {
-        TimeRelation::After => "after",
-        TimeRelation::Before => "before",
-        TimeRelation::During => "during",
-    };
-    let target = notes
-        .iter()
-        .find(|n| n.id == rel.note_id)
-        .map(|n| n.title.clone())
-        .unwrap_or_else(|| "another note".to_string());
-    Some(format!("{word} {target}"))
-}
-
-/// Ticks to whole base units, rounding towards negative infinity so a point before the
-/// epoch reads as the unit it falls in rather than the one after it.
-fn base_unit(tick: i64) -> i64 {
-    tick.div_euclid(TICKS_PER_BASE_UNIT)
+/// `None` means the note is undated and the gutter stays empty rather than carrying a
+/// word like "undated" on every row of a mostly-lore tree.
+pub fn span_label(note: &Note, notes: &[Note], calendar: &Calendar) -> Option<String> {
+    let label = super::time_entry::format_entry(
+        note.span.as_ref(),
+        note.relative.as_ref(),
+        calendar,
+        notes,
+    );
+    (!label.is_empty()).then_some(label)
 }
 
 /// The filter is the part of this card with rules in it, and the rules are exactly the
@@ -442,7 +415,7 @@ fn base_unit(tick: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use plotweb_common::{NoteLinks, TimePoint, TimeSpan};
+    use plotweb_common::{NoteLinks, TimePoint, TimeRelation, TimeSpan};
 
     fn note(id: &str, title: &str) -> Note {
         Note {
@@ -719,7 +692,7 @@ mod tests {
     #[test]
     fn the_gutter_reads_the_span_in_base_units() {
         let mut n = event("siege", 1206);
-        assert_eq!(span_label(&n, &[]).as_deref(), Some("1206"));
+        assert_eq!(span_label(&n, &[], &Calendar::default()).as_deref(), Some("1206"));
 
         n.span = Some(TimeSpan {
             start: TimePoint::base_unit(1181),
@@ -727,7 +700,7 @@ mod tests {
             approximate: false,
             open_ended: false,
         });
-        assert_eq!(span_label(&n, &[]).as_deref(), Some("1181 \u{2013} 1211"));
+        assert_eq!(span_label(&n, &[], &Calendar::default()).as_deref(), Some("1181 \u{2013} 1211"));
 
         n.span = Some(TimeSpan {
             start: TimePoint::base_unit(1198),
@@ -735,19 +708,19 @@ mod tests {
             approximate: false,
             open_ended: true,
         });
-        assert_eq!(span_label(&n, &[]).as_deref(), Some("1198 \u{2013}"));
+        assert_eq!(span_label(&n, &[], &Calendar::default()).as_deref(), Some("1198 \u{2013}"));
 
         n.span = Some(TimeSpan {
             approximate: true,
             ..TimeSpan::at(TimePoint::base_unit(1207))
         });
-        assert_eq!(span_label(&n, &[]).as_deref(), Some("~1207"));
+        assert_eq!(span_label(&n, &[], &Calendar::default()).as_deref(), Some("~1207"));
     }
 
     #[test]
     fn an_undated_note_has_an_empty_gutter_and_a_relative_one_names_its_anchor() {
         let plain = note("a", "Amberwork");
-        assert_eq!(span_label(&plain, &[]), None);
+        assert_eq!(span_label(&plain, &[], &Calendar::default()), None);
 
         let mut rel = note("b", "The parley");
         rel.relative = Some(plotweb_common::RelativeTime {
@@ -756,7 +729,7 @@ mod tests {
         });
         let siege = note("siege", "The Siege of Vaun");
         assert_eq!(
-            span_label(&rel, &[siege]).as_deref(),
+            span_label(&rel, &[siege], &Calendar::default()).as_deref(),
             Some("after The Siege of Vaun")
         );
     }

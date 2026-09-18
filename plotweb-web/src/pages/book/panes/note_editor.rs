@@ -11,6 +11,7 @@ use crate::rinch_backend::Editor;
 use crate::store::AppStore;
 
 use super::super::sigils::{self, EdgeKind, Offer, Sigil};
+use super::super::time_entry;
 use super::super::state::BookState;
 use super::super::BookPane;
 
@@ -311,31 +312,193 @@ fn toggle_entity(state: BookState, store: AppStore, book_id: String, note_id: St
     );
 }
 
-/// What the span reads as in the strip. Card 4 brings the calendar that turns a tick
-/// into a date; until then the presence of a span is the whole of what can be said, and
-/// saying it is still worth more than an empty row.
-fn span_summary(note: &Note) -> String {
-    match (&note.span, &note.relative) {
-        (Some(span), _) if span.open_ended => "from a point in time".to_string(),
-        (Some(span), _) if span.end.is_some() => "over a span".to_string(),
-        (Some(_), _) => "at a point in time".to_string(),
-        (None, Some(_)) => "placed against another note".to_string(),
-        (None, None) => "undated".to_string(),
+/// What the note's time reads as, in the book's calendar: exactly what the time field
+/// would hold for it, or "Undated".
+fn time_summary(state: BookState, store: AppStore) -> String {
+    let Some(note) = open_note(state, store) else {
+        return String::new();
+    };
+    let text = time_entry::format_entry(
+        note.span.as_ref(),
+        note.relative.as_ref(),
+        &super::calendar::book_calendar(store),
+        &store.notes.get(),
+    );
+    if text.is_empty() { "Undated".to_string() } else { text }
+}
+
+/// Open the time field for the note on screen, prefilled with its time as it would be
+/// typed — so an unchanged Enter writes back exactly what was there.
+fn open_time_editor(state: BookState, store: AppStore) {
+    let Some(note) = open_note(state, store) else { return };
+    state.time_draft.set(time_entry::format_entry(
+        note.span.as_ref(),
+        note.relative.as_ref(),
+        &super::calendar::book_calendar(store),
+        &store.notes.get(),
+    ));
+    state.time_error.set(None);
+    state.time_editing.set(Some(note.id));
+}
+
+fn time_editor_open(state: BookState) -> bool {
+    let editing = state.time_editing.get();
+    editing.is_some() && editing == open_note_id(state)
+}
+
+/// Commit the time field: the note's whole place in time, both halves at once.
+///
+/// Stored exactly as typed. There is deliberately **no** check against the note's event
+/// parent — whether a child may fall outside its parent's span is card 6's open
+/// question, so nothing here clamps, stretches or warns.
+fn commit_time(state: BookState, store: AppStore, book_id: String, text: String) {
+    let Some(note_id) = open_note_id(state) else { return };
+    let entry = match time_entry::parse_entry(
+        &text,
+        &super::calendar::book_calendar(store),
+        &store.notes.get(),
+        &note_id,
+    ) {
+        Ok(entry) => entry,
+        Err(e) => {
+            state.time_error.set(Some(e));
+            return;
+        }
+    };
+    crate::local_book::note_facets(
+        &book_id,
+        &note_id,
+        Some(entry.span.clone()),
+        Some(entry.relative.clone()),
+        None,
+        None,
+    );
+    let mut notes = store.notes.get();
+    if let Some(n) = notes.iter_mut().find(|n| n.id == note_id) {
+        n.span = entry.span.clone();
+        n.relative = entry.relative.clone();
+    }
+    store.notes.set(notes);
+    let req = UpdateNoteRequest {
+        span: Some(entry.span),
+        relative: Some(entry.relative),
+        ..Default::default()
+    };
+    api::put::<_, SaveReceipt>(
+        &format!("/api/books/{}/notes/{}", book_id, note_id),
+        &req,
+        move |result| apply_note_save_receipt(result, state.note_save_status, state.save_alert),
+    );
+    state.time_error.set(None);
+    state.time_editing.set(None);
+}
+
+/// The line under the field: the state and depth the text reads as, or why it cannot be
+/// read. Live, so the author sees "Approximate · known to the Season" before committing.
+fn time_preview(state: BookState, store: AppStore) -> (bool, String) {
+    if let Some(e) = state.time_error.get() {
+        return (true, e);
+    }
+    let cal = super::calendar::book_calendar(store);
+    let self_id = open_note_id(state).unwrap_or_default();
+    match time_entry::parse_entry(&state.time_draft.get(), &cal, &store.notes.get(), &self_id) {
+        Ok(entry) => (false, time_entry::describe(&entry, &cal)),
+        Err(e) => (true, e),
+    }
+}
+
+/// The book's units, coarsest first — the hint under the field, so an author on an
+/// invented calendar can see what the parts of a date are called here.
+fn unit_hint(store: AppStore) -> String {
+    let cal = super::calendar::book_calendar(store);
+    let units: Vec<&str> = cal.units.iter().map(|u| u.name.as_str()).collect();
+    format!("Parts, largest first: {}", units.join(" · "))
+}
+
+fn time_editor(__scope: &mut RenderScope, state: BookState, store: AppStore, book_id: String) -> NodeHandle {
+    let BookState { time_draft, time_error, time_editing, .. } = state;
+    let submit_id = book_id.clone();
+    let set_id = book_id.clone();
+    let clear_id = book_id;
+    rsx! {
+        div { class: "note-time-editor", id: "note-time-editor",
+            div { class: "note-time-row",
+                div { class: "note-time-input",
+                    TextInput {
+                        placeholder: "1206 · ~1206 · 1181 – 1211 · 1198 – · after The Siege",
+                        value_fn: move || time_draft.get(),
+                        oninput: move |v: String| {
+                            time_draft.set(v);
+                            time_error.set(None);
+                        },
+                        onsubmit: move || commit_time(state, store, submit_id.clone(), time_draft.get()),
+                    }
+                }
+                div { id: "note-time-set", style: "display: contents;",
+                    Button {
+                        size: "xs",
+                        onclick: move || commit_time(state, store, set_id.clone(), time_draft.get()),
+                        "Set"
+                    }
+                }
+                div { id: "note-time-clear", style: "display: contents;",
+                    Button {
+                        size: "xs",
+                        variant: "subtle",
+                        color: "gray",
+                        onclick: move || {
+                            time_draft.set(String::new());
+                            commit_time(state, store, clear_id.clone(), String::new());
+                        },
+                        "Undated"
+                    }
+                }
+                div { id: "note-time-cancel", style: "display: contents;",
+                    Button {
+                        size: "xs",
+                        variant: "subtle",
+                        color: "gray",
+                        onclick: move || {
+                            time_error.set(None);
+                            time_editing.set(None);
+                        },
+                        "Cancel"
+                    }
+                }
+            }
+            div {
+                class: {move || if time_preview(state, store).0 { "note-time-preview is-error" } else { "note-time-preview" }},
+                {move || time_preview(state, store).1}
+            }
+            div { class: "note-time-help",
+                span { {move || unit_hint(store)} }
+                span {
+                    class: "note-time-calendar",
+                    id: "note-time-calendar",
+                    // Leaves the note: `open_calendar` flushes its pending edit first.
+                    onclick: move || super::calendar::open_calendar(state, store),
+                    "Calendar…"
+                }
+            }
+        }
     }
 }
 
 fn facet_strip(__scope: &mut RenderScope, state: BookState, store: AppStore, book_id: String) -> NodeHandle {
     rsx! {
+        div { class: "note-facets-block",
         div { class: "note-facets",
             div {
                 class: {move || {
                     let on = open_note(state, store).map(|n| n.is_event()).unwrap_or(false);
-                    if on { "note-facet is-on" } else { "note-facet" }
+                    if on { "note-facet is-on is-button" } else { "note-facet is-button" }
                 }},
+                id: "note-facet-event",
                 // Event is not a toggle: a note becomes an event by being given a time,
-                // and card 4 is what gives it one. Flipping a flag here would leave a
-                // note claiming to be an event with nothing to place it by.
+                // so this opens the time field rather than flipping a flag that would
+                // leave a note claiming to be an event with nothing to place it by.
                 title: "A note becomes an event when it is given a time",
+                onclick: move || open_time_editor(state, store),
                 span { class: "note-facet-glyph", "◇" }
                 "Event"
             }
@@ -355,9 +518,17 @@ fn facet_strip(__scope: &mut RenderScope, state: BookState, store: AppStore, boo
                 span { class: "note-facet-glyph", "◆" }
                 "Entity"
             }
-            div { class: "note-facet-span",
-                {move || open_note(state, store).map(|n| span_summary(&n)).unwrap_or_default()}
+            div {
+                class: "note-facet-span",
+                id: "note-facet-when",
+                title: "When this happens — click to change",
+                onclick: move || open_time_editor(state, store),
+                {move || time_summary(state, store)}
             }
+        }
+        if time_editor_open(state) {
+            {time_editor(__scope, state, store, book_id.clone())}
+        }
         }
     }
 }
@@ -508,8 +679,8 @@ fn context_rail(__scope: &mut RenderScope, state: BookState, store: AppStore) ->
             }
             div { class: "note-rail-group",
                 div { class: "note-rail-heading", "In time" }
-                div { class: "note-rail-empty",
-                    {move || open_note(state, store).map(|n| span_summary(&n)).unwrap_or_default()}
+                div { class: "note-rail-empty note-rail-when",
+                    {move || time_summary(state, store)}
                 }
             }
         }

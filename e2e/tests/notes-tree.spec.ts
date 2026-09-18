@@ -58,12 +58,12 @@ function titles(page: Page) {
  * server before this browser sees the book for the first time.
  *
  * The client mirrors a book's structure (tree, titles, colours, facets, spans) into a
- * local Automerge document, seeded from REST on first open and authoritative from then
- * on (`local_book::enter` / `project_notes`, notes cards 1 and phase 2). So a note — or
- * a facet — added by HTTP *after* this browser has opened the book is projected away on
- * the next read, because the local document, which has never heard of it, wins. Seeding
- * before the first visit is what keeps that machinery out of these tests; there is no
- * UI for a span until card 4, so there is no other way to put one on screen.
+ * local Automerge document, seeded from REST on first open (`local_book::enter`). Card 3
+ * found that a facet added by HTTP *after* that first open was projected away, because
+ * the local document had never heard of it; card 4 fixed that (`resolve_facets` falls
+ * back to REST for a facet the document has never held — see `notes-calendar.spec.ts`).
+ * Seeding before the first visit is still the simplest way to put a whole outline on
+ * screen in one go.
  */
 async function seedBook(page: Page, title: string): Promise<string> {
   const resp = await page.request.post(`/api/books`, {

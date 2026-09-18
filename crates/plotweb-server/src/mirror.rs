@@ -298,7 +298,8 @@ pub(crate) async fn mirror_structure(
     let meta_changed = have.title != want.title
         || have.description != want.description
         || have.font_settings_json != want.font_settings_json
-        || have.cover_ref != want.cover_ref;
+        || have.cover_ref != want.cover_ref
+        || have.calendar_json != want.calendar_json;
     if meta_changed {
         let update = UpdateBookRequest {
             title: (have.title != want.title).then(|| want.title.clone()),
@@ -307,6 +308,14 @@ pub(crate) async fn mirror_structure(
                 .then_some(font_settings)
                 .flatten(),
             cover_image: (have.cover_ref != want.cover_ref).then(|| want.cover_ref.clone()),
+            // A calendar this build cannot read is left as git has it rather than
+            // mirrored as "no calendar", which would reset every date in the book.
+            calendar: (have.calendar_json != want.calendar_json)
+                .then(|| match &want.calendar_json {
+                    None => Some(None),
+                    Some(json) => serde_json::from_str(json).ok().map(Some),
+                })
+                .flatten(),
         };
         match books.update_book(book_id, &update).await {
             Ok(()) => wrote = true,

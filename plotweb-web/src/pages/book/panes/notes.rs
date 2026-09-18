@@ -77,9 +77,12 @@ fn perform_note_move(
                             &format!("/api/books/{}/notes", bid_refresh),
                             move |resp_result| {
                                 if let Ok(resp) = resp_result {
+                                    crate::local_book::rest_notes(&bid_sync, &resp.notes);
                                     crate::local_book::sync_notes(&bid_sync, &resp.notes, &resp.tree);
                                     store.notes.set(resp.notes);
                                     store.note_tree.set(Some(resp.tree));
+                                    // The list is REST's; what the author sees is the document's over it.
+                                    crate::local_book::project_notes(store);
                                 }
                             },
                         );
@@ -206,9 +209,12 @@ fn is_collapsed(store: AppStore, id: &str) -> bool {
 fn refresh_notes(store: AppStore, bid: String) {
     api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid), move |resp_result| {
         if let Ok(resp) = resp_result {
+            crate::local_book::rest_notes(&bid, &resp.notes);
             crate::local_book::sync_notes(&bid, &resp.notes, &resp.tree);
             store.notes.set(resp.notes);
             store.note_tree.set(Some(resp.tree));
+            // The list is REST's; what the author sees is the document's over it.
+            crate::local_book::project_notes(store);
         }
     });
 }
@@ -465,9 +471,14 @@ fn render_row(
                     }
                     span {
                         class: "note-when",
+                        title: {move || {
+                            note_by_id(store, &nid.get())
+                                .and_then(|n| notes_filter::span_label(&n, &store.notes.get(), &super::calendar::book_calendar(store)))
+                                .unwrap_or_default()
+                        }},
                         {move || {
                             note_by_id(store, &nid.get())
-                                .and_then(|n| notes_filter::span_label(&n, &store.notes.get()))
+                                .and_then(|n| notes_filter::span_label(&n, &store.notes.get(), &super::calendar::book_calendar(store)))
                                 .unwrap_or_default()
                         }}
                     }
@@ -647,15 +658,28 @@ pub(in crate::pages::book) fn render(__scope: &mut RenderScope, state: BookState
 
             div { class: "notes-pane-header",
                 Title { order: 3, "Notes" }
-                Button {
-                    size: "sm",
-                    onclick: move || {
-                        new_note_title.set(String::new());
-                        new_note_parent_id.set(None);
-                        new_note_color.set("teal".to_string());
-                        show_note_modal.set(true);
-                    },
-                    "Add Note"
+                div { class: "notes-pane-header-actions",
+                    // The book's calendar lives with the notes it dates. A quiet text
+                    // button, because a book on the default calendar never needs it.
+                    div { id: "notes-calendar", style: "display: contents;",
+                        Button {
+                            size: "sm",
+                            variant: "subtle",
+                            color: "gray",
+                            onclick: move || super::calendar::open_calendar(state, store),
+                            "Calendar"
+                        }
+                    }
+                    Button {
+                        size: "sm",
+                        onclick: move || {
+                            new_note_title.set(String::new());
+                            new_note_parent_id.set(None);
+                            new_note_color.set("teal".to_string());
+                            show_note_modal.set(true);
+                        },
+                        "Add Note"
+                    }
                 }
             }
 
