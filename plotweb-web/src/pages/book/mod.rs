@@ -158,6 +158,31 @@ pub fn book_page(book_id: String) -> NodeHandle {
     PAGE_GEN.with(|g| g.set(g.get().wrapping_add(1)));
     let page_gen = PAGE_GEN.with(|g| g.get());
 
+    // Return early unless this particular mount of the book page is still live.
+    //
+    // Deferred work — debounced saves, the writing-idle timer, in-flight fetch
+    // callbacks — can outlive the scope that owns the signals it touches, and
+    // `Signal::get()` *panics* on a freed slot (`set`/`update` merely warn). Two
+    // different things can make a callback stale, and each guard alone lets the
+    // other through:
+    //
+    // * `PAGE_GEN` catches a *remount of this same page* — opening another book
+    //   bumps the counter while the old timers are still armed. It cannot catch
+    //   navigation *away*, because leaving for the reader or the dashboard never
+    //   re-runs this setup and so never bumps it.
+    // * `is_alive` catches *scope disposal*, which is exactly the cross-page
+    //   case: the signals are freed even though the generation still matches.
+    //
+    // `active_pane` is the canary — every signal here belongs to the same scope,
+    // so if it is gone they all are.
+    macro_rules! bail_if_stale {
+        () => {
+            if PAGE_GEN.with(|g| g.get()) != page_gen || !active_pane.is_alive() {
+                return;
+            }
+        };
+    }
+
     // Trigger font catalog fetch
     fonts::fetch_font_catalog();
 
@@ -269,9 +294,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // ── Save helper for the editor ──────────────────────────────
     let save_content = move |chapter_id_to_save: String| {
         // Bail if this page instance is no longer current (user navigated away and back)
-        if PAGE_GEN.with(|g| g.get()) != page_gen {
-            return;
-        }
+        bail_if_stale!();
         // Only save if this chapter's content is the one currently loaded in the
         // editor model — otherwise the model still holds a previous chapter and we'd
         // overwrite the wrong one.
@@ -322,7 +345,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             _ => return,
         };
         auto_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(3000, move || {
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            bail_if_stale!();
             // Recompute the word count from the model (debounced, not per-keystroke).
             editor_word_count.set(editor_utils::editor_word_count(&chapter_handle.get()));
             if let BookPane::Editor(ref current_cid) = active_pane.get() {
@@ -354,7 +377,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             rinch_core::clear_timeout(h);
         }
         editor_writing_idle_timer_id.set(Some(rinch_core::reactive::unowned(move || rinch_core::set_timeout(2500, move || {
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            bail_if_stale!();
             editor_writing.set(false);
         }))));
     };
@@ -363,7 +386,15 @@ pub fn book_page(book_id: String) -> NodeHandle {
     if let Some(window) = crate::platform::window() {
         // Ctrl+S — immediate save of the current chapter. Escape — bring the
         // collapsed chrome back immediately rather than waiting for the idle timer.
+        // Both listeners below are `forget()`-ed, so they stay bound to `window`
+        // for the life of the tab — including after this page's scope is gone.
+        // Every signal they touch is freed at that point and `Signal::get()`
+        // panics on a freed slot, so each one has to check first. The mousemove
+        // handler is the sharp edge: it runs on *any* pointer movement, so a
+        // single unguarded read takes the whole WASM instance down the moment
+        // the reader moves their mouse on the next page.
         let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
+            bail_if_stale!();
             if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
                 event.prevent_default();
                 if let BookPane::Editor(ref cid) = active_pane.get() {
@@ -380,6 +411,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // mockup: move the mouse, chrome returns). Only acts while collapsed, so
         // this doesn't fight the idle timer on every idle mousemove.
         let mousemove = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
+            bail_if_stale!();
             if editor_writing.get() {
                 stop_writing();
             }
@@ -396,7 +428,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // native too (the collapse itself is a web-only visual affordance — native
     // has no mouse-leaves-then-returns chrome to hide).
     chapter_handle.get().on_change(move || {
-        if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+        bail_if_stale!();
         if matches!(active_pane.get(), BookPane::Editor(_)) {
             schedule_chapter_autosave();
             start_writing();
@@ -521,7 +553,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
         };
         chapter_title_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(1000, move || {
             // Bail if this page instance is stale (user navigated away and back)
-            if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+            bail_if_stale!();
             if let BookPane::Editor(ref current_cid) = active_pane.get() {
                 if *current_cid != captured_cid { return; }
             } else { return; }
@@ -638,11 +670,49 @@ pub fn book_page(book_id: String) -> NodeHandle {
         );
     };
 
+    // Synchronously flush a pending (debounced) chapter autosave before leaving
+    // the editor pane. Without this, navigating away via the back-arrow or any
+    // sidebar button discards edits made in the last ~3s, because the pending
+    // debounce timer later sees active_pane != Editor and skips the save.
+    let flush_editor_if_active = move || {
+        if let BookPane::Editor(ref current_id) = active_pane.get() {
+            let current_id = current_id.clone();
+            // Clear the pending debounce timer so it doesn't fire a redundant/stale save.
+            if let Some(h) = auto_save_timer_id.get() {
+                rinch_core::clear_timeout(h);
+                auto_save_timer_id.set(None);
+            }
+            // Don't flush while the chapter is still loading: the model holds the
+            // previous chapter's content, so saving it to `current_id` would overwrite
+            // this chapter with another chapter's content.
+            if loaded_chapter_id.get().as_deref() != Some(current_id.as_str()) {
+                return;
+            }
+            let bid = bid_signal.get();
+            if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
+                save_status.set("saving");
+                panes::chapters::save_chapter_body(
+                    format!("/api/books/{}/chapters/{}", bid, current_id),
+                    content,
+                    !sends_body_content(),
+                    save_status,
+                    save_alert,
+                );
+            }
+        }
+    };
+
+    // Leaving the book page entirely has to flush for the same reason switching
+    // panes does — these three were the only exits that didn't. An edit made in
+    // the last ~3s was silently discarded, and the still-armed debounce timer
+    // went on to read signals belonging to the disposed page scope.
     let go_dashboard = move || {
+        flush_editor_if_active();
         router::navigate(Route::Dashboard);
     };
 
     let logout = move || {
+        flush_editor_if_active();
         api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({}), move |_result| {
             store.current_user.set(None);
             router::navigate(Route::Login);
@@ -897,37 +967,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
         }
     };
 
-    // Synchronously flush a pending (debounced) chapter autosave before leaving
-    // the editor pane. Without this, navigating away via the back-arrow or any
-    // sidebar button discards edits made in the last ~3s, because the pending
-    // debounce timer later sees active_pane != Editor and skips the save.
-    let flush_editor_if_active = move || {
-        if let BookPane::Editor(ref current_id) = active_pane.get() {
-            let current_id = current_id.clone();
-            // Clear the pending debounce timer so it doesn't fire a redundant/stale save.
-            if let Some(h) = auto_save_timer_id.get() {
-                rinch_core::clear_timeout(h);
-                auto_save_timer_id.set(None);
-            }
-            // Don't flush while the chapter is still loading: the model holds the
-            // previous chapter's content, so saving it to `current_id` would overwrite
-            // this chapter with another chapter's content.
-            if loaded_chapter_id.get().as_deref() != Some(current_id.as_str()) {
-                return;
-            }
-            let bid = bid_signal.get();
-            if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
-                save_status.set("saving");
-                panes::chapters::save_chapter_body(
-                    format!("/api/books/{}/chapters/{}", bid, current_id),
-                    content,
-                    !sends_body_content(),
-                    save_status,
-                    save_alert,
-                );
-            }
-        }
-    };
 
     // ── Sidebar click handlers ──────────────────────────────────
     let _open_chapters_pane = move || {
@@ -1064,7 +1103,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // `EditorHandle::on_change` hook, gated on the note editor being active. (Toolbar
     // formatting and color changes call `schedule_note_save` directly.)
     note_handle.get().on_change(move || {
-        if PAGE_GEN.with(|g| g.get()) != page_gen { return; }
+        bail_if_stale!();
         if matches!(active_pane.get(), BookPane::NoteEditor(_)) {
             schedule_note_save();
         }
@@ -1288,7 +1327,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         div {
                             class: "tool",
                             data-tip: "Preview as reader",
-                            onclick: move || router::navigate(Route::ReaderPreview(bid_signal.get())),
+                            onclick: move || {
+                                flush_editor_if_active();
+                                router::navigate(Route::ReaderPreview(bid_signal.get()));
+                            },
                             {render_tabler_icon(__scope, TablerIcon::Eye, TablerIconStyle::Outline)}
                         }
                         span { class: "sp" }
