@@ -99,13 +99,21 @@ async function closeSidebarDrawer(page: Page) {
 /**
  * Add a chapter and wait for it in the *main pane* list. (The shared `addChapter`
  * helper waits on the sidebar copy, which is inside the dismissed drawer here.)
+ *
+ * Post-overlay-tiers, "Add chapter" no longer opens a modal: it appends an
+ * empty draft row (`#chapter-inline-title`, focused) directly in the chapters
+ * pane, and Enter commits it (see `focus_inline_input` / `commit_new_chapter`
+ * in `pages/book/panes/chapters.rs`) — same flow as the shared `addChapter`
+ * helper, just asserting on the main-pane row instead of the sidebar copy.
  */
 async function addMobileChapter(page: Page, title: string) {
-  await page.getByRole("button", { name: "Add Chapter" }).first().click();
-  const modal = page.locator(".rinch-modal__body:visible");
-  await modal.locator("input[placeholder='Enter chapter title']").fill(title);
-  await modal.getByRole("button", { name: "Add", exact: true }).click();
-  await expect(page.locator(".chapter-item", { hasText: title })).toBeVisible();
+  await page.getByRole("button", { name: "Add chapter" }).first().click();
+  const input = page.locator("#chapter-inline-title");
+  await input.waitFor({ state: "visible" });
+  await expect(input).toBeFocused();
+  await input.fill(title);
+  await input.press("Enter");
+  await expect(page.locator(".chapter-rows .crow .t", { hasText: title })).toBeVisible();
 }
 
 /**
@@ -130,8 +138,33 @@ async function tapSuggestion(
   await cdp.send("Input.insertText", { text });
 }
 
-/** Move the caret with real arrow keys (the physical-key path, still in play). */
-async function arrowLeft(cdp: any, times: number) {
+/** The hidden capture textarea's value — the mirror a keyboard's ranges apply to. */
+const captureValue = (page: Page) =>
+  page.evaluate(
+    () => (document.querySelector("[data-pm-capture]") as HTMLTextAreaElement).value,
+  );
+
+/** The hidden capture textarea's caret offset — where the app currently thinks the
+ * cursor is (rinch's `sync_mirror` writes this synchronously from a real ArrowLeft/
+ * Right keydown, see `crates/rinch-web/src/editor_input.rs`). */
+const captureCaret = (page: Page) =>
+  page.evaluate(
+    () => (document.querySelector("[data-pm-capture]") as HTMLTextAreaElement).selectionStart,
+  );
+
+/**
+ * Move the caret with real arrow keys (the physical-key path, still in play).
+ *
+ * Each `cdp.send` only resolves once Chrome has dispatched the key event — it does
+ * not guarantee the *next* dispatched event won't be coalesced or reordered by the
+ * browser's own input queue under load. Rather than trust five blind sequential
+ * dispatches, poll the capture mirror's caret position back to a settled value after
+ * each press: the app's own caret tracking is fully synchronous with the keydown (no
+ * promise/rAF/timer in `handle_keydown`/`refresh_caret`/`sync_mirror`), so once the
+ * mirror reflects the expected offset the state genuinely has caught up.
+ */
+async function arrowLeft(page: Page, cdp: any, times: number) {
+  const start = await captureCaret(page);
   for (let i = 0; i < times; i++) {
     for (const type of ["keyDown", "keyUp"]) {
       await cdp.send("Input.dispatchKeyEvent", {
@@ -141,14 +174,10 @@ async function arrowLeft(cdp: any, times: number) {
         windowsVirtualKeyCode: 37,
       });
     }
+    const expected = start - (i + 1);
+    await expect.poll(() => captureCaret(page)).toBe(expected);
   }
 }
-
-/** The hidden capture textarea's value — the mirror a keyboard's ranges apply to. */
-const captureValue = (page: Page) =>
-  page.evaluate(
-    () => (document.querySelector("[data-pm-capture]") as HTMLTextAreaElement).value,
-  );
 
 test("mobile: an on-screen keyboard types, deletes, and splits paragraphs", async ({
   browser,
@@ -171,7 +200,7 @@ test("mobile: an on-screen keyboard types, deletes, and splits paragraphs", asyn
   await addMobileChapter(page, "Chapter One");
   // Open the chapter from the main pane's list (the sidebar's copy is behind the
   // drawer, which is exactly how a phone user reaches it).
-  await page.locator(".chapter-item", { hasText: "Chapter One" }).first().click();
+  await page.locator(".chapter-rows .crow .t", { hasText: "Chapter One" }).first().click();
   await page
     .locator("#editor-main [data-pm-editor]")
     .waitFor({ state: "visible", timeout: 15_000 });
@@ -244,7 +273,7 @@ test("mobile: a keyboard suggestion replaces the word behind the caret", async (
   await createBook(page, "Suggestion Novel");
   await closeSidebarDrawer(page);
   await addMobileChapter(page, "Chapter One");
-  await page.locator(".chapter-item", { hasText: "Chapter One" }).first().click();
+  await page.locator(".chapter-rows .crow .t", { hasText: "Chapter One" }).first().click();
   await page
     .locator("#editor-main [data-pm-editor]")
     .waitFor({ state: "visible", timeout: 15_000 });
@@ -255,7 +284,7 @@ test("mobile: a keyboard suggestion replaces the word behind the caret", async (
   expect(await captureValue(page)).toBe("hello word here");
 
   // The reported case, mid-block: caret after "word", tap "world".
-  await arrowLeft(cdp, 5);
+  await arrowLeft(page, cdp, 5);
   await tapSuggestion(cdp, "world", 6, 10);
   await expect.poll(() => editorText(page)).toBe("hello world here");
 
