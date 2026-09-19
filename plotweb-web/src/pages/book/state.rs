@@ -226,6 +226,16 @@ pub(super) struct BookState {
     pub ghost_pos: Signal<(f32, f32)>,
     pub ghost_label: Signal<String>,
     pub ghost_color: Signal<String>,
+    // ── The timeline (notes card 5) ─────────────────────────────
+    /// How the entity lanes are stacked. Here rather than in the timeline so it survives
+    /// switching to the tree and back, like the filter.
+    pub timeline_order: Signal<super::timeline_layout::LaneOrder>,
+    /// The holding-rail note being dragged onto the line. Separate from
+    /// `dragging_note_id`, which the tree's drop zones answer to.
+    pub timeline_dragging: Signal<Option<String>>,
+    /// Where on the plot a drag is hovering, as a fraction of its width — what a drop
+    /// turns into a date. `None` off the plot.
+    pub timeline_drop: Signal<Option<f32>>,
 
     // ── History state ─────────────────────────────────────────────
     pub history_commits: Signal<Vec<CommitInfo>>,
@@ -340,6 +350,9 @@ impl BookState {
             calendar_return: Signal::new(BookPane::Notes),
             notes_filter: Signal::new(super::notes_filter::Filter::default()),
             notes_selected: Signal::new(None),
+            timeline_order: Signal::new(Default::default()),
+            timeline_dragging: Signal::new(None),
+            timeline_drop: Signal::new(None),
             dragging_note_id: Signal::new(None),
             drop_target: Signal::new(None),
             ghost_visible: Signal::new(false),

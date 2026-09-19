@@ -365,23 +365,43 @@ fn commit_time(state: BookState, store: AppStore, book_id: String, text: String)
             return;
         }
     };
-    crate::local_book::note_facets(
-        &book_id,
-        &note_id,
-        Some(entry.span.clone()),
-        Some(entry.relative.clone()),
-        None,
-        None,
-    );
+    write_note_time(state, store, &book_id, &note_id, Some(entry.span), Some(entry.relative));
+    state.time_error.set(None);
+    state.time_editing.set(None);
+}
+
+/// Write a note's place in time — **the** write path for it, shared by the facet
+/// strip's time field and the timeline's holding rail (a drop onto the line), so there
+/// is one place that knows the order and the storage rules.
+///
+/// Both halves are patches, exactly as on `UpdateNoteRequest`: `None` leaves that facet
+/// alone, `Some(None)` clears it. The local `book:` document goes first, through
+/// `local_book::note_facets`, which writes a cleared facet as a **tombstone** rather
+/// than deleting the key — the rule card 4 found a refetch needs, or a clear made here
+/// is resurrected by the next note list. Then the projected list, so every view redraws
+/// at once, then the server.
+pub(in crate::pages::book) fn write_note_time(
+    state: BookState,
+    store: AppStore,
+    book_id: &str,
+    note_id: &str,
+    span: Option<Option<plotweb_common::TimeSpan>>,
+    relative: Option<Option<plotweb_common::RelativeTime>>,
+) {
+    crate::local_book::note_facets(book_id, note_id, span.clone(), relative.clone(), None, None);
     let mut notes = store.notes.get();
     if let Some(n) = notes.iter_mut().find(|n| n.id == note_id) {
-        n.span = entry.span.clone();
-        n.relative = entry.relative.clone();
+        if let Some(span) = &span {
+            n.span = span.clone();
+        }
+        if let Some(relative) = &relative {
+            n.relative = relative.clone();
+        }
     }
     store.notes.set(notes);
     let req = UpdateNoteRequest {
-        span: Some(entry.span),
-        relative: Some(entry.relative),
+        span,
+        relative,
         ..Default::default()
     };
     api::put::<_, SaveReceipt>(
@@ -389,8 +409,6 @@ fn commit_time(state: BookState, store: AppStore, book_id: String, text: String)
         &req,
         move |result| apply_note_save_receipt(result, state.note_save_status, state.save_alert),
     );
-    state.time_error.set(None);
-    state.time_editing.set(None);
 }
 
 /// The line under the field: the state and depth the text reads as, or why it cannot be

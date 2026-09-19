@@ -29,6 +29,7 @@ mod sidebar;
 pub(crate) mod sigils;
 mod state;
 mod time_entry;
+mod timeline_layout;
 
 use state::BookState;
 

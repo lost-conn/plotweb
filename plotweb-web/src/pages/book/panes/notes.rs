@@ -14,8 +14,8 @@
 //!   and the tree stays what the author built — "everything about House Vaun in one
 //!   place", whatever facets those notes carry.
 //! * **Filter state and selection live above the switcher** (on `BookState`, see
-//!   [`super::super::notes_filter`]), so when card 5's timeline lands, switching to it is
-//!   a re-render and not a navigation: the same narrowing, the same selected note.
+//!   [`super::super::notes_filter`]), so switching to the timeline ([`super::timeline`])
+//!   is a re-render and not a navigation: the same narrowing, the same selected note.
 //! * **Interactive controls stay outside the draggable element.** rinch dispatches a
 //!   non-activated draggable's click on the *drag source*, so a button nested inside a
 //!   `draggable="true"` row never sees its own click (`rinch-web`'s `event_delegation`,
@@ -39,14 +39,14 @@ use super::super::notes_filter::{
 use super::super::state::BookState;
 use super::super::BookPane;
 
-/// Which view of the notes is on screen.
-///
-/// Card 5 adds `Timeline` here and an arm to [`render`]'s body; until it exists the tab
-/// is rendered disabled rather than pointed at a placeholder, because a view that is
-/// announced and then isn't one is worse than a view that is plainly not ready yet.
+/// Which notes view is on screen. Both render the same notes through the same filter
+/// with the same selection, all of which sit on `BookState` above the switcher.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(in crate::pages::book) enum NotesView {
     Tree,
+    /// Entity lanes (card 5); the event ribbon joins them above in card 6. See
+    /// [`super::timeline`].
+    Timeline,
 }
 
 /// Perform the note move for the current drag/drop selection.
@@ -260,7 +260,7 @@ fn toggle_collapsed(store: AppStore, bid_signal: Signal<String>, id: String) {
 /// the pending debounced edit has to be written out while the pane still names the note
 /// the editor model holds — before the fetch below, because by the time its callback
 /// runs the pane has moved on and the edit is gone (see `pages/book/flush.rs`).
-fn open_note_row(state: BookState, store: AppStore, note_id: String) {
+pub(in crate::pages::book) fn open_note_row(state: BookState, store: AppStore, note_id: String) {
     let bid = state.bid_signal.get();
     super::super::flush::flush_pending_edits(state, store);
     state.notes_selected.set(Some(note_id.clone()));
@@ -690,6 +690,7 @@ pub(in crate::pages::book) fn render(__scope: &mut RenderScope, state: BookState
                 div {
                     class: {move || match notes_view.get() {
                         NotesView::Tree => "notes-viewtab is-on",
+                        NotesView::Timeline => "notes-viewtab",
                     }},
                     onclick: move || {
                         // Changing view never leaves a note editor today (this surface
@@ -703,9 +704,14 @@ pub(in crate::pages::book) fn render(__scope: &mut RenderScope, state: BookState
                     "Tree"
                 }
                 div {
-                    class: "notes-viewtab is-disabled",
-                    title: "The timeline arrives with the book's calendar",
-                    aria-disabled: "true",
+                    class: {move || match notes_view.get() {
+                        NotesView::Timeline => "notes-viewtab is-on",
+                        NotesView::Tree => "notes-viewtab",
+                    }},
+                    onclick: move || {
+                        super::super::flush::flush_pending_edits(state, store);
+                        notes_view.set(NotesView::Timeline);
+                    },
                     "Timeline"
                 }
             }
@@ -718,13 +724,20 @@ pub(in crate::pages::book) fn render(__scope: &mut RenderScope, state: BookState
                 }
             }
 
-            if !store.notes.get().is_empty() && tree_filter(state, store).shown.is_empty() {
+            if notes_view.get() == NotesView::Tree
+                && !store.notes.get().is_empty()
+                && tree_filter(state, store).shown.is_empty()
+            {
                 div { class: "notes-empty",
                     Text { color: "dimmed", "No note matches this filter." }
                 }
             }
 
-            if !store.notes.get().is_empty() {
+            if notes_view.get() == NotesView::Timeline && !store.notes.get().is_empty() {
+                {super::timeline::render(__scope, state, store)}
+            }
+
+            if notes_view.get() == NotesView::Tree && !store.notes.get().is_empty() {
                 div { class: "notes-tree",
                     for row in visible_children(state, store, None) {
                         div { key: {row.id.clone()}, style: "display: contents;",

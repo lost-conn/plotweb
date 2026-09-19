@@ -280,6 +280,41 @@ impl Calendar {
         n.clamp(i64::MIN as i128, i64::MAX as i128) as i64
     }
 
+    /// How long one of unit `level` is, in ticks — exact as a rational, so a float.
+    /// What the timeline measures a visible span against for each unit's "shown in
+    /// timeline when" rule.
+    pub fn unit_ticks(&self, level: usize) -> f64 {
+        let level = level.min(self.units.len().saturating_sub(1));
+        TICKS as f64 / self.per_base(level) as f64
+    }
+
+    /// Whether the timeline shows unit `level` while `span_ticks` of time are on screen:
+    /// the unit's own [`CalendarUnit::shown_below`] rule, or always when it has none.
+    pub fn shown_at(&self, level: usize, span_ticks: f64) -> bool {
+        let Some(unit) = self.units.get(level) else {
+            return false;
+        };
+        match unit.shown_below {
+            None => true,
+            Some(rule) => span_ticks < rule.count as f64 * self.unit_ticks(rule.unit),
+        }
+    }
+
+    /// Only the finest part of a point, as written, without the punctuation that joins
+    /// it to the part before — `"day 12"`, `"Mar"`, `"13h"`. A timeline tick label,
+    /// where the coarser parts are already on the tick to its left.
+    pub fn format_part(&self, point: &TimePoint) -> String {
+        let parts = self.components(point);
+        let Some(&value) = parts.last() else {
+            return String::new();
+        };
+        let piece = self.render_part(parts.len() - 1, value);
+        piece
+            .trim()
+            .trim_start_matches(|c: char| attaches(&c.to_string()) || c.is_whitespace())
+            .to_string()
+    }
+
     /// The first unit `level` whose start falls inside unit `parent_n` of `level - 1`.
     fn first_child(&self, level: usize, parent_n: i128) -> i128 {
         ceil_div(parent_n * self.per_base(level), self.per_base(level - 1))
@@ -730,6 +765,32 @@ mod tests {
         assert_eq!(Calendar::effective(Some(&broken)), Calendar::default());
         assert_eq!(Calendar::effective(Some(&accord())), accord());
         assert_eq!(Calendar::effective(None), Calendar::default());
+    }
+
+    #[test]
+    fn the_timeline_reads_each_units_shown_rule_against_the_visible_span() {
+        let cal = accord();
+        let year = TICKS_PER_BASE_UNIT as f64;
+        assert_eq!(cal.unit_ticks(0), year);
+        assert_eq!(cal.unit_ticks(2), year / 320.0);
+        // Season: span < 40 Years. Day: < 2 Years. Bell: < 20 Days.
+        assert!(cal.shown_at(0, 1e12), "the base unit has no rule: always shown");
+        assert!(cal.shown_at(1, 39.0 * year) && !cal.shown_at(1, 40.0 * year));
+        assert!(cal.shown_at(2, 1.5 * year) && !cal.shown_at(2, 2.0 * year));
+        assert!(cal.shown_at(3, 19.0 * year / 320.0) && !cal.shown_at(3, 20.0 * year / 320.0));
+        assert!(!cal.shown_at(9, 1.0), "a unit that does not exist is never shown");
+    }
+
+    #[test]
+    fn a_part_reads_alone_without_its_joining_punctuation() {
+        let cal = accord();
+        let p = cal.parse_point("yr 1206, dry, day 12").unwrap();
+        assert_eq!(cal.format_part(&p), "day 12");
+        let p = cal.parse_point("yr 1206, dry").unwrap();
+        assert_eq!(cal.format_part(&p), "dry");
+        assert_eq!(cal.format_part(&TimePoint::base_unit(1206)), "yr 1206");
+        let d = Calendar::default();
+        assert_eq!(d.format_part(&d.parse_point("1817 Mar").unwrap()), "Mar");
     }
 
     #[test]

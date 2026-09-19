@@ -50,6 +50,8 @@ siege's dates then move without you touching them.
 | Client local-first mirror | `plotweb-web/src/local_book.rs` (`sync_notes`, `note_meta`), `local_store.rs` (`attach_note`) |
 | Notes surface — the outline, view switcher, filter bar (card 3) | `plotweb-web/src/pages/book/panes/notes.rs` |
 | The filter itself (pure, host-tested) | `plotweb-web/src/pages/book/notes_filter.rs` |
+| Timeline layout — ticks, lanes, tiers, rail (pure, host-tested; card 5) | `plotweb-web/src/pages/book/timeline_layout.rs` |
+| Timeline drawing + gestures (card 5) | `plotweb-web/src/pages/book/panes/timeline.rs` |
 | Note editor pane | `plotweb-web/src/pages/book/panes/note_editor.rs` |
 | Note autosave orchestration | `plotweb-web/src/pages/book/mod.rs:1057-1110` |
 
@@ -162,6 +164,35 @@ The cheaper half of the timeline, and the half that can't look broken. Ships on 
 - Undated and relational notes sit in a holding rail beneath, draggable onto the line.
 
 **Done when:** selecting an entity highlights its lane and its participation across the book.
+
+**Shipped.** `NotesView::Timeline` is the second tab. Every rule lives in
+`pages/book/timeline_layout.rs` (host-tested); `panes/timeline.rs` only draws it, as SVG built
+from the layout, reading the projected note list and never a note body.
+
+- **Cast size: lanes are driven by the shared filter**, not a pinned set, because a pinned set
+  would be a second narrowing the tree doesn't know about. The filter works on lanes the way it
+  works on the tree: an event is drawn when it matches, and an entity gets a lane when it
+  matches, or, **muted**, when a drawn event names it. That's the tree's "ancestor of a match"
+  rule.
+- **Ticks:** each unit's "shown in timeline when" rule says which units *may* appear for the
+  span on screen. The finest one that fits 12 ticks is used, and above that the base unit steps
+  by 1/2/5×10ⁿ. A tick reads in full where a coarser part changes ("1818 Jan").
+- **An instant spans the unit it is known to.** "1206" is drawn across the year and
+  "1206 Mar 4" across the day, so a coarse date doesn't read as a precise one.
+- **Entity-less events** sit in a dashed **"no one" row above the lanes**, where the ribbon will
+  go, with ordinary captions. A dated entity (a lifespan) is a thick segment on its own lane,
+  not a tie.
+- **Holding rail:** holds notes with no span that are either relative or `$ref` an entity.
+  Plain undated lore stays out. Dropping a note writes a span at the tick unit's precision
+  through `note_editor::write_note_time`, the time field's own (tombstone-aware) path. A
+  relative constraint the note already has is kept.
+- **390px:** the drawing has a 760px minimum width inside its own `overflow-x: auto` box, and
+  the page body never scrolls sideways. Lane names scroll away with the drawing (card 7).
+- **Found on the way:** rinch's click dispatch reads `className` on every ancestor, and on an
+  SVG element that is an `SVGAnimatedString`, so **any `onclick` inside an `<svg>` panics** in
+  wasm-bindgen. The drawing is `pointer-events: none`, and transparent HTML boxes laid over it
+  take the clicks. The highlight is a reactive class, not part of any item's key, so
+  selecting something repaints the drawing without rebuilding it.
 
 ## [Notes 6/8] Timeline — the event ribbon
 

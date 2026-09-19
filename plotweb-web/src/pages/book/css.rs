@@ -190,8 +190,7 @@ pub(super) const NOTES_CSS: &str = r#"
 }
 
 /* ── View switcher ──
-   Tree today, Timeline in card 5. The disabled tab is not a placeholder view:
-   it names what is coming without pretending to show it. */
+   Tree and Timeline: two renderings of the same filtered, selected notes. */
 .notes-views {
     display: flex;
     gap: var(--pw-space-md);
@@ -214,11 +213,6 @@ pub(super) const NOTES_CSS: &str = r#"
 .notes-viewtab.is-on {
     color: var(--rinch-color-text);
     border-bottom-color: var(--rinch-color-teal-6);
-}
-.notes-viewtab.is-disabled,
-.notes-viewtab.is-disabled:hover {
-    color: var(--rinch-color-placeholder);
-    cursor: default;
 }
 
 /* ── Filter bar ──
@@ -923,6 +917,322 @@ pub(super) const NOTES_CSS: &str = r#"
     }
     .note-when {
         max-width: 38%;
+    }
+}
+
+/* ── The timeline: entity lanes (card 5) ──
+   take C of design/04-notes-wireframes.html, as the lanes zone of the stacked
+   ribbon-over-lanes view. The drawing is SVG with a minimum width inside its own
+   horizontal scroller, so a phone scrolls the drawing, never the page. */
+.tl {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-xs);
+    padding: var(--pw-space-sm) var(--pw-space-lg) var(--pw-space-2xl) var(--pw-space-lg);
+    min-width: 0;
+}
+.tl-bar {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--pw-space-xs);
+    flex-wrap: wrap;
+}
+.tl-bar-lbl,
+.tl-status,
+.tl-order,
+.tl-rail-title,
+.tl-held-why,
+.tl-drop-label {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+}
+.tl-bar-lbl {
+    color: var(--rinch-color-dimmed);
+    padding-top: 4px;
+}
+.tl-follow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    flex: 1 1 220px;
+    min-width: 0;
+}
+.tl-chip {
+    font-size: var(--pw-text-xs);
+    line-height: 1.4;
+    padding: 2px 10px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: 999px;
+    background: var(--rinch-color-surface);
+    color: var(--rinch-color-text);
+    cursor: pointer;
+    user-select: none;
+}
+.tl-chip:hover {
+    border-color: var(--rinch-color-placeholder);
+}
+.tl-chip.is-on {
+    background: var(--rinch-color-teal-6);
+    border-color: var(--rinch-color-teal-6);
+    color: #fff;
+}
+.tl-order {
+    color: var(--rinch-color-dimmed);
+    padding: 3px 9px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+.tl-order:hover {
+    color: var(--rinch-color-text);
+}
+.tl-status {
+    color: var(--rinch-color-dimmed);
+}
+.tl-hint {
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-dimmed);
+}
+.tl-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    border: 1px solid var(--pw-hairline);
+    border-radius: var(--pw-radius-sm);
+    background: var(--rinch-color-surface);
+}
+.tl-canvas {
+    position: relative;
+    min-width: 760px;
+}
+.tl-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+.tl-svg text {
+    font-size: 11px;
+    fill: var(--rinch-color-text);
+}
+.tl-tick line {
+    stroke: var(--pw-hairline);
+    stroke-width: 1;
+}
+.tl-tick.is-major line {
+    stroke: var(--rinch-color-border);
+}
+.tl-svg .tl-tick text {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    fill: var(--rinch-color-dimmed);
+}
+.tl-axis {
+    stroke: var(--rinch-color-border);
+    stroke-width: 1;
+}
+.tl-band {
+    fill: var(--pw-hairline);
+    stroke: var(--rinch-color-border);
+    stroke-width: 1;
+}
+/* Approximate: placed, not measured. */
+.tl-band.is-fuzzy {
+    stroke-dasharray: 3 3;
+}
+.tl-band.is-on {
+    fill: color-mix(in srgb, var(--rinch-color-teal-6) 14%, transparent);
+    stroke: var(--rinch-color-teal-6);
+}
+.tl-leader {
+    stroke: var(--rinch-color-border);
+    stroke-width: 1;
+}
+.tl-svg .tl-caption text {
+    font-size: 10px;
+    fill: var(--rinch-color-dimmed);
+}
+.tl-svg .tl-caption.is-on text {
+    fill: var(--rinch-color-teal-6);
+    font-weight: 600;
+}
+.tl-caption.is-on .tl-leader {
+    stroke: var(--rinch-color-teal-6);
+}
+.tl-lane line {
+    stroke: var(--rinch-color-border);
+    stroke-width: 1;
+}
+.tl-lane.is-on line {
+    stroke: var(--rinch-color-teal-6);
+    stroke-width: 2;
+}
+/* Here only because a drawn event names this entity — the tree's "path to a
+   result, not a result". */
+.tl-lane.is-muted {
+    opacity: 0.5;
+}
+.tl-svg .tl-lane.is-on .tl-lane-name text {
+    fill: var(--rinch-color-teal-6);
+    font-weight: 600;
+}
+/* The drawing takes no clicks; the HTML boxes over it do (see `Hit` in
+   panes/timeline.rs for why). */
+.tl-svg {
+    pointer-events: none;
+}
+.tl-hits {
+    position: absolute;
+    inset: 0;
+}
+.tl-hit {
+    position: absolute;
+    cursor: pointer;
+    border-radius: 2px;
+}
+.tl-hit-lane:hover,
+.tl-hit-caption:hover,
+.tl-hit-mark:hover {
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 8%, transparent);
+}
+.tl-life {
+    stroke: var(--rinch-color-dimmed);
+    stroke-width: 5;
+    stroke-linecap: round;
+    opacity: 0.3;
+}
+.tl-life.is-fuzzy {
+    stroke-dasharray: 6 4;
+}
+.tl-life.is-on {
+    stroke: var(--rinch-color-teal-6);
+    opacity: 0.45;
+}
+.tl-tie {
+    stroke: var(--rinch-color-dimmed);
+    stroke-width: 1.5;
+}
+.tl-mark.is-on .tl-tie {
+    stroke: var(--rinch-color-teal-6);
+}
+.tl-dot {
+    fill: var(--rinch-color-text);
+}
+.tl-mark.is-unassigned .tl-dot {
+    fill: var(--rinch-color-dimmed);
+}
+.tl-dot.is-on {
+    fill: var(--rinch-color-teal-6);
+}
+.tl-unassigned line {
+    stroke: var(--rinch-color-border);
+    stroke-dasharray: 2 3;
+}
+.tl-svg .tl-unassigned-name {
+    font-size: 10px;
+    font-style: italic;
+    fill: var(--rinch-color-placeholder);
+}
+/* The drop target. Inert until a held note is being dragged, so it never sits
+   over the drawing's own clicks. */
+.tl-drop {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+}
+.tl-drop.is-armed {
+    pointer-events: auto;
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 5%, transparent);
+    outline: 1px dashed var(--rinch-color-teal-6);
+}
+.tl-drop-guide {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 2px solid var(--rinch-color-teal-6);
+    pointer-events: none;
+}
+.tl-drop-label {
+    position: absolute;
+    top: 2px;
+    left: 4px;
+    white-space: nowrap;
+    color: var(--rinch-color-teal-6);
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-teal-6);
+    border-radius: var(--pw-radius-sm);
+    padding: 1px 5px;
+}
+.tl-rail {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-xs);
+    padding-top: var(--pw-space-sm);
+    border-top: 1px dashed var(--rinch-color-border);
+}
+.tl-rail-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+}
+.tl-rail-title {
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--rinch-color-dimmed);
+}
+.tl-rail-sub,
+.tl-rail-empty {
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-placeholder);
+}
+.tl-rail-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.tl-held {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 4px 10px;
+    border: 1px dashed var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    background: var(--rinch-color-surface);
+    cursor: grab;
+    user-select: none;
+    /* A long-press drag has to own the finger from the first contact: a browser
+       decides whether a touch may pan when it starts, so a chip that allowed
+       panning would have its drag cancelled (pointercancel) by the first move
+       after the hold. The chips are small, so the page still scrolls from
+       anywhere else. */
+    touch-action: none;
+}
+.tl-held:hover {
+    border-color: var(--rinch-color-teal-6);
+}
+.tl-held-glyph {
+    color: var(--rinch-color-teal-6);
+    font-size: 11px;
+}
+.tl-held-title {
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tl-held-why {
+    color: var(--rinch-color-dimmed);
+    white-space: nowrap;
+}
+@media (max-width: 768px) {
+    .tl {
+        padding-left: var(--pw-space-md);
+        padding-right: var(--pw-space-md);
     }
 }
 "#;

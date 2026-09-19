@@ -238,7 +238,7 @@ test("'any of' means at least one of the group, not all of them", async ({ page 
   await expect(page.locator(".notes-empty")).toContainText("No note matches this filter.");
 });
 
-test("the view switcher offers Tree now and names the Timeline as not yet here", async ({
+test("the view switcher moves between the tree and the timeline without losing the filter", async ({
   page,
 }) => {
   await registerNewUser(page);
@@ -248,14 +248,18 @@ test("the view switcher offers Tree now and names the Timeline as not yet here",
   await openNotesPane(page);
 
   await expect(page.locator(".notes-viewtab.is-on")).toHaveText("Tree");
+  // Filter first, then switch: the narrowing sits above the switcher.
+  await cycleChip(page, "lore", 1);
   const timeline = page.locator(".notes-viewtab", { hasText: "Timeline" });
-  await expect(timeline).toHaveClass(/is-disabled/);
-  await expect(timeline).toHaveAttribute("aria-disabled", "true");
-
-  // Clicking it must not swap the outline out for anything.
   await timeline.click();
+  await expect(page.locator(".notes-viewtab.is-on")).toHaveText("Timeline");
+  await expect(page.locator("#notes-timeline")).toBeVisible();
+  await expect(page.locator(".notes-tree")).toHaveCount(0);
+  await expect(chip(page, "lore")).toHaveAttribute("data-state", "must");
+
+  await page.locator(".notes-viewtab", { hasText: "Tree" }).click();
   await expect(page.locator(".notes-tree")).toBeVisible();
-  await expect(page.locator(".notes-viewtab.is-on")).toHaveText("Tree");
+  await expect(chip(page, "lore")).toHaveAttribute("data-state", "must");
 });
 
 test("opening a note from a tree row saves the note being left", async ({ page }) => {
@@ -342,9 +346,22 @@ test("the outline scrolls under a finger and a tap still opens a note", async ({
   await expect(page.locator(NOTE_EDITOR)).toBeHidden();
 
   // ── Tap: opens the note under the finger. ──
+  // The swipe leaves a fling running, and a fling keeps scrolling after a
+  // programmatic reset — so a row measured straight after `scrollTop = 0` can be a
+  // row or more away by the time the tap lands, and the tap opens its neighbour.
+  // That was the "tap opened the row below" flake; how far the fling carries varies
+  // from build to build, so wait for it to finish rather than racing it.
+  await expect
+    .poll(async () => {
+      const a = await pane.evaluate((el) => el.scrollTop);
+      await page.waitForTimeout(120);
+      return a === (await pane.evaluate((el) => el.scrollTop));
+    })
+    .toBe(true);
   await pane.evaluate((el) => {
     el.scrollTop = 0;
   });
+  await expect.poll(() => pane.evaluate((el) => el.scrollTop)).toBe(0);
   const tapBox = await row(page, "Row 02").boundingBox();
   if (!tapBox) throw new Error("no row box (tap)");
   const tx = tapBox.x + tapBox.width / 2;
