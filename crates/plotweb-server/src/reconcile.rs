@@ -268,7 +268,8 @@ fn describe_structure_change(have: &BookStructure, want: &BookStructure) -> Stri
         || have.description != want.description
         || have.font_settings_json != want.font_settings_json
         || have.cover_ref != want.cover_ref
-        || have.calendar_json != want.calendar_json;
+        || have.calendar_json != want.calendar_json
+        || have.span_rule != want.span_rule;
 
     let mut parts = Vec::new();
     if added > 0 {

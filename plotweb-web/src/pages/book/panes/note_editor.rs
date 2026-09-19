@@ -179,7 +179,7 @@ fn create_linked_note(store: AppStore, book_id: &str, title: &str, entity: bool)
                 is_entity: Some(true),
                 ..Default::default()
             };
-            crate::local_book::note_facets(&bid, &id, None, None, Some(true), None);
+            crate::local_book::note_facets(&bid, &id, None, None, Some(true), None, None);
             api::put::<_, SaveReceipt>(
                 &format!("/api/books/{}/notes/{}", bid, id),
                 &req,
@@ -295,7 +295,7 @@ fn offer_hint(offer: &Offer) -> &'static str {
 /// point of the patch shape: this must not clear a span as a side effect of marking a
 /// character, any more than a keystroke may.
 fn toggle_entity(state: BookState, store: AppStore, book_id: String, note_id: String, on: bool) {
-    crate::local_book::note_facets(&book_id, &note_id, None, None, Some(on), None);
+    crate::local_book::note_facets(&book_id, &note_id, None, None, Some(on), None, None);
     let mut notes = store.notes.get();
     if let Some(n) = notes.iter_mut().find(|n| n.id == note_id) {
         n.is_entity = on;
@@ -303,6 +303,57 @@ fn toggle_entity(state: BookState, store: AppStore, book_id: String, note_id: St
     store.notes.set(notes);
     let req = UpdateNoteRequest {
         is_entity: Some(on),
+        ..Default::default()
+    };
+    api::put::<_, SaveReceipt>(
+        &format!("/api/books/{}/notes/{}", book_id, note_id),
+        &req,
+        move |result| apply_note_save_receipt(result, state.note_save_status, state.save_alert),
+    );
+}
+
+/// Pin (or unpin) a note's dates: under the book's auto-fit rule a pinned event is drawn
+/// across its own typed dates only, never stretched to fit the events inside it. A patch
+/// like [`toggle_entity`], and stored the same way — a clear is a `false` tombstone.
+fn toggle_pinned(state: BookState, store: AppStore, book_id: String, note_id: String, on: bool) {
+    crate::local_book::note_facets(&book_id, &note_id, None, None, None, None, Some(on));
+    let mut notes = store.notes.get();
+    if let Some(n) = notes.iter_mut().find(|n| n.id == note_id) {
+        n.pinned = on;
+    }
+    store.notes.set(notes);
+    let req = UpdateNoteRequest {
+        pinned: Some(on),
+        ..Default::default()
+    };
+    api::put::<_, SaveReceipt>(
+        &format!("/api/books/{}/notes/{}", book_id, note_id),
+        &req,
+        move |result| apply_note_save_receipt(result, state.note_save_status, state.save_alert),
+    );
+}
+
+/// Nest a note in time under `parent`, or (`None`) take it out — the ribbon's drag.
+///
+/// Writes `event_parent` and nothing else: the note's place in the tree (`NoteTree`) is
+/// a different hierarchy and is not touched, and no span is rewritten — the book's span
+/// rule decides how the nesting is *drawn*. A clear is the `""` tombstone
+/// (`local_book::note_facets`), so a stale note list cannot re-nest it.
+pub(in crate::pages::book) fn write_event_parent(
+    state: BookState,
+    store: AppStore,
+    book_id: &str,
+    note_id: &str,
+    parent: Option<String>,
+) {
+    crate::local_book::note_facets(book_id, note_id, None, None, None, Some(parent.clone()), None);
+    let mut notes = store.notes.get();
+    if let Some(n) = notes.iter_mut().find(|n| n.id == note_id) {
+        n.event_parent = parent.clone();
+    }
+    store.notes.set(notes);
+    let req = UpdateNoteRequest {
+        event_parent: Some(parent),
         ..Default::default()
     };
     api::put::<_, SaveReceipt>(
@@ -388,7 +439,7 @@ pub(in crate::pages::book) fn write_note_time(
     span: Option<Option<plotweb_common::TimeSpan>>,
     relative: Option<Option<plotweb_common::RelativeTime>>,
 ) {
-    crate::local_book::note_facets(book_id, note_id, span.clone(), relative.clone(), None, None);
+    crate::local_book::note_facets(book_id, note_id, span.clone(), relative.clone(), None, None, None);
     let mut notes = store.notes.get();
     if let Some(n) = notes.iter_mut().find(|n| n.id == note_id) {
         if let Some(span) = &span {
@@ -503,6 +554,7 @@ fn time_editor(__scope: &mut RenderScope, state: BookState, store: AppStore, boo
 }
 
 fn facet_strip(__scope: &mut RenderScope, state: BookState, store: AppStore, book_id: String) -> NodeHandle {
+    let pin_book = book_id.clone();
     rsx! {
         div { class: "note-facets-block",
         div { class: "note-facets",
@@ -535,6 +587,27 @@ fn facet_strip(__scope: &mut RenderScope, state: BookState, store: AppStore, boo
                 },
                 span { class: "note-facet-glyph", "◆" }
                 "Entity"
+            }
+            // Pinned only means something for a dated note: it keeps the timeline from
+            // stretching the note's own dates over the events nested inside it.
+            if open_note(state, store).is_some_and(|n| n.span.is_some()) {
+                div {
+                    class: {move || {
+                        let on = open_note(state, store).map(|n| n.pinned).unwrap_or(false);
+                        if on { "note-facet is-on is-button" } else { "note-facet is-button" }
+                    }},
+                    id: "note-facet-pin",
+                    title: "Pinned: the timeline draws this event across its own dates, never stretched to fit the events inside it",
+                    onclick: {
+                        let book_id = pin_book.clone();
+                        move || {
+                            let Some(note) = open_note(state, store) else { return };
+                            toggle_pinned(state, store, book_id.clone(), note.id, !note.pinned);
+                        }
+                    },
+                    span { class: "note-facet-glyph", "\u{22a2}" }
+                    {move || if open_note(state, store).is_some_and(|n| n.pinned) { "Pinned" } else { "Pin dates" }}
+                }
             }
             div {
                 class: "note-facet-span",

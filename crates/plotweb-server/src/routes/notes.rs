@@ -30,6 +30,7 @@ fn git_note(book_id: &str, n: plotweb_git::note::NoteData, index: &LinkIndex) ->
         relative: n.relative,
         is_entity: n.is_entity,
         event_parent: n.event_parent,
+        pinned: n.pinned,
     }
 }
 
@@ -73,6 +74,7 @@ pub async fn list(
                                 relative: structure.note_relatives.get(id).cloned(),
                                 is_entity: structure.note_entities.contains(id),
                                 event_parent: structure.note_event_parents.get(id).cloned(),
+                                pinned: structure.note_pinned.contains(id),
                                 links: structure.note_links.get(id).cloned().unwrap_or_default(),
                             }
                         })
@@ -154,6 +156,7 @@ pub async fn get(
                 note.relative = structure.note_relatives.get(id).cloned();
                 note.is_entity = structure.note_entities.contains(id);
                 note.event_parent = structure.note_event_parents.get(id).cloned();
+                note.pinned = structure.note_pinned.contains(id);
                 note.links = structure.note_links.get(id).cloned().unwrap_or_default();
             }
             (StatusCode::OK, Json(serde_json::to_value(note).unwrap()))
@@ -254,6 +257,7 @@ pub async fn update(
         relative: req.relative.clone(),
         is_entity: req.is_entity,
         event_parent: req.event_parent.clone(),
+        pinned: req.pinned,
     };
     let wrote_to_git =
         content.is_some() || req.title.is_some() || req.color.is_some() || !facets.is_empty();

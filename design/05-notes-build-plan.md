@@ -29,7 +29,19 @@ top of — so the one open question below only has to be settled before step 6.
   it. Real calendars become their own feature or configuration later, if ever needed.
 - **Phone** gets the vertical spine rendering.
 
-## Open question — gates step 6 only
+## Settled 2026-09-19 — the span rule for nested events
+
+**A per-book setting, auto-fit by default.** Three rules a book can choose between:
+
+- **Auto-fit** (default): the ribbon draws a parent across its own dates plus all its children's,
+  unless the parent is pinned. It is computed at draw time only — typed dates are never rewritten.
+- **Clamp**: the parent's typed dates are authoritative; a child running past them is drawn cut
+  off at the parent's edge, with a marker.
+- **Free**: everything is drawn as typed; a child escaping its parent pokes out and is flagged.
+
+A book that never sets it stores nothing and gets auto-fit.
+
+## (Superseded) Open question — gates step 6 only
 
 The span rule for nested events. Drawn as *parent auto-fits the union of its children unless
 pinned*: add a scene to the siege and the siege grows to contain it. Alternatives are clamping
@@ -52,6 +64,7 @@ siege's dates then move without you touching them.
 | The filter itself (pure, host-tested) | `plotweb-web/src/pages/book/notes_filter.rs` |
 | Timeline layout — ticks, lanes, tiers, rail (pure, host-tested; card 5) | `plotweb-web/src/pages/book/timeline_layout.rs` |
 | Timeline drawing + gestures (card 5) | `plotweb-web/src/pages/book/panes/timeline.rs` |
+| Ribbon rules — span rule, cycles, packing, labels (pure, host-tested; card 6) | `plotweb-web/src/pages/book/ribbon.rs` |
 | Note editor pane | `plotweb-web/src/pages/book/panes/note_editor.rs` |
 | Note autosave orchestration | `plotweb-web/src/pages/book/mod.rs:1057-1110` |
 
@@ -209,6 +222,53 @@ Where nesting arrives. **Settle the span rule above before starting.**
 
 **Done when:** the siege contains the breach visually, and turning the ribbon off leaves a
 working lanes view.
+
+**Shipped.** Every rule is pure and host-tested in `pages/book/ribbon.rs` (cycle breaking,
+the three span rules, escape and clip detection, row packing, label placement);
+`timeline_layout.rs` puts the ribbon on card 5's axis and `panes/timeline.rs` draws it.
+
+- **The span rule** is `plotweb_common::SpanRule`, stored beside the calendar: `Book::span_rule`,
+  `book.json`, and a plain word at `meta.span_rule` in the `book:` document, all **absent** for
+  auto-fit, so choosing auto-fit again stores nothing. The control is a section of the
+  **Calendar pane** ("Nested events on the timeline"), and the timeline's toolbar shows the
+  current rule as a chip that opens it (an exit, flushed like the time field's link).
+- **Pinned** is a facet carried exactly like `is_entity`: `Note::pinned`, `notes.pinned` in the
+  `book:` document with `false` as the clear's tombstone, git, mirror, backfill (fingerprint
+  only when true), the client projection. The control is a **"Pin dates"** chip in the facet
+  strip beside the time field, shown only for a note with a span.
+- **Date-less parents are fitted from their children under every rule**, not only auto-fit:
+  there are no typed dates to clamp against or escape from, and without an extent the band has
+  nowhere to be. Pinning one changes nothing. Such a note leaves the holding rail once it
+  contains something dated. **A pinned parent under auto-fit** is drawn as typed and a child
+  running past it is flagged as under Free. **Clamp is transitive** (a grandparent's edge cuts
+  a grandchild through a date-less middle), and a child wholly outside its parent is drawn as a
+  sliver at the edge it ran off.
+- **Fitting is computed over every note, then filtered**: a filter that hides a scene does not
+  shrink the siege around what is left. A drawn event's non-matching ancestors are drawn muted,
+  the tree's rule; they draw no tie and make no lane.
+- **Cycles:** `break_cycles` drops the parent link of every note on an `event_parent` loop, so
+  each draws as a root and everything after walks a forest (iteratively — a 5000-deep chain is
+  a test). A drop that would make a loop is refused before anything is written, with a line
+  saying why. An `event_parent` naming an entity, or a deleted note, is not drawn as nesting.
+- **Card 5's "no one" row is gone.** With the ribbon on, names are on the bars and card 5's
+  caption tiers are not drawn; ties rise from the lanes into each bar and pass *behind* any bar
+  they cross. Ribbon off is card 5's view, captions and all, except that an event naming no one
+  has nowhere to be and the status line counts it ("1 with no one in them — on the ribbon").
+  Both toggles off is not a state: turning off the last zone turns the other back on (and the
+  layout reads both-off as both-on). A book with no entities folds the empty lanes zone away.
+- **Labels:** whole inside the bar; else whole in the wider gap beside it on its row; else cut
+  short inside (≥ 34 units); else cut short beside; else dropped and counted in the status line.
+  The wireframe put a truncated name inside whenever there was room for one — preferring the
+  whole name beside read better once real titles were in it. Every bar's tooltip is the full
+  name plus how the rule drew it ("cut off at the edge of the event it is in").
+- **Dragging** is by a `⋮` handle just left of each bar, a sibling of the bar's click target
+  (rinch opens on pointerdown, and drops clicks on children of a `draggable`). Bars' click
+  targets are the nest drop targets; an overlay on the ribbon zone, armed only during a bar
+  drag and beneath the bars, is "take it out". Only `event_parent` is written — the e2e spec
+  checks the PUT body and that the tree is byte-identical afterwards.
+- **Not from the structure document:** the rule itself is read from `store.current_book`, as
+  the calendar is, so a rule changed on another device shows on this one at the next book load
+  — the calendar's existing limitation, not a new one.
 
 ## [Notes 7/8] Phone — the vertical spine
 

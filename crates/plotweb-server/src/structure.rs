@@ -30,6 +30,7 @@ pub fn structure_input(
         cover_ref: book.cover_image.clone(),
         created_at: book.created_at.clone(),
         calendar: book.calendar.clone(),
+        span_rule: book.span_rule,
         chapters: chapters
             .iter()
             .map(|c| (c.id.clone(), c.title.clone()))
@@ -70,6 +71,7 @@ fn note_entry(n: &NoteData, index: &LinkIndex) -> NoteEntry {
         relative: n.relative.clone(),
         is_entity: n.is_entity,
         event_parent: n.event_parent.clone(),
+        pinned: n.pinned,
         links: extract_note_links_in(&n.content, index),
     }
 }

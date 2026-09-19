@@ -902,7 +902,48 @@ pub(super) const NOTES_CSS: &str = r#"
     font-family: inherit;
     color: var(--rinch-color-red-7);
 }
-.calendar-status {
+.span-rule {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-xs);
+    margin-top: var(--pw-space-lg);
+    padding-top: var(--pw-space-md);
+    border-top: 1px solid var(--pw-hairline);
+}
+.span-rule-options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--pw-space-xs);
+}
+.span-rule-option {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: var(--pw-space-sm);
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    background: var(--rinch-color-surface);
+    cursor: pointer;
+    user-select: none;
+}
+.span-rule-option:hover {
+    border-color: var(--rinch-color-placeholder);
+}
+.span-rule-option.is-on {
+    border-color: var(--rinch-color-teal-6);
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 10%, var(--rinch-color-surface));
+}
+.span-rule-name {
+    font-size: var(--pw-text-sm);
+    font-weight: 600;
+    color: var(--rinch-color-text);
+}
+.span-rule-says {
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
+}
+.calendar-status,
+.span-rule-status {
     font-size: 12px;
     color: var(--rinch-color-dimmed);
 }
@@ -1118,20 +1159,159 @@ pub(super) const NOTES_CSS: &str = r#"
 .tl-dot {
     fill: var(--rinch-color-text);
 }
-.tl-mark.is-unassigned .tl-dot {
-    fill: var(--rinch-color-dimmed);
-}
 .tl-dot.is-on {
     fill: var(--rinch-color-teal-6);
 }
-.tl-unassigned line {
+/* ── The event ribbon (card 6) ── */
+.tl-zones {
+    display: flex;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    overflow: hidden;
+}
+.tl-zone {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    padding: 3px 9px;
+    color: var(--rinch-color-dimmed);
+    cursor: pointer;
+    user-select: none;
+}
+.tl-zone + .tl-zone {
+    border-left: 1px solid var(--rinch-color-border);
+}
+.tl-zone.is-on {
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 14%, transparent);
+    color: var(--rinch-color-text);
+}
+.tl-refusal {
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-red-6);
+}
+.tl-svg .tl-zone-name {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    fill: var(--rinch-color-placeholder);
+}
+.tl-zone-rule line {
     stroke: var(--rinch-color-border);
     stroke-dasharray: 2 3;
 }
-.tl-svg .tl-unassigned-name {
-    font-size: 10px;
-    font-style: italic;
-    fill: var(--rinch-color-placeholder);
+/* A parent's containment band. Nested bands layer, so depth reads as tone. */
+.tl-contain {
+    fill: color-mix(in srgb, var(--rinch-color-teal-6) 7%, transparent);
+    stroke: color-mix(in srgb, var(--rinch-color-teal-6) 25%, transparent);
+    stroke-width: 1;
+}
+.tl-event-bar {
+    fill: var(--rinch-color-surface);
+    stroke: var(--rinch-color-border);
+    stroke-width: 1;
+}
+.tl-event.depth-1 .tl-event-bar,
+.tl-event.depth-2 .tl-event-bar,
+.tl-event.depth-3 .tl-event-bar {
+    fill: color-mix(in srgb, var(--rinch-color-text) 5%, var(--rinch-color-surface));
+}
+.tl-event.is-fuzzy .tl-event-bar {
+    stroke-dasharray: 3 3;
+}
+/* No dates of its own: an outline drawn from what it contains. */
+.tl-event.is-derived .tl-event-bar {
+    fill: transparent;
+    stroke-dasharray: 1 3;
+    stroke: var(--rinch-color-dimmed);
+}
+.tl-event.is-pinned .tl-event-bar {
+    stroke-width: 2;
+}
+.tl-event.is-muted {
+    opacity: 0.5;
+}
+.tl-event.is-on .tl-event-bar {
+    stroke: var(--rinch-color-teal-6);
+    stroke-width: 2;
+}
+.tl-event.is-escaping .tl-event-bar {
+    stroke: var(--rinch-color-orange-6);
+}
+.tl-clip {
+    fill: none;
+    stroke: var(--rinch-color-orange-6);
+    stroke-width: 1.5;
+}
+.tl-escape circle {
+    fill: var(--rinch-color-orange-6);
+}
+.tl-svg .tl-escape text {
+    font-size: 9px;
+    font-weight: 700;
+    fill: #fff;
+}
+.tl-svg .tl-event-label {
+    font-size: 11px;
+    fill: var(--rinch-color-text);
+}
+.tl-svg .tl-event-label.is-beside {
+    fill: var(--rinch-color-dimmed);
+}
+.tl-svg .tl-event-label.is-muted {
+    opacity: 0.6;
+}
+.tl-svg .tl-event-label.is-on {
+    fill: var(--rinch-color-teal-6);
+    font-weight: 600;
+}
+.tl-hit-bar:hover,
+.tl-hit-label:hover {
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 10%, transparent);
+}
+.tl-hit-bar.is-drop-into {
+    outline: 2px solid var(--rinch-color-teal-6);
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 16%, transparent);
+}
+.tl-hit-bar.is-drop-refused {
+    outline: 2px dashed var(--rinch-color-red-6);
+    cursor: not-allowed;
+}
+/* The empty ribbon, as a drop target: armed only while a bar is dragged. */
+.tl-ribbon-drop {
+    position: absolute;
+    left: 0;
+    right: 0;
+    pointer-events: none;
+}
+.tl-ribbon-drop.is-armed {
+    pointer-events: auto;
+    outline: 1px dashed var(--rinch-color-border);
+}
+.tl-ribbon-drop.is-drop-out {
+    outline-color: var(--rinch-color-teal-6);
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 5%, transparent);
+}
+/* A bar's drag handle, just left of the bar. Owns the finger from first contact, like
+   a held chip (see `.tl-held`), so a long-press can become a drag. */
+.tl-handle {
+    position: absolute;
+    width: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    line-height: 1;
+    color: var(--rinch-color-dimmed);
+    opacity: 0.45;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    border-radius: 2px;
+}
+.tl-handle:hover,
+.tl-handle.is-dragging {
+    opacity: 1;
+    background: color-mix(in srgb, var(--rinch-color-teal-6) 14%, transparent);
 }
 /* The drop target. Inert until a held note is being dragged, so it never sits
    over the drawing's own clicks. */

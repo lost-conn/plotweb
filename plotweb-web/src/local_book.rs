@@ -13,7 +13,8 @@
 //! ```text
 //! ROOT
 //!   meta:           Map { title, description, font_settings (JSON str), cover_ref?, created_at,
-//!                         calendar? (JSON str — absent for a book on the default calendar) }
+//!                         calendar? (JSON str — absent for a book on the default calendar),
+//!                         span_rule? ("fit" | "clamp" | "free" — absent = fit) }
 //!   chapters:       List<chapter_id>            // AUTHORITATIVE order
 //!   chapter_titles: Map<chapter_id, String>
 //!   notes:          Map {
@@ -26,6 +27,7 @@
 //!     spans:         Map<note_id, JSON str | "null">,
 //!     relatives:     Map<note_id, JSON str | "null">,
 //!     entities:      Map<note_id, bool>,          // false = cleared
+//!     pinned:        Map<note_id, bool>,          // false = cleared (card 6)
 //!     event_parents: Map<note_id, note_id | "">,  // ""   = cleared
 //!     links:         Map<note_id, JSON str>,      // derived from the body
 //!   }
@@ -286,6 +288,25 @@ pub fn set_calendar(book_id: &str, calendar: Option<&plotweb_common::Calendar>) 
     });
 }
 
+/// Record the book's span rule (notes card 6) in the book document — the calendar's
+/// dual-write, for the calendar's reason. `None` returns the book to the default
+/// (auto-fit), which the document says by holding no `span_rule` at all.
+pub fn set_span_rule(book_id: &str, rule: Option<plotweb_common::SpanRule>) {
+    with_book(book_id, |doc| {
+        let Some(meta) = get_obj(doc, &ROOT, "meta") else {
+            return;
+        };
+        match rule {
+            Some(rule) => put_if_changed(doc, &meta, "span_rule", rule.as_str()),
+            None => {
+                if doc.get(&meta, "span_rule").ok().flatten().is_some() {
+                    let _ = doc.delete(&meta, "span_rule");
+                }
+            }
+        }
+    });
+}
+
 /// Replace the snapshot of what REST last said about each note's facets.
 ///
 /// Call it wherever a fresh note list arrives **from REST** — never with `store.notes`,
@@ -468,6 +489,10 @@ fn build_doc(doc: &mut AutoCommit, book: &Book, chapters: &[Chapter], notes: &[N
     if let Some(json) = book.calendar.as_ref().and_then(|c| serde_json::to_string(c).ok()) {
         let _ = doc.put(&meta, "calendar", json);
     }
+    // Absent unless the book chose one — mirror of `plotweb_crdt::book`.
+    if let Some(rule) = book.span_rule {
+        let _ = doc.put(&meta, "span_rule", rule.as_str());
+    }
 
     // chapters (order List + titles Map)
     let chs = doc.put_object(ROOT, "chapters", ObjType::List).unwrap();
@@ -577,10 +602,11 @@ fn write_note_facets(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note]) {
     let relatives = ensure_obj(doc, notes_obj, "relatives", ObjType::Map);
     let entities = ensure_obj(doc, notes_obj, "entities", ObjType::Map);
     let event_parents = ensure_obj(doc, notes_obj, "event_parents", ObjType::Map);
+    let pinned = ensure_obj(doc, notes_obj, "pinned", ObjType::Map);
     let links = ensure_obj(doc, notes_obj, "links", ObjType::Map);
 
     let live: Vec<String> = notes.iter().map(|n| n.id.clone()).collect();
-    for obj in [&spans, &relatives, &entities, &event_parents, &links] {
+    for obj in [&spans, &relatives, &entities, &event_parents, &pinned, &links] {
         retain_keys(doc, obj, &live);
     }
 
@@ -599,6 +625,9 @@ fn write_note_facets(doc: &mut AutoCommit, notes_obj: &ObjId, notes: &[Note]) {
         }
         if n.is_entity && !held(doc, &entities, id) {
             let _ = doc.put(&entities, id, true);
+        }
+        if n.pinned && !held(doc, &pinned, id) {
+            let _ = doc.put(&pinned, id, true);
         }
         if !held(doc, &event_parents, id)
             && let Some(parent) = &n.event_parent
@@ -743,9 +772,10 @@ pub fn note_facets(
     relative: Option<Option<plotweb_common::RelativeTime>>,
     is_entity: Option<bool>,
     event_parent: Option<Option<String>>,
+    pinned: Option<bool>,
 ) {
     with_book(book_id, |doc| {
-        write_facets(doc, note_id, span, relative, is_entity, event_parent);
+        write_facets(doc, note_id, span, relative, is_entity, event_parent, pinned);
     });
 }
 
@@ -758,6 +788,7 @@ fn write_facets(
     relative: Option<Option<plotweb_common::RelativeTime>>,
     is_entity: Option<bool>,
     event_parent: Option<Option<String>>,
+    pinned: Option<bool>,
 ) {
     let notes_obj = ensure_obj(doc, &ROOT, "notes", ObjType::Map);
 
@@ -784,15 +815,17 @@ fn write_facets(
     if let Some(parent) = event_parent {
         put("event_parents", parent, "");
     }
-    if let Some(is_entity) = is_entity {
-        let obj = ensure_obj(doc, &notes_obj, "entities", ObjType::Map);
+    // The two flag facets. A clear is `false`, the flag's tombstone, never a delete.
+    for (prop, flag) in [("entities", is_entity), ("pinned", pinned)] {
+        let Some(flag) = flag else { continue };
+        let obj = ensure_obj(doc, &notes_obj, prop, ObjType::Map);
         let held = doc
             .get(&obj, note_id)
             .ok()
             .flatten()
             .and_then(|(v, _)| v.to_bool());
-        if held != Some(is_entity) {
-            let _ = doc.put(&obj, note_id, is_entity);
+        if held != Some(flag) {
+            let _ = doc.put(&obj, note_id, flag);
         }
     }
 }
@@ -935,6 +968,7 @@ pub fn project_notes(store: AppStore) {
             n.relative = f.relative;
             n.is_entity = f.is_entity;
             n.event_parent = f.event_parent;
+            n.pinned = f.pinned;
             // Unlike the facets above, an absent entry does **not** clear: the index
             // is derived, and a device that has not written one yet should show the
             // server's rather than nothing at all.
@@ -971,6 +1005,7 @@ pub fn project_notes(store: AppStore) {
                 relative: f.relative,
                 is_entity: f.is_entity,
                 event_parent: f.event_parent,
+                pinned: f.pinned,
                 links: links.get(&id).cloned().unwrap_or_default(),
             });
         }
@@ -985,6 +1020,7 @@ pub(crate) struct Facets {
     pub relative: Option<plotweb_common::RelativeTime>,
     pub is_entity: bool,
     pub event_parent: Option<String>,
+    pub pinned: bool,
 }
 
 fn facets_of(notes: &[Note]) -> HashMap<String, Facets> {
@@ -998,6 +1034,7 @@ fn facets_of(notes: &[Note]) -> HashMap<String, Facets> {
                     relative: n.relative.clone(),
                     is_entity: n.is_entity,
                     event_parent: n.event_parent.clone(),
+                    pinned: n.pinned,
                 },
             )
         })
@@ -1058,21 +1095,25 @@ fn resolve_facets(
                 .collect()
         })
         .unwrap_or_default();
-    let entities: HashMap<String, bool> = get_obj(doc, notes_obj, "entities")
-        .map(|o| {
-            doc.keys(&o)
-                .map(|id| {
-                    let on = doc
-                        .get(&o, id.as_str())
-                        .ok()
-                        .flatten()
-                        .and_then(|(v, _)| v.to_bool())
-                        .unwrap_or(false);
-                    (id, on)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let flags = |prop: &str| -> HashMap<String, bool> {
+        get_obj(doc, notes_obj, prop)
+            .map(|o| {
+                doc.keys(&o)
+                    .map(|id| {
+                        let on = doc
+                            .get(&o, id.as_str())
+                            .ok()
+                            .flatten()
+                            .and_then(|(v, _)| v.to_bool())
+                            .unwrap_or(false);
+                        (id, on)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let entities = flags("entities");
+    let pinned = flags("pinned");
 
     fn pick<T: Clone>(held: &Held<T>, id: &str, rest: Option<&T>) -> Option<T> {
         match held.get(id) {
@@ -1086,6 +1127,7 @@ fn resolve_facets(
     ids.extend(relatives.keys());
     ids.extend(event_parents.keys());
     ids.extend(entities.keys());
+    ids.extend(pinned.keys());
     ids.into_iter()
         .map(|id| {
             let r = rest.get(id);
@@ -1097,6 +1139,10 @@ fn resolve_facets(
                     .copied()
                     .unwrap_or_else(|| r.is_some_and(|r| r.is_entity)),
                 event_parent: pick(&event_parents, id, r.and_then(|r| r.event_parent.as_ref())),
+                pinned: pinned
+                    .get(id)
+                    .copied()
+                    .unwrap_or_else(|| r.is_some_and(|r| r.pinned)),
             };
             (id.clone(), facets)
         })
@@ -1342,6 +1388,7 @@ mod tests {
             relative: None,
             is_entity: false,
             event_parent: None,
+            pinned: false,
             links: plotweb_common::NoteLinks::default(),
         }
     }
@@ -1359,6 +1406,7 @@ mod tests {
             cover_image: None,
             cutover: false,
             calendar: None,
+            span_rule: None,
         }
     }
 
@@ -1693,7 +1741,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         build_doc(&mut doc, &sample_book(), &[], &[dated("n1", 1206)], &one_root(&["n1"]));
         // The author undates it; REST has not caught up yet.
-        write_facets(&mut doc, "n1", Some(None), None, Some(false), None);
+        write_facets(&mut doc, "n1", Some(None), None, Some(false), None, None);
         let stale = vec![{
             let mut n = dated("n1", 1206);
             n.is_entity = true;
@@ -1723,6 +1771,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert_eq!(year_of(&resolved(&doc, &[note("n1", "Siege", None)])["n1"]), Some(1300));
         assert_eq!(year_of(&resolved(&doc, &[dated("n1", 1206)])["n1"]), Some(1300));
@@ -1748,6 +1797,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let notes_obj = get_obj(&doc, &ROOT, "notes").unwrap();
 
@@ -1769,6 +1819,56 @@ mod tests {
         write_notes(&mut doc, &notes_obj, &[note("n2", "Parley", None)], &one_root(&["n2"]));
         let spans: HashMap<String, plotweb_common::TimeSpan> = read_json_map(&doc, &notes_obj, "spans");
         assert!(!spans.contains_key("n1"));
+    }
+
+    #[test]
+    fn a_pin_rides_in_the_document_and_a_clear_is_a_false_tombstone() {
+        // Card 6: `pinned` is carried the way the entity mark is.
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &sample_book(), &[], &[note("n1", "Siege", None)], &one_root(&["n1"]));
+        let notes_obj = get_obj(&doc, &ROOT, "notes").unwrap();
+        let pinned = get_obj(&doc, &notes_obj, "pinned").unwrap();
+        assert!(doc.get(&pinned, "n1").unwrap().is_none(), "never written: absent");
+
+        write_facets(&mut doc, "n1", None, None, None, None, Some(true));
+        assert!(resolved(&doc, &[note("n1", "Siege", None)])["n1"].pinned);
+
+        // Unpinned here while a stale REST copy still says pinned: the clear wins,
+        // because it is `false`, not an absence.
+        write_facets(&mut doc, "n1", None, None, None, None, Some(false));
+        let stale = vec![{
+            let mut n = note("n1", "Siege", None);
+            n.pinned = true;
+            n
+        }];
+        assert!(!resolved(&doc, &stale)["n1"].pinned);
+        assert_eq!(
+            doc.get(&pinned, "n1").unwrap().and_then(|(v, _)| v.to_bool()),
+            Some(false)
+        );
+
+        // A pin the document never held is filled from REST.
+        let mut other = AutoCommit::new();
+        build_doc(&mut other, &sample_book(), &[], &[note("n1", "Siege", None)], &one_root(&["n1"]));
+        assert!(resolved(&other, &stale)["n1"].pinned);
+    }
+
+    #[test]
+    fn a_span_rule_rides_in_the_book_meta_only_when_the_book_chose_one() {
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &sample_book(), &[], &[], &one_root(&[]));
+        let meta = get_obj(&doc, &ROOT, "meta").unwrap();
+        assert!(doc.get(&meta, "span_rule").unwrap().is_none(), "auto-fit stores nothing");
+
+        let mut book = sample_book();
+        book.span_rule = Some(plotweb_common::SpanRule::Clamp);
+        let mut doc = AutoCommit::new();
+        build_doc(&mut doc, &book, &[], &[], &one_root(&[]));
+        let meta = get_obj(&doc, &ROOT, "meta").unwrap();
+        assert_eq!(
+            doc.get(&meta, "span_rule").unwrap().and_then(|(v, _)| v.to_str().map(String::from)),
+            Some("clamp".to_string())
+        );
     }
 
     #[test]

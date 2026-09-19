@@ -9,8 +9,9 @@ import { openNotesPane, registerNewUser } from "./helpers";
  * 1. **One lane per entity, one tie per event.** Each event joins the lanes of every
  *    entity it `$ref`s, with a dot per participant; lanes stack by first appearance
  *    and flip to alphabetical on request.
- * 2. **An event naming nobody does not vanish.** It sits in the unassigned row until
- *    card 6's ribbon gives it a home.
+ * 2. **An event naming nobody does not vanish.** Card 6 gave it a home: it is a bar on
+ *    the event ribbon with no tie (card 5's "no one" row is gone). With the ribbon off
+ *    the status line counts it.
  * 3. **Selecting an entity highlights its lane and every event it takes part in**, and
  *    that selection is the tree's selection too — it survives switching view.
  * 4. **The shared filter applies as it does to the tree.** A tag chip narrows the
@@ -135,11 +136,16 @@ function mark(page: Page, title: string) {
   return page.locator(`#notes-timeline .tl-mark[data-title="${title}"]`);
 }
 
+/** An event's bar on the ribbon (card 6). */
+function bar(page: Page, title: string) {
+  return page.locator(`#notes-timeline .tl-event[data-title="${title}"]`);
+}
+
 function lane(page: Page, title: string) {
   return page.locator(`#notes-timeline .tl-lane[data-title="${title}"]`);
 }
 
-/** A click target laid over the drawing — `mark`, `caption` or `lane`. */
+/** A click target laid over the drawing — `bar`, `label`, `mark`, `caption` or `lane`. */
 function hit(page: Page, kind: string, title: string) {
   return page.locator(`#notes-timeline .tl-hit-${kind}[data-title="${title}"]`);
 }
@@ -173,25 +179,42 @@ test("a lane per entity, a tie per event, and nothing silently dropped", async (
   await expect(mark(page, "Siege").locator(".tl-dot")).toHaveCount(2);
   await expect(mark(page, "Harrowgate").locator(".tl-dot")).toHaveCount(1);
   await expect(mark(page, "Winter").locator(".tl-dot")).toHaveCount(2);
-  // The tie spans exactly the lanes of the people in it.
+  // The tie runs down to the lowest lane of the people in it, from the bottom of the
+  // event's bar on the ribbon (card 6: the tie rises into the bar), and a dot sits on
+  // each of their lanes.
   const tie = await mark(page, "Siege").locator(".tl-tie").evaluate((l) => [
     Number(l.getAttribute("y1")),
     Number(l.getAttribute("y2")),
   ]);
   const laneY = async (t: string) =>
     Number(await lane(page, t).locator("line").first().getAttribute("y1"));
-  expect(tie).toEqual([await laneY("Vess"), await laneY("Corin")]);
+  const barBottom = await bar(page, "Siege")
+    .locator(".tl-event-bar")
+    .evaluate((r) => Number(r.getAttribute("y")) + Number(r.getAttribute("height")));
+  expect(tie).toEqual([barBottom, await laneY("Corin")]);
+  const dots = await mark(page, "Siege")
+    .locator(".tl-dot")
+    .evaluateAll((cs) => cs.map((c) => Number(c.getAttribute("cy"))).sort((a, b) => a - b));
+  expect(dots).toEqual([await laneY("Vess"), await laneY("Corin")]);
 
-  // The comet names no one: it is drawn in the unassigned row, not dropped.
-  await expect(mark(page, "Comet")).toHaveClass(/is-unassigned/);
-  await expect(page.locator(".tl-unassigned")).toBeVisible();
-  await expect(page.locator(".tl-status")).toContainText("1 with no one in them");
-
-  // Captions carry every event's title, each with a leader line.
+  // The comet names no one: it is a bar on the ribbon, with no tie — not dropped.
+  await expect(bar(page, "Comet")).toBeVisible();
+  await expect(mark(page, "Comet")).toHaveCount(0);
+  // Every event has a bar, and each bar is named on the ribbon.
   for (const t of ["Harrowgate", "Siege", "Winter", "Comet"]) {
+    await expect(bar(page, t)).toHaveCount(1);
+    await expect(page.locator(".tl-event-label", { hasText: t })).toHaveCount(1);
+  }
+
+  // Ribbon off is card 5's view: captions carry the tied events' titles, each with a
+  // leader line, and the comet is counted rather than silently dropped.
+  await page.locator("#tl-ribbon").click();
+  for (const t of ["Harrowgate", "Siege", "Winter"]) {
     await expect(page.locator(".tl-caption text", { hasText: t })).toHaveCount(1);
   }
-  await expect(page.locator(".tl-caption .tl-leader")).toHaveCount(4);
+  await expect(page.locator(".tl-caption .tl-leader")).toHaveCount(3);
+  await expect(page.locator(".tl-status")).toContainText("1 with no one in them");
+  await page.locator("#tl-ribbon").click();
 
   // The axis reads through the calendar: years, for a span of years.
   await expect(page.locator(".tl-tick text", { hasText: "1206" })).toHaveCount(1);
@@ -223,10 +246,12 @@ test("selecting an entity highlights its lane and every event it is in", async (
   await expect(mark(page, "Siege")).toHaveClass(/is-on/);
   await expect(mark(page, "Winter")).toHaveClass(/is-on/);
   await expect(mark(page, "Harrowgate")).not.toHaveClass(/is-on/);
-  await expect(mark(page, "Comet")).not.toHaveClass(/is-on/);
   // Corin's dots light, the others on the same ties do not.
   await expect(page.locator(".tl-dot.is-on")).toHaveCount(2);
-  await expect(page.locator(".tl-caption.is-on")).toHaveCount(2);
+  // And the same events light on the ribbon.
+  await expect(page.locator(".tl-event.is-on")).toHaveCount(2);
+  await expect(bar(page, "Siege")).toHaveClass(/is-on/);
+  await expect(bar(page, "Comet")).not.toHaveClass(/is-on/);
 
   // It is the tree's selection too: the view switch is a re-render, not a navigation.
   await page.locator(".notes-viewtab", { hasText: "Tree" }).click();
@@ -240,6 +265,7 @@ test("selecting an entity highlights its lane and every event it is in", async (
   await page.locator('.tl-chip', { hasText: "Corin" }).click();
   await expect(page.locator(".tl-chip.is-on")).toHaveCount(0);
   await expect(page.locator(".tl-mark.is-on")).toHaveCount(0);
+  await expect(page.locator(".tl-event.is-on")).toHaveCount(0);
 });
 
 test("the shared filter narrows the events and keeps the lanes they need, muted", async ({
@@ -249,10 +275,12 @@ test("the shared filter narrows the events and keeps the lanes they need, muted"
   const { bookId } = await seedCast(page, "Filter Novel");
   await page.goto(`/book/${bookId}`);
   await openTimeline(page);
-  await expect(page.locator("#notes-timeline .tl-mark")).toHaveCount(4);
+  await expect(page.locator("#notes-timeline .tl-event")).toHaveCount(4);
+  await expect(page.locator("#notes-timeline .tl-mark")).toHaveCount(3);
 
   // #siege: must.
   await page.locator(".fchip", { has: page.locator(".lbl", { hasText: /^#siege$/ }) }).click();
+  await expect(page.locator("#notes-timeline .tl-event")).toHaveCount(1);
   await expect(page.locator("#notes-timeline .tl-mark")).toHaveCount(1);
   await expect(mark(page, "Siege")).toBeVisible();
   // Its people keep their lanes — dimmed, as the tree dims an ancestor of a match.
@@ -270,6 +298,7 @@ test("the shared filter narrows the events and keeps the lanes they need, muted"
   await page.locator(".notes-viewtab", { hasText: "Timeline" }).click();
   await page.locator(".fchip", { has: page.locator(".lbl", { hasText: /^entity$/ }) }).click();
   await expect(page.locator("#notes-timeline .tl-mark")).toHaveCount(0);
+  await expect(page.locator("#notes-timeline .tl-event")).toHaveCount(0);
   await expect(lanes(page)).toHaveCount(3);
   await expect(page.locator(".tl-lane.is-muted")).toHaveCount(0);
 });
@@ -332,8 +361,9 @@ test("dragging a held note onto the line dates it, and the date survives a reloa
 
   // A relative note dropped keeps its relation: the author said "after the siege".
   await mouseDropHeld(page, "Aftermath", 0.9);
-  await expect(mark(page, "Aftermath")).toBeVisible();
-  await expect(mark(page, "Aftermath")).toHaveClass(/is-unassigned/);
+  // It names no one, so it is a bar on the ribbon with no tie.
+  await expect(bar(page, "Aftermath")).toBeVisible();
+  await expect(mark(page, "Aftermath")).toHaveCount(0);
   await expect
     .poll(async () => (await notesJson(page, bookId)).find((n) => n.id === ids.get("Aftermath"))?.span)
     .toBeTruthy();
@@ -344,7 +374,7 @@ test("dragging a held note onto the line dates it, and the date survives a reloa
   await page.goto(`/book/${bookId}`);
   await openTimeline(page);
   await expect(mark(page, "Letter")).toBeVisible();
-  await expect(mark(page, "Aftermath")).toBeVisible();
+  await expect(bar(page, "Aftermath")).toBeVisible();
   await expect(page.locator("#tl-rail .tl-held")).toHaveCount(0);
   // And the tree gutter reads the same date.
   await page.locator(".notes-viewtab", { hasText: "Tree" }).click();
@@ -391,7 +421,9 @@ test("opening an event from the timeline saves the note being left", async ({ pa
   // And it is on the server.
   await page.goto(`/book/${bookId}`);
   await openTimeline(page);
-  await hit(page, "caption", "Siege").click();
+  // With the ribbon on, an event opens from its bar (card 6); captions are the
+  // lanes-only view's.
+  await hit(page, "bar", "Siege").click();
   await expect(page.locator(NOTE_EDITOR)).toContainText(text);
 });
 
@@ -457,15 +489,15 @@ test.describe("phone", () => {
     await expect(page.locator(".note-editor-topbar-left")).toContainText("Aftermath");
 
     // Back (the editor's own arrow — the sidebar is a drawer at this width), and a tap
-    // on the siege's caption opens it.
+    // on the siege's bar opens it (its caption, before card 6's ribbon).
     await page.locator(".note-editor-topbar .rinch-action-icon").first().click();
     await expect(page.locator("#notes-timeline")).toBeVisible();
     // The dropped note's drag ended cleanly: no ghost left floating, no armed target.
     await expect(page.locator(".note-drag-ghost")).toBeHidden();
     await expect(page.locator("#tl-drop")).not.toHaveClass(/is-armed/);
     // The siege is off to the right in the drawing's own scroller — bring it in.
-    await hit(page, "caption", "Siege").scrollIntoViewIfNeeded();
-    const cap = await hit(page, "caption", "Siege").boundingBox();
+    await hit(page, "bar", "Siege").scrollIntoViewIfNeeded();
+    const cap = await hit(page, "bar", "Siege").boundingBox();
     if (!cap) throw new Error("no caption");
     await touch(cdp, "touchStart", cap.x + cap.width / 2, cap.y + cap.height / 2);
     await touch(cdp, "touchEnd");

@@ -47,6 +47,7 @@ pub async fn list(
                     cover_image: data.cover_image,
                 cutover: cut_over,
                     calendar: data.calendar,
+                    span_rule: data.span_rule,
                 });
             }
             Err(_) => {
@@ -64,6 +65,7 @@ pub async fn list(
                     cover_image: None,
                 cutover: cut_over,
                     calendar: None,
+                    span_rule: None,
                 });
             }
         }
@@ -133,6 +135,7 @@ pub async fn create(
         cover_image: None,
     cutover: cut_over,
         calendar: None,
+        span_rule: None,
     };
     (StatusCode::CREATED, Json(serde_json::to_value(book).unwrap()))
 }
@@ -188,6 +191,12 @@ pub async fn get(
                         .as_deref()
                         .and_then(|json| serde_json::from_str(json).ok()),
                     None => data.calendar,
+                },
+                // Structure, like the calendar: the canonical copy's when cut over. An
+                // unrecognised word reads as None (auto SpanRule::Fit), never an error.
+                span_rule: match &canonical {
+                    Some(s) => s.span_rule.as_deref().and_then(SpanRule::parse),
+                    None => data.span_rule,
                 },
             };
             (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))

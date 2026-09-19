@@ -10,7 +10,7 @@
 
 use rinch::prelude::*;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
-use plotweb_common::{Calendar, UpdateBookRequest};
+use plotweb_common::{Calendar, SpanRule, UpdateBookRequest};
 
 use crate::api;
 use crate::store::AppStore;
@@ -88,6 +88,64 @@ fn save(state: BookState, store: AppStore, calendar: Option<Calendar>) {
             Err(e) => format!("Not saved: {}", e.message),
         }));
     });
+}
+
+/// Set the book's span rule (notes card 6) — how the timeline's ribbon draws a nested
+/// event against the event it is in. Saved on the spot, like a toggle, and written the
+/// way the calendar is: the local `book:` document, the page's copy of the book (so the
+/// timeline redraws without a reload), then REST.
+///
+/// Auto-fit is the default, and choosing it stores **nothing** — the same absence a book
+/// that never touched the setting has.
+fn save_span_rule(state: BookState, store: AppStore, rule: SpanRule) {
+    let stored = (rule != SpanRule::Fit).then_some(rule);
+    let bid = state.bid_signal.get();
+    crate::local_book::set_span_rule(&bid, stored);
+    store.current_book.update(|book| {
+        if let Some(b) = book {
+            b.span_rule = stored;
+        }
+    });
+    let req = UpdateBookRequest {
+        span_rule: Some(stored),
+        ..Default::default()
+    };
+    let status = state.span_rule_status;
+    status.set(Some("Saving…".to_string()));
+    api::put::<_, serde_json::Value>(&format!("/api/books/{}", bid), &req, move |result| {
+        status.set(Some(match result {
+            Ok(_) => "Saved".to_string(),
+            Err(e) => format!("Not saved: {}", e.message),
+        }));
+    });
+}
+
+/// One choice of span rule.
+fn rule_option(
+    __scope: &mut RenderScope,
+    state: BookState,
+    store: AppStore,
+    rule: SpanRule,
+    name: &'static str,
+    says: &'static str,
+) -> NodeHandle {
+    rsx! {
+        div {
+            class: {move || {
+                let on = super::timeline::book_span_rule(store) == rule;
+                if on { "span-rule-option is-on" } else { "span-rule-option" }
+            }},
+            id: {format!("span-rule-{}", rule.as_str())},
+            aria-pressed: {move || (super::timeline::book_span_rule(store) == rule).to_string()},
+            onclick: move || {
+                if super::timeline::book_span_rule(store) != rule {
+                    save_span_rule(state, store, rule);
+                }
+            },
+            span { class: "span-rule-name", {name} }
+            span { class: "span-rule-says", {says} }
+        }
+    }
 }
 
 /// One labelled text field of one unit row.
@@ -258,6 +316,19 @@ pub(in crate::pages::book) fn render(__scope: &mut RenderScope, state: BookState
                         }
                     }
                     span { class: "calendar-status", {move || calendar_status.get().unwrap_or_default()} }
+                }
+
+                div { class: "span-rule", id: "span-rule",
+                    Title { order: 4, "Nested events on the timeline" }
+                    p { class: "calendar-note",
+                        "When an event sits inside another on the timeline's ribbon and their dates disagree. Only the drawing changes: nobody's dates are ever rewritten."
+                    }
+                    div { class: "span-rule-options",
+                        {rule_option(__scope, state, store, SpanRule::Fit, "Auto-fit", "The outer event stretches to hold everything inside it, unless its dates are pinned. Give it no dates at all and it is drawn from what it holds.")}
+                        {rule_option(__scope, state, store, SpanRule::Clamp, "Clamp", "The outer event's dates win. Anything running past them is cut off at its edge, and marked.")}
+                        {rule_option(__scope, state, store, SpanRule::Free, "Free", "Everything is drawn as typed. An inner event that runs outside its outer one pokes out, flagged.")}
+                    }
+                    span { class: "span-rule-status", id: "span-rule-status", {move || state.span_rule_status.get().unwrap_or_default()} }
                 }
             }
         }

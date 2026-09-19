@@ -209,6 +209,8 @@ pub(super) struct BookState {
     /// rewrites `calendar_rows`) never re-renders the row it is typing into.
     pub calendar_row_ids: Signal<Vec<u32>>,
     pub calendar_status: Signal<Option<String>>,
+    /// The span rule's save state, beside the calendar's.
+    pub span_rule_status: Signal<Option<String>>,
     /// Where the calendar screen's back arrow goes: the note it was opened from, or the
     /// notes surface.
     pub calendar_return: Signal<BookPane>,
@@ -236,6 +238,15 @@ pub(super) struct BookState {
     /// Where on the plot a drag is hovering, as a fraction of its width — what a drop
     /// turns into a date. `None` off the plot.
     pub timeline_drop: Signal<Option<f32>>,
+    /// Which timeline zones are on (card 6). The pane keeps at least one on.
+    pub timeline_ribbon: Signal<bool>,
+    pub timeline_lanes: Signal<bool>,
+    /// The ribbon bar being dragged by its handle, to nest it or take it out.
+    pub ribbon_dragging: Signal<Option<String>>,
+    /// What that drag is over: `Some(Some(id))` a bar, `Some(None)` the empty ribbon.
+    pub ribbon_over: Signal<Option<Option<String>>>,
+    /// Why the last drop was refused, shown until the next drag starts.
+    pub ribbon_refusal: Signal<Option<String>>,
 
     // ── History state ─────────────────────────────────────────────
     pub history_commits: Signal<Vec<CommitInfo>>,
@@ -347,12 +358,18 @@ impl BookState {
             calendar_rows: Signal::new(Vec::new()),
             calendar_row_ids: Signal::new(Vec::new()),
             calendar_status: Signal::new(None),
+            span_rule_status: Signal::new(None),
             calendar_return: Signal::new(BookPane::Notes),
             notes_filter: Signal::new(super::notes_filter::Filter::default()),
             notes_selected: Signal::new(None),
             timeline_order: Signal::new(Default::default()),
             timeline_dragging: Signal::new(None),
             timeline_drop: Signal::new(None),
+            timeline_ribbon: Signal::new(true),
+            timeline_lanes: Signal::new(true),
+            ribbon_dragging: Signal::new(None),
+            ribbon_over: Signal::new(None),
+            ribbon_refusal: Signal::new(None),
             dragging_note_id: Signal::new(None),
             drop_target: Signal::new(None),
             ghost_visible: Signal::new(false),

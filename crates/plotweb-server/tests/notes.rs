@@ -205,6 +205,76 @@ async fn a_span_an_entity_mark_and_an_event_parent_round_trip_through_the_canoni
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pinned_mark_round_trips_and_a_clear_reads_as_absent() {
+    // `pinned` is carried exactly like `is_entity`: absent/false for a note that has
+    // never pinned, set by PUT, read back over REST and from the canonical document
+    // once cut over, and a clear must read as absent again rather than lingering.
+    let mut app = TestApp::new().await;
+    app.register("author", "password123").await;
+    let book = app.create_book("Novel").await;
+    app.cut_over(&book).await;
+
+    let note = create_note(&mut app, &book, "The breach").await;
+
+    let got = app.get(&format!("/api/books/{book}/notes/{note}")).await;
+    assert!(
+        got.json.get("pinned").is_none(),
+        "a note that never pinned must not carry the key: {}",
+        got.json
+    );
+
+    let upd = app
+        .put(
+            &format!("/api/books/{book}/notes/{note}"),
+            &json!({ "pinned": true }),
+        )
+        .await;
+    assert_eq!(upd.status, StatusCode::OK, "{}", upd.json);
+
+    let got = app.get(&format!("/api/books/{book}/notes/{note}")).await;
+    assert_eq!(got.json["pinned"], true);
+
+    let list = app.get(&format!("/api/books/{book}/notes")).await;
+    let listed = list.json["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == note)
+        .expect("listed");
+    assert_eq!(listed["pinned"], true);
+
+    // And in the canonical document, once cut over.
+    let structure = canonical_structure(&app, &book);
+    assert!(structure.note_pinned.contains(&note));
+
+    // Survives a restart: stored, not held in memory. `cutover` itself is in-memory
+    // and has to be re-declared, exactly as the calendar tests do.
+    app.restart().await;
+    app.login("author", "password123").await;
+    app.cut_over(&book).await;
+    let after = app.get(&format!("/api/books/{book}/notes/{note}")).await;
+    assert_eq!(after.json["pinned"], true);
+
+    // And it can be cleared again — the clear must read as absent, not linger as a
+    // tombstone visible over REST.
+    let cleared = app
+        .put(
+            &format!("/api/books/{book}/notes/{note}"),
+            &json!({ "pinned": false }),
+        )
+        .await;
+    assert_eq!(cleared.status, StatusCode::OK);
+    let got = app.get(&format!("/api/books/{book}/notes/{note}")).await;
+    assert!(
+        got.json.get("pinned").is_none(),
+        "a cleared pin must serialize exactly as it did before it was ever pinned: {}",
+        got.json
+    );
+    let structure = canonical_structure(&app, &book);
+    assert!(!structure.note_pinned.contains(&note));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_note_carrying_no_facets_is_exactly_what_it_was_before() {
     // The migration promise: every existing note becomes lore, and nothing about it
     // changes. An old stored note file has none of the new keys at all.
@@ -236,7 +306,7 @@ async fn a_note_carrying_no_facets_is_exactly_what_it_was_before() {
     assert_eq!(got.json["title"], "Characters");
     assert_eq!(got.json["color"], "teal");
     assert_eq!(got.json["content"], "<p>the old shape</p>");
-    for absent in ["span", "relative", "event_parent", "is_entity"] {
+    for absent in ["span", "relative", "event_parent", "is_entity", "pinned"] {
         assert!(
             got.json.get(absent).is_none(),
             "a lore note must serialize exactly as it did before, but carried {absent}"
@@ -249,6 +319,7 @@ async fn a_note_carrying_no_facets_is_exactly_what_it_was_before() {
     assert_eq!(listed["title"], "Characters");
     assert!(listed.get("span").is_none());
     assert!(listed.get("is_entity").is_none());
+    assert!(listed.get("pinned").is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

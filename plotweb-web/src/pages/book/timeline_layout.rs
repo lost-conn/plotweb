@@ -1,16 +1,24 @@
-//! The timeline's entity lanes, laid out — every rule of the drawing, none of the DOM.
+//! The timeline laid out — every rule of the drawing, none of the DOM.
 //!
-//! `design/04-notes-wireframes.html`, take C, as the *lanes* zone of "the chosen shape":
-//! one horizontal lane per entity, time on the x axis, and each event a vertical tie
-//! joining the lanes of everyone it `$ref`s, with a dot per participant. The event
-//! ribbon that stacks above it is card 6; nothing here draws nesting or relates a child
-//! event's span to its parent's.
+//! `design/04-notes-wireframes.html`, "the chosen shape": two zones on one x axis.
+//!
+//! * The **event ribbon** (card 6) on top: a bar per event, nested events in sub-rows
+//!   inside their parent's containment band. Its rules — nesting, the book's span rule,
+//!   packing, label placement — live in [`super::ribbon`]; this module puts them on the
+//!   axis.
+//! * The **entity lanes** (card 5) below: one horizontal lane per entity, and each event
+//!   a vertical tie joining the lanes of everyone it `$ref`s, with a dot per
+//!   participant. With the ribbon on, each tie rises out of its event's bar, so the two
+//!   zones read as one drawing.
+//!
+//! Either zone can be switched off. Lanes alone are card 5's view, captions and all —
+//! except that an event naming no one is no longer drawn in a "no one" row: it lives in
+//! the ribbon, and the status line counts it while the ribbon is off.
 //!
 //! Pure functions over the note list, host-tested like [`super::notes_filter`],
 //! [`super::sigils`] and [`super::time_entry`]. `panes::timeline` turns a [`Layout`]
 //! into SVG and does nothing else, so every decision below — which ticks, which lanes
-//! in which order, which caption tier, which events go in the unassigned row — is one a
-//! test can pin.
+//! in which order, which caption tier, which row of the ribbon — is one a test can pin.
 //!
 //! # Drawn from the structure document alone
 //!
@@ -39,9 +47,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use plotweb_common::{fold_token, Calendar, LinkTarget, Note, TimePoint, TimeSpan};
+use std::collections::BTreeMap;
+
+use plotweb_common::{fold_token, Calendar, LinkTarget, Note, SpanRule, TimePoint, TimeSpan};
 
 use super::notes_filter::Filter;
+use super::ribbon::{self, LabelSpot};
 
 /// The drawing's own coordinate width. The SVG scales to its container, so this is a
 /// unit of layout, not a pixel count on screen.
@@ -56,8 +67,15 @@ const TIER_H: f32 = 13.0;
 /// crowded tier rather than pushing the lanes off the bottom of the screen.
 pub const MAX_TIERS: usize = 6;
 const LANE_H: f32 = 30.0;
-/// The unassigned row's height, and the gap below it.
-const UNASSIGNED_H: f32 = 28.0;
+/// One ribbon row: a bar's height, and the pitch from one row to the next.
+pub const ROW_H: f32 = 20.0;
+const ROW_PITCH: f32 = 24.0;
+/// Where the ribbon starts, under the axis.
+const RIBBON_TOP: f32 = AXIS_Y + 12.0;
+/// Between the ribbon and the first lane — room for the zone rule.
+const ZONE_GAP: f32 = 18.0;
+/// The least room between two blocks on one ribbon row.
+const PACK_GAP: f32 = 6.0;
 /// At most this many ticks across the plot — ~60 drawing units apiece, enough for
 /// "Mar" or "day 12" without the labels running together.
 pub const MAX_TICKS: usize = 12;
@@ -165,17 +183,99 @@ pub struct Mark {
     pub x1: f32,
     /// Where the tie runs.
     pub cx: f32,
-    /// The tie's extent — the topmost and bottommost participating lane, or the
-    /// unassigned row for an event that names no entity.
+    /// The tie's extent: from the bottom of the event's bar when the ribbon is on (the
+    /// tie rises into it), else from the topmost participating lane, down to the
+    /// bottommost one.
     pub y0: f32,
     pub y1: f32,
+    /// The topmost participating lane — where the band behind the tie starts.
+    pub lane_y0: f32,
     pub fuzzy: bool,
     pub open: bool,
     /// The selected note is this event, or takes part in it.
     pub on: bool,
     pub dots: Vec<Dot>,
-    /// Names no entity with a lane — drawn in the unassigned row.
-    pub unassigned: bool,
+}
+
+/// One event's bar on the ribbon.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bar {
+    pub id: String,
+    pub title: String,
+    pub x0: f32,
+    pub x1: f32,
+    /// The top of the bar.
+    pub y: f32,
+    pub row: usize,
+    /// How deep it is nested (0 = a root).
+    pub depth: usize,
+    /// Drawn only because an event inside it matches the filter.
+    pub muted: bool,
+    pub fuzzy: bool,
+    pub open: bool,
+    /// Drawn wider than its typed dates (auto-fit).
+    pub fitted: bool,
+    /// No dates of its own; drawn from its children.
+    pub derived: bool,
+    pub pinned: bool,
+    pub clipped_start: bool,
+    pub clipped_end: bool,
+    pub escapes_start: bool,
+    pub escapes_end: bool,
+    /// The entities it `$ref`s — what lights it along with a followed lane.
+    pub who: Vec<String>,
+    pub on: bool,
+}
+
+impl Bar {
+    /// A few words on how the rule drew it, for the tooltip — empty when it is drawn as
+    /// typed.
+    pub fn note(&self) -> String {
+        let mut out: Vec<&str> = Vec::new();
+        if self.derived {
+            out.push("no dates of its own \u{2014} drawn across what it contains");
+        } else if self.fitted {
+            out.push("stretched to fit what it contains");
+        }
+        if self.clipped_start || self.clipped_end {
+            out.push("cut off at the edge of the event it is in");
+        }
+        if self.escapes_start || self.escapes_end {
+            out.push("runs outside the event it is in");
+        }
+        if self.pinned {
+            out.push("pinned");
+        }
+        out.join("; ")
+    }
+}
+
+/// A parent's containment band, behind its children's sub-rows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Band {
+    pub id: String,
+    pub x0: f32,
+    pub x1: f32,
+    pub y0: f32,
+    pub y1: f32,
+    pub depth: usize,
+}
+
+/// A bar's label, where [`ribbon::place_labels`] put it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarLabel {
+    pub id: String,
+    pub text: String,
+    pub x: f32,
+    /// Baseline.
+    pub y: f32,
+    /// Anchored at its end (the gap to the left of the bar).
+    pub end: bool,
+    /// Inside the bar rather than beside it.
+    pub inside: bool,
+    pub muted: bool,
+    /// The bar's people — the label lights with its bar.
+    pub who: Vec<String>,
 }
 
 /// A caption above the lanes, with its leader line down to the mark it names.
@@ -223,8 +323,19 @@ pub struct Layout {
     /// Captions that found no free tier and share one. Drawn anyway — a caption that
     /// overprints is legible on hover and in the note list, one that vanishes is not.
     pub crowded: usize,
-    /// The unassigned row's y, when any drawn event names no entity.
-    pub unassigned_y: Option<f32>,
+    /// The ribbon: bars, containment bands, labels. Empty when the ribbon is off.
+    pub bars: Vec<Bar>,
+    pub bands: Vec<Band>,
+    pub labels: Vec<BarLabel>,
+    /// Bars whose label had nowhere to go. Counted aloud rather than hidden.
+    pub dropped_labels: usize,
+    /// The ribbon zone's top and bottom, when it is on — the "take it out" drop target.
+    pub ribbon_y: Option<(f32, f32)>,
+    /// Whether the lanes zone is drawn. The lanes are laid out regardless — they are
+    /// also the follow chips.
+    pub lanes_on: bool,
+    /// Drawn events that name no entity. Only the ribbon has somewhere to put them.
+    pub no_one: usize,
     pub held: Vec<Held>,
     /// Nothing matched is dated: the axis is a placeholder, there to drop onto.
     pub undated: bool,
@@ -262,6 +373,11 @@ pub struct Input<'a> {
     pub calendar: &'a Calendar,
     pub order: LaneOrder,
     pub selected: Option<&'a str>,
+    /// The book's span rule.
+    pub rule: SpanRule,
+    /// Which zones are on. At least one always is: both off reads as both on.
+    pub ribbon: bool,
+    pub lanes: bool,
 }
 
 // ── Time extents ─────────────────────────────────────────────────────────────
@@ -493,6 +609,63 @@ struct Placed<'a> {
     who: Vec<String>,
 }
 
+/// The ribbon's view of the book: every event under the book's rule, before the filter.
+///
+/// Which notes are events here: every non-entity note with a span, and every non-entity
+/// note that contains one through `event_parent` (a parent with no dates of its own is
+/// fitted from its children). A dated entity is a lifespan on its lane, not a bar, and
+/// an `event_parent` pointing at an entity — or at nothing — is not drawn as nesting.
+pub struct Ribbon {
+    pub drawn: BTreeMap<String, ribbon::Drawn>,
+    /// Cycle-free, and naming only events.
+    pub parent: HashMap<String, String>,
+}
+
+pub fn ribbon_of(notes: &[Note], calendar: &Calendar, rule: SpanRule) -> Ribbon {
+    let by_id: HashMap<&str, &Note> = notes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let eligible = |id: &str| by_id.get(id).is_some_and(|n| !n.is_entity);
+    let raw: HashMap<String, String> = notes
+        .iter()
+        .filter(|n| !n.is_entity)
+        .filter_map(|n| {
+            let p = n.event_parent.as_ref()?;
+            eligible(p).then(|| (n.id.clone(), p.clone()))
+        })
+        .collect();
+    let parent = ribbon::break_cycles(&raw);
+
+    // The dated events, then every ancestor of one.
+    let mut nodes: BTreeMap<String, ribbon::Node> = BTreeMap::new();
+    for n in notes.iter().filter(|n| !n.is_entity) {
+        if let Some(span) = &n.span {
+            nodes.insert(
+                n.id.clone(),
+                ribbon::Node {
+                    typed: Some(extent(calendar, span)),
+                    pinned: n.pinned,
+                },
+            );
+        }
+    }
+    let dated: Vec<String> = nodes.keys().cloned().collect();
+    for id in dated {
+        let mut cur = id;
+        // `parent` is a forest now, so this ends; the bound is belt and braces.
+        for _ in 0..notes.len() {
+            let Some(p) = parent.get(&cur) else { break };
+            if !nodes.contains_key(p) {
+                let pinned = by_id.get(p.as_str()).is_some_and(|n| n.pinned);
+                nodes.insert(p.clone(), ribbon::Node { typed: None, pinned });
+            }
+            cur = p.clone();
+        }
+    }
+    let parent: HashMap<String, String> =
+        parent.into_iter().filter(|(c, _)| nodes.contains_key(c)).collect();
+    let drawn = ribbon::resolve(&nodes, &parent, rule);
+    Ribbon { drawn, parent }
+}
+
 pub fn layout(input: &Input) -> Layout {
     let Input {
         notes,
@@ -500,26 +673,60 @@ pub fn layout(input: &Input) -> Layout {
         calendar,
         order,
         selected,
+        rule,
+        ribbon: ribbon_on,
+        lanes: lanes_on,
     } = *input;
+    // Both zones off is not a state the drawing has: it reads as both on.
+    let (ribbon_on, lanes_on) = if ribbon_on || lanes_on { (ribbon_on, lanes_on) } else { (true, true) };
     let matches = |n: &Note| filter.matches(n);
     let entities: HashSet<&str> = notes
         .iter()
         .filter(|n| n.is_entity)
         .map(|n| n.id.as_str())
         .collect();
+    let by_id: HashMap<&str, &Note> = notes.iter().map(|n| (n.id.as_str(), n)).collect();
 
-    // Dated, matching events. A dated *entity* is a lifespan on its own lane, not a tie:
-    // "Vess, 1181 – 1211" is where her lane is live, not a moment she shares.
+    // The book's events under its span rule. Computed over every note, not the filtered
+    // ones: how long the siege is drawn is a fact about the book, and a filter that
+    // hides a scene must not shrink the siege around what is left.
+    let rib = ribbon_of(notes, calendar, rule);
+
+    // Dated, matching events — the ties. A dated *entity* is a lifespan on its own lane,
+    // not a tie: "Vess, 1181 – 1211" is where her lane is live, not a moment she shares.
+    // Each is drawn where the ribbon draws it, so a tie sits under its own bar.
     let mut events: Vec<Placed> = Vec::new();
     for n in notes.iter().filter(|n| !n.is_entity && matches(n)) {
-        let Some(span) = &n.span else { continue };
-        let (start, end) = extent(calendar, span);
+        if n.span.is_none() {
+            continue;
+        }
+        let Some(d) = rib.drawn.get(&n.id) else { continue };
         events.push(Placed {
             note: n,
-            start,
-            end,
+            start: d.start,
+            end: d.end,
             who: participants(n, &entities),
         });
+    }
+    let no_one = events.iter().filter(|e| e.who.is_empty()).count();
+
+    // The ribbon's bars: matching events (dated, or fitted from what they contain), and
+    // — muted — every ancestor of one, the tree's rule for the path to a match.
+    let mut shown: BTreeMap<String, bool> = BTreeMap::new(); // id -> muted
+    if ribbon_on {
+        for id in rib.drawn.keys() {
+            let Some(n) = by_id.get(id.as_str()) else { continue };
+            if !matches(n) {
+                continue;
+            }
+            shown.insert(id.clone(), false);
+            let mut cur = id.clone();
+            for _ in 0..notes.len() {
+                let Some(p) = rib.parent.get(&cur) else { break };
+                shown.entry(p.clone()).or_insert(true);
+                cur = p.clone();
+            }
+        }
     }
 
     // Lanes: every matching entity, plus — muted — anyone a drawn event names.
@@ -531,7 +738,6 @@ pub fn layout(input: &Input) -> Layout {
             lane_ids.push((n.id.clone(), n.title.clone()));
         }
     }
-    let by_id: HashMap<&str, &Note> = notes.iter().map(|n| (n.id.as_str(), n)).collect();
     for ev in &events {
         for id in &ev.who {
             if seen.insert(id.clone()) {
@@ -543,16 +749,20 @@ pub fn layout(input: &Input) -> Layout {
     }
 
     // Lifespans of the entities that have lanes.
-    let lives_src: Vec<(&Note, i64, Option<i64>)> = lane_ids
-        .iter()
-        .filter_map(|(id, _)| by_id.get(id.as_str()))
-        .filter_map(|n| {
-            n.span.as_ref().map(|s| {
-                let (a, b) = extent(calendar, s);
-                (*n, a, b)
+    let lives_src: Vec<(&Note, i64, Option<i64>)> = if lanes_on {
+        lane_ids
+            .iter()
+            .filter_map(|(id, _)| by_id.get(id.as_str()))
+            .filter_map(|n| {
+                n.span.as_ref().map(|s| {
+                    let (a, b) = extent(calendar, s);
+                    (*n, a, b)
+                })
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // The visible span: everything drawn, padded a little each side.
     let mut lo = i64::MAX;
@@ -561,6 +771,7 @@ pub fn layout(input: &Input) -> Layout {
         .iter()
         .map(|e| (e.start, e.end))
         .chain(lives_src.iter().map(|(_, a, b)| (*a, *b)))
+        .chain(shown.keys().filter_map(|id| rib.drawn.get(id)).map(|d| (d.start, d.end)))
     {
         lo = lo.min(start);
         hi = hi.max(end.unwrap_or(start + 1));
@@ -597,7 +808,184 @@ pub fn layout(input: &Input) -> Layout {
         (x0, x1)
     };
 
-    // Captions first: how many tiers they need decides where the lanes start.
+    // ── Zone 1: the ribbon ──
+    let lit = |id: &str, who: &[String]| selected.is_some_and(|s| s == id || who.iter().any(|w| w == s));
+    let mut bars: Vec<Bar> = Vec::new();
+    let mut bands: Vec<Band> = Vec::new();
+    let mut labels: Vec<BarLabel> = Vec::new();
+    let mut dropped_labels = 0;
+    let mut ribbon_rows = 0usize;
+    if ribbon_on && !shown.is_empty() {
+        // Each shown event's own x extent. A bar cut off at its parent's end keeps the
+        // minimum width by growing leftward, so it never pokes past the edge it was cut
+        // at.
+        let bar_x: HashMap<&str, (f32, f32)> = shown
+            .keys()
+            .filter_map(|id| {
+                let d = rib.drawn.get(id)?;
+                let (mut x0, x1) = band(d.start, d.end);
+                if d.clipped_end && x1 - x0 <= MIN_BAND {
+                    let edge = d.end.map(x).unwrap_or(plot_x1());
+                    x0 = edge - MIN_BAND;
+                    return Some((id.as_str(), (x0, edge)));
+                }
+                Some((id.as_str(), (x0, x1)))
+            })
+            .collect();
+        let title = |id: &str| by_id.get(id).map(|n| n.title.as_str()).unwrap_or("");
+        let mut kids: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut roots: Vec<&str> = Vec::new();
+        for id in shown.keys() {
+            match rib.parent.get(id) {
+                Some(p) if shown.contains_key(p) => kids.entry(p.as_str()).or_default().push(id),
+                _ => roots.push(id),
+            }
+        }
+        let by_x = |a: &&str, b: &&str| {
+            bar_x[a].0
+                .total_cmp(&bar_x[b].0)
+                .then_with(|| title(a).cmp(title(b)))
+                .then_with(|| a.cmp(b))
+        };
+
+        // Blocks, bottom-up: a block is a bar with its children packed into sub-rows
+        // beneath it. Iterative post-order, so a deep chain cannot overflow the stack.
+        struct Block<'a> {
+            x0: f32,
+            x1: f32,
+            height: usize,
+            /// Children and the row each starts at, relative to this block's own row.
+            kids: Vec<(&'a str, usize)>,
+        }
+        let mut blocks: HashMap<&str, Block> = HashMap::new();
+        let mut stack: Vec<(&str, bool)> = roots.iter().map(|r| (*r, false)).collect();
+        while let Some((id, expanded)) = stack.pop() {
+            let mine: Vec<&str> = kids.get(id).cloned().unwrap_or_default();
+            if !expanded {
+                stack.push((id, true));
+                for k in &mine {
+                    stack.push((k, false));
+                }
+                continue;
+            }
+            let mut mine = mine;
+            mine.sort_by(|a, b| {
+                blocks[a].x0.total_cmp(&blocks[b].x0).then_with(|| by_x(a, b))
+            });
+            let items: Vec<(f32, f32, usize)> =
+                mine.iter().map(|k| (blocks[k].x0, blocks[k].x1, blocks[k].height)).collect();
+            let rows = ribbon::pack_rows(&items, PACK_GAP);
+            let (mut x0, mut x1) = bar_x[id];
+            let mut height = 1;
+            for (k, r) in mine.iter().zip(&rows) {
+                let b = &blocks[k];
+                x0 = x0.min(b.x0);
+                x1 = x1.max(b.x1);
+                height = height.max(1 + r + b.height);
+            }
+            let placed = mine.iter().zip(rows).map(|(k, r)| (*k, 1 + r)).collect();
+            blocks.insert(id, Block { x0, x1, height, kids: placed });
+        }
+        roots.sort_by(|a, b| blocks[a].x0.total_cmp(&blocks[b].x0).then_with(|| by_x(a, b)));
+        let items: Vec<(f32, f32, usize)> =
+            roots.iter().map(|r| (blocks[r].x0, blocks[r].x1, blocks[r].height)).collect();
+        let root_rows = ribbon::pack_rows(&items, PACK_GAP);
+
+        // Top-down: absolute rows.
+        let row_y = |r: usize| RIBBON_TOP + r as f32 * ROW_PITCH;
+        let mut place: Vec<(&str, usize, usize)> =
+            roots.iter().zip(root_rows).map(|(r, row)| (*r, row, 0)).collect();
+        while let Some((id, row, depth)) = place.pop() {
+            let b = &blocks[id];
+            ribbon_rows = ribbon_rows.max(row + b.height);
+            for (k, off) in &b.kids {
+                place.push((k, row + off, depth + 1));
+            }
+            let (x0, x1) = bar_x[id];
+            if !b.kids.is_empty() {
+                bands.push(Band {
+                    id: id.to_string(),
+                    x0: x0 - 3.0,
+                    x1: x1 + 3.0,
+                    y0: row_y(row) - 3.0,
+                    y1: row_y(row) + b.height as f32 * ROW_PITCH - (ROW_PITCH - ROW_H) + 3.0,
+                    depth,
+                });
+            }
+            let n = by_id[id];
+            let d = &rib.drawn[id];
+            let who = participants(n, &entities);
+            bars.push(Bar {
+                id: id.to_string(),
+                title: n.title.clone(),
+                x0,
+                x1,
+                y: row_y(row),
+                row,
+                depth,
+                muted: shown[id],
+                fuzzy: n.span.as_ref().is_some_and(|s| s.approximate),
+                open: d.end.is_none(),
+                fitted: d.fitted,
+                derived: d.derived,
+                pinned: n.pinned && !d.derived,
+                clipped_start: d.clipped_start,
+                clipped_end: d.clipped_end,
+                escapes_start: d.escapes_start,
+                escapes_end: d.escapes_end,
+                on: lit(id, &who),
+                who,
+            });
+        }
+        bars.sort_by(|a, b| a.row.cmp(&b.row).then(a.x0.total_cmp(&b.x0)).then_with(|| a.id.cmp(&b.id)));
+        bands.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.y0.total_cmp(&b.y0)).then_with(|| a.id.cmp(&b.id)));
+
+        // Labels, a row at a time.
+        let mut i = 0;
+        while i < bars.len() {
+            let row = bars[i].row;
+            let j = bars[i..].iter().position(|b| b.row != row).map_or(bars.len(), |k| i + k);
+            let on_row: Vec<(f32, f32, &str)> =
+                bars[i..j].iter().map(|b| (b.x0, b.x1, b.title.as_str())).collect();
+            let spots = ribbon::place_labels(&on_row, plot_x0(), plot_x1(), |t, room| fit(t, room, CAP_CH));
+            for (b, spot) in bars[i..j].iter().zip(spots) {
+                let y = b.y + ROW_H / 2.0 + 4.0;
+                let (x, end, inside, text) = match spot {
+                    LabelSpot::Inside { x, text } => (x, false, true, text),
+                    LabelSpot::Beside { x, end, text } => (x, end, false, text),
+                    LabelSpot::Dropped => {
+                        dropped_labels += 1;
+                        continue;
+                    }
+                };
+                labels.push(BarLabel {
+                    id: b.id.clone(),
+                    text,
+                    x,
+                    y,
+                    end,
+                    inside,
+                    muted: b.muted,
+                    who: b.who.clone(),
+                });
+            }
+            i = j;
+        }
+    }
+    let ribbon_y = (ribbon_on).then(|| {
+        (
+            RIBBON_TOP - 8.0,
+            RIBBON_TOP + ribbon_rows.max(1) as f32 * ROW_PITCH + 2.0,
+        )
+    });
+
+    // ── Zone 2: the lanes ──
+
+    // A book with no entities has no lanes to draw: under the ribbon that is an empty
+    // zone, so it folds away. (Alone, the lanes zone still shows its empty axis.)
+    let lanes_on = lanes_on && (!lane_ids.is_empty() || !ribbon_on);
+
+    // Captions only without the ribbon: with it, every event's name is on its bar.
     let mut order_x: Vec<usize> = (0..events.len()).collect();
     order_x.sort_by(|&a, &b| {
         events[a]
@@ -606,8 +994,13 @@ pub fn layout(input: &Input) -> Layout {
             .then_with(|| events[a].note.title.cmp(&events[b].note.title))
             .then_with(|| events[a].note.id.cmp(&events[b].note.id))
     });
+    let captioned: Vec<usize> = if ribbon_on {
+        Vec::new()
+    } else {
+        order_x.iter().copied().filter(|&i| !events[i].who.is_empty()).collect()
+    };
     let mut cap_text: Vec<(usize, String, f32)> = Vec::new();
-    for &i in &order_x {
+    for &i in &captioned {
         let (x0, _) = band(events[i].start, events[i].end);
         let text = fit(&events[i].note.title, plot_x1() - plot_x0(), CAP_CH);
         let width = text.chars().count() as f32 * CAP_CH;
@@ -623,13 +1016,10 @@ pub fn layout(input: &Input) -> Layout {
     let n_tiers = tiers.iter().max().map(|t| t + 1).unwrap_or(0);
 
     let cap_top = AXIS_Y + 8.0;
-    let mut rows_top = cap_top + n_tiers as f32 * TIER_H + 8.0;
-    let any_unassigned = events.iter().any(|e| e.who.is_empty());
-    let unassigned_y = any_unassigned.then(|| {
-        let y = rows_top + 10.0;
-        rows_top += UNASSIGNED_H;
-        y
-    });
+    let rows_top = match ribbon_y {
+        Some((_, bottom)) => bottom + ZONE_GAP - 8.0,
+        None => cap_top + n_tiers as f32 * TIER_H + 8.0,
+    };
 
     let lane_y: HashMap<String, f32> = lane_ids
         .iter()
@@ -647,7 +1037,11 @@ pub fn layout(input: &Input) -> Layout {
             on: selected == Some(id.as_str()),
         })
         .collect();
-    let height = rows_top + 14.0 + (lanes.len().max(1) as f32 - 1.0) * LANE_H + 20.0;
+    let height = if lanes_on {
+        rows_top + 14.0 + (lanes.len().max(1) as f32 - 1.0) * LANE_H + 20.0
+    } else {
+        ribbon_y.map_or(RIBBON_TOP, |(_, b)| b) + 12.0
+    };
 
     let lives: Vec<Life> = lives_src
         .iter()
@@ -665,74 +1059,81 @@ pub fn layout(input: &Input) -> Layout {
         })
         .collect();
 
+    // Ties: an event with people in it, while the lanes are on. With the ribbon on it
+    // rises from the bottom of the event's own bar.
+    let bar_at: HashMap<&str, &Bar> = bars.iter().map(|b| (b.id.as_str(), b)).collect();
     let mut marks: Vec<Mark> = Vec::new();
-    let mut captions: Vec<Caption> = Vec::new();
-    for (k, (i, text, tx)) in cap_text.into_iter().enumerate() {
-        let ev = &events[i];
-        let (x0, x1) = band(ev.start, ev.end);
-        let on = selected.is_some_and(|s| s == ev.note.id || ev.who.iter().any(|w| w == s));
-        let (y0, y1, dots) = match unassigned_y {
-            Some(uy) if ev.who.is_empty() => (
-                uy,
-                uy,
-                vec![Dot {
-                    lane: String::new(),
-                    y: uy,
-                    on: false,
-                }],
-            ),
-            _ => {
-                let ys: Vec<f32> = ev.who.iter().map(|w| lane_y[w]).collect();
-                let y0 = ys.iter().copied().fold(f32::MAX, f32::min);
-                let y1 = ys.iter().copied().fold(f32::MIN, f32::max);
-                let dots = ev
-                    .who
-                    .iter()
-                    .map(|w| Dot {
-                        lane: w.clone(),
-                        y: lane_y[w],
-                        on: selected == Some(w.as_str()),
-                    })
-                    .collect();
-                (y0, y1, dots)
+    if lanes_on {
+        for &i in &order_x {
+            let ev = &events[i];
+            if ev.who.is_empty() {
+                continue;
             }
-        };
-        let span = ev.note.span.as_ref();
-        marks.push(Mark {
-            id: ev.note.id.clone(),
-            title: ev.note.title.clone(),
-            x0,
-            x1,
-            cx: (x0 + x1) / 2.0,
-            y0,
-            y1,
-            fuzzy: span.is_some_and(|s| s.approximate),
-            open: ev.end.is_none(),
-            on,
-            dots,
-            unassigned: ev.who.is_empty(),
-        });
-        let tier = tiers[k];
-        let y = cap_top + (n_tiers - 1 - tier) as f32 * TIER_H + 10.0;
-        captions.push(Caption {
-            id: ev.note.id.clone(),
-            text,
-            x: tx,
-            y,
-            tier,
-            leader_x: x0 + 1.0,
-            leader_y0: y + 3.0,
-            leader_y1: y0 - 10.0,
-            on,
-        });
+            let (x0, x1) = match bar_at.get(ev.note.id.as_str()) {
+                Some(b) => (b.x0, b.x1),
+                None => band(ev.start, ev.end),
+            };
+            let ys: Vec<f32> = ev.who.iter().map(|w| lane_y[w]).collect();
+            let lane_y0 = ys.iter().copied().fold(f32::MAX, f32::min);
+            let y1 = ys.iter().copied().fold(f32::MIN, f32::max);
+            let y0 = bar_at.get(ev.note.id.as_str()).map_or(lane_y0, |b| b.y + ROW_H);
+            let dots = ev
+                .who
+                .iter()
+                .map(|w| Dot {
+                    lane: w.clone(),
+                    y: lane_y[w],
+                    on: selected == Some(w.as_str()),
+                })
+                .collect();
+            let span = ev.note.span.as_ref();
+            marks.push(Mark {
+                id: ev.note.id.clone(),
+                title: ev.note.title.clone(),
+                x0,
+                x1,
+                cx: (x0 + x1) / 2.0,
+                y0,
+                y1,
+                lane_y0,
+                fuzzy: span.is_some_and(|s| s.approximate),
+                open: ev.end.is_none(),
+                on: lit(&ev.note.id, &ev.who),
+                dots,
+            });
+        }
+    }
+
+    let mut captions: Vec<Caption> = Vec::new();
+    if lanes_on {
+        for (k, (i, text, tx)) in cap_text.into_iter().enumerate() {
+            let ev = &events[i];
+            let (x0, _) = band(ev.start, ev.end);
+            let top = ev.who.iter().map(|w| lane_y[w]).fold(f32::MAX, f32::min);
+            let tier = tiers[k];
+            let y = cap_top + (n_tiers - 1 - tier) as f32 * TIER_H + 10.0;
+            captions.push(Caption {
+                id: ev.note.id.clone(),
+                text,
+                x: tx,
+                y,
+                tier,
+                leader_x: x0 + 1.0,
+                leader_y0: y + 3.0,
+                leader_y1: top - 10.0,
+                on: lit(&ev.note.id, &ev.who),
+            });
+        }
     }
 
     // The holding rail: notes that happen but are not on the line yet — placed only
     // against another note, or naming people with `$` and no date. Plain undated lore
-    // stays out, or a lore-heavy book would bury the rail.
+    // stays out, or a lore-heavy book would bury the rail; so does a note the ribbon
+    // already draws, fitted from the events inside it.
     let mut held: Vec<Held> = notes
         .iter()
         .filter(|n| n.span.is_none() && !n.is_entity && matches(n))
+        .filter(|n| !rib.drawn.contains_key(&n.id))
         .filter(|n| n.relative.is_some() || !participants(n, &entities).is_empty())
         .map(|n| {
             let why = super::time_entry::format_entry(None, n.relative.as_ref(), calendar, notes);
@@ -757,7 +1158,13 @@ pub fn layout(input: &Input) -> Layout {
         marks,
         captions,
         crowded,
-        unassigned_y,
+        bars,
+        bands,
+        labels,
+        dropped_labels,
+        ribbon_y,
+        lanes_on,
+        no_one,
         held,
         undated,
     }
@@ -790,6 +1197,7 @@ mod tests {
             relative: None,
             is_entity: false,
             event_parent: None,
+            pinned: false,
             links: NoteLinks::default(),
         }
     }
@@ -823,6 +1231,7 @@ mod tests {
         }
     }
 
+    /// Card 5's view: the lanes alone, ribbon off.
     fn run(notes: &[Note], filter: &Filter, order: LaneOrder, selected: Option<&str>) -> Layout {
         let cal = Calendar::default();
         layout(&Input {
@@ -831,6 +1240,35 @@ mod tests {
             calendar: &cal,
             order,
             selected,
+            rule: SpanRule::Fit,
+            ribbon: false,
+            lanes: true,
+        })
+    }
+
+    /// Both zones, under `rule`.
+    fn both(notes: &[Note], rule: SpanRule, selected: Option<&str>) -> Layout {
+        zones(notes, &Filter::default(), rule, selected, true, true)
+    }
+
+    fn zones(
+        notes: &[Note],
+        filter: &Filter,
+        rule: SpanRule,
+        selected: Option<&str>,
+        ribbon: bool,
+        lanes: bool,
+    ) -> Layout {
+        let cal = Calendar::default();
+        layout(&Input {
+            notes,
+            filter,
+            calendar: &cal,
+            order: LaneOrder::FirstAppearance,
+            selected,
+            rule,
+            ribbon,
+            lanes,
         })
     }
 
@@ -980,9 +1418,10 @@ mod tests {
         assert_eq!(lane_ids(&l), vec!["Maera", "Vess", "Corin"]);
         assert_eq!(l.lives.len(), 1);
         assert_eq!(l.lives[0].y, l.lanes[0].y);
-        // A dated entity is not a tie, and not an unassigned event either.
+        // A dated entity is not a tie, and not a ribbon event either.
         assert!(l.marks.iter().all(|m| m.id != "Maera"));
-        assert_eq!(l.unassigned_y, None);
+        let l = both(&notes, SpanRule::Fit, None);
+        assert!(l.bars.iter().all(|b| b.id != "Maera"));
     }
 
     #[test]
@@ -1077,34 +1516,28 @@ mod tests {
         assert!(l.lanes.iter().all(|x| x.muted));
     }
 
-    // ── The unassigned row ──
+    // ── Events that name no one ──
 
     #[test]
-    fn an_event_naming_nobody_goes_in_the_unassigned_row_rather_than_vanishing() {
+    fn an_event_naming_nobody_lives_in_the_ribbon_and_is_counted_without_it() {
         let mut notes = cast();
         notes.push(event("comet", 1205, &[]));
         // A $ref to something that is not an entity is still nobody.
         notes.push(note("rumour"));
         notes.push(event("fire", 1206, &["rumour"]));
+        // Card 5's "no one" row is gone: with the ribbon on, the comet is a bar with no
+        // tie, and no lane was made up for it.
+        let l = both(&notes, SpanRule::Fit, None);
+        assert!(l.bars.iter().any(|b| b.id == "comet"));
+        assert!(l.bars.iter().any(|b| b.id == "fire"));
+        assert!(l.marks.iter().all(|m| m.id != "comet" && m.id != "fire"));
+        assert_eq!(l.no_one, 2);
+        // With the ribbon off it has nowhere to be drawn, and the count says so.
         let l = run(&notes, &Filter::default(), LaneOrder::FirstAppearance, None);
-        let uy = l.unassigned_y.expect("an unassigned row");
-        let mut un: Vec<&str> = l.marks.iter().filter(|m| m.unassigned).map(|m| m.id.as_str()).collect();
-        un.sort();
-        assert_eq!(un, vec!["comet", "fire"]);
-        for m in l.marks.iter().filter(|m| m.unassigned) {
-            assert_eq!((m.y0, m.y1), (uy, uy));
-        }
-        // It sits above every lane — where card 6's ribbon will go.
-        assert!(l.lanes.iter().all(|x| x.y > uy));
-        // Its captions are placed like any other.
-        assert!(l.captions.iter().any(|c| c.id == "comet"));
-    }
-
-    #[test]
-    fn no_unassigned_row_when_every_event_names_someone() {
-        let l = run(&cast(), &Filter::default(), LaneOrder::FirstAppearance, None);
-        assert_eq!(l.unassigned_y, None);
-        assert!(l.marks.iter().all(|m| !m.unassigned));
+        assert!(l.marks.iter().all(|m| m.id != "comet"));
+        assert!(l.captions.iter().all(|c| c.id != "comet"));
+        assert_eq!(l.no_one, 2);
+        assert_eq!(lane_ids(&l).len(), 3);
     }
 
     // ── Captions ──
@@ -1216,5 +1649,242 @@ mod tests {
         let l = run(&notes, &Filter::default(), LaneOrder::FirstAppearance, None);
         let siege = l.marks.iter().find(|m| m.id == "siege").unwrap();
         assert!(siege.dots.iter().all(|d| d.lane != "Maera"));
+    }
+
+    // ── The ribbon (card 6) ──
+
+    fn spanned(id: &str, from: i64, to: i64, who: &[&str]) -> Note {
+        Note {
+            span: Some(TimeSpan {
+                start: TimePoint::base_unit(from),
+                end: Some(TimePoint::base_unit(to)),
+                approximate: false,
+                open_ended: false,
+            }),
+            links: refs(who),
+            ..note(id)
+        }
+    }
+
+    fn inside(mut n: Note, parent: &str) -> Note {
+        n.event_parent = Some(parent.to_string());
+        n
+    }
+
+    /// The siege (1206–1207) holds the breach (1207–1209), which runs past it, and the
+    /// parley (1206) overlaps the siege without being in it.
+    fn siege_book() -> Vec<Note> {
+        vec![
+            entity("Vess"),
+            entity("Corin"),
+            spanned("siege", 1206, 1207, &["Corin", "Vess"]),
+            inside(spanned("breach", 1207, 1209, &["Corin"]), "siege"),
+            event("parley", 1206, &["Vess"]),
+        ]
+    }
+
+    fn bar<'a>(l: &'a Layout, id: &str) -> &'a Bar {
+        l.bars.iter().find(|b| b.id == id).unwrap_or_else(|| panic!("no bar {id}"))
+    }
+
+    fn band_of<'a>(l: &'a Layout, id: &str) -> &'a Band {
+        l.bands.iter().find(|b| b.id == id).unwrap_or_else(|| panic!("no band {id}"))
+    }
+
+    #[test]
+    fn fit_the_siege_visibly_contains_the_breach() {
+        let l = both(&siege_book(), SpanRule::Fit, None);
+        let (siege, breach) = (bar(&l, "siege"), bar(&l, "breach"));
+        assert_eq!(breach.depth, 1);
+        assert!(breach.row > siege.row, "a sub-row beneath its parent");
+        assert!(siege.fitted);
+        assert!(siege.x0 <= breach.x0 && siege.x1 >= breach.x1, "the parent spans the child");
+        let band = band_of(&l, "siege");
+        assert!(band.x0 <= breach.x0 && band.x1 >= breach.x1);
+        assert!(band.y0 <= siege.y && band.y1 >= breach.y + ROW_H);
+        assert!(!breach.escapes_end && !breach.clipped_end);
+    }
+
+    #[test]
+    fn clamp_cuts_the_breach_at_the_sieges_edge() {
+        let l = both(&siege_book(), SpanRule::Clamp, None);
+        let (siege, breach) = (bar(&l, "siege"), bar(&l, "breach"));
+        assert!(!siege.fitted);
+        assert!(breach.clipped_end);
+        assert!((breach.x1 - siege.x1).abs() < 0.01, "cut exactly at the parent's edge");
+        assert!(breach.note().contains("cut off"));
+        // The breach's tie sits under the bar as drawn.
+        let m = l.marks.iter().find(|m| m.id == "breach").unwrap();
+        assert!((m.cx - (breach.x0 + breach.x1) / 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn free_lets_the_breach_poke_out_of_the_band_and_flags_it() {
+        let l = both(&siege_book(), SpanRule::Free, None);
+        let (siege, breach) = (bar(&l, "siege"), bar(&l, "breach"));
+        assert!(!siege.fitted);
+        assert!(breach.escapes_end && !breach.clipped_end);
+        assert!(breach.x1 > band_of(&l, "siege").x1, "it pokes out past the band");
+        assert!(breach.note().contains("runs outside"));
+    }
+
+    #[test]
+    fn overlap_is_never_nesting() {
+        // The parley coincides with the siege and is not in it.
+        let l = both(&siege_book(), SpanRule::Fit, None);
+        let parley = bar(&l, "parley");
+        assert_eq!(parley.depth, 0);
+        assert!(l.bands.iter().all(|b| b.id != "parley"));
+        assert_ne!(parley.row, bar(&l, "siege").row, "it overlaps, so it packs into another row");
+    }
+
+    #[test]
+    fn a_tie_rises_from_the_lanes_into_its_bar() {
+        let l = both(&siege_book(), SpanRule::Fit, None);
+        let siege = bar(&l, "siege");
+        let m = l.marks.iter().find(|m| m.id == "siege").unwrap();
+        assert_eq!(m.y0, siege.y + ROW_H, "the tie starts at the bottom of the bar");
+        assert!(m.y1 >= m.lane_y0 && m.lane_y0 > m.y0);
+        assert!(l.lanes.iter().all(|x| x.y > l.ribbon_y.unwrap().1), "lanes sit below the ribbon");
+        // Captions belong to the lanes-only view: with the ribbon, names are on bars.
+        assert!(l.captions.is_empty());
+        // Without the ribbon the tie runs from the top lane, as in card 5.
+        let l = run(&siege_book(), &Filter::default(), LaneOrder::FirstAppearance, None);
+        let m = l.marks.iter().find(|m| m.id == "siege").unwrap();
+        assert_eq!(m.y0, m.lane_y0);
+        assert!(l.bars.is_empty() && l.ribbon_y.is_none());
+    }
+
+    #[test]
+    fn either_zone_collapses_and_both_off_reads_as_both_on() {
+        let notes = siege_book();
+        let f = Filter::default();
+        let ribbon_only = zones(&notes, &f, SpanRule::Fit, None, true, false);
+        assert!(!ribbon_only.lanes_on);
+        assert!(ribbon_only.marks.is_empty() && ribbon_only.captions.is_empty());
+        assert_eq!(ribbon_only.bars.len(), 3);
+        // The lanes are still laid out: they are the follow chips.
+        assert_eq!(ribbon_only.lanes.len(), 2);
+        let full = both(&notes, SpanRule::Fit, None);
+        assert!(ribbon_only.height < full.height);
+
+        let neither = zones(&notes, &f, SpanRule::Fit, None, false, false);
+        assert_eq!(neither, full);
+    }
+
+    #[test]
+    fn the_filter_keeps_an_ancestor_muted_and_does_not_shrink_its_fit() {
+        let mut notes = siege_book();
+        let full = both(&notes, SpanRule::Fit, None);
+        // Only the breach matches.
+        notes[3].links.tags = vec!["breach".into()];
+        let filter = Filter::default().cycled(&Term::Tag("breach".into()));
+        let l = zones(&notes, &filter, SpanRule::Fit, None, true, true);
+        let ids: Vec<&str> = l.bars.iter().map(|b| b.id.as_str()).collect();
+        assert!(ids.contains(&"breach") && ids.contains(&"siege"), "{ids:?}");
+        assert!(!ids.contains(&"parley"));
+        assert!(bar(&l, "siege").muted && !bar(&l, "breach").muted);
+        // Still fitted over the breach, whatever else the filter hides.
+        let (a, b) = (bar(&l, "siege"), bar(&full, "siege"));
+        assert!(a.fitted && b.fitted);
+        // A muted parent draws no tie and makes no lane of its own.
+        assert!(l.marks.iter().all(|m| m.id != "siege"));
+    }
+
+    #[test]
+    fn selection_lights_bars_in_the_ribbon_as_well_as_the_lanes() {
+        let l = both(&siege_book(), SpanRule::Fit, Some("Corin"));
+        let mut on: Vec<&str> = l.bars.iter().filter(|b| b.on).map(|b| b.id.as_str()).collect();
+        on.sort();
+        assert_eq!(on, vec!["breach", "siege"]);
+        let l = both(&siege_book(), SpanRule::Fit, Some("parley"));
+        assert!(bar(&l, "parley").on && !bar(&l, "siege").on);
+    }
+
+    #[test]
+    fn a_dateless_parent_is_drawn_from_its_children_and_leaves_the_rail() {
+        let mut notes = siege_book();
+        // "Act two" is lore, with no date, placed after the parley — a rail candidate
+        // until it contains something dated.
+        notes.push(Note {
+            relative: Some(RelativeTime { relation: TimeRelation::After, note_id: "parley".into() }),
+            ..note("act two")
+        });
+        let l = both(&notes, SpanRule::Clamp, None);
+        assert!(l.held.iter().any(|h| h.id == "act two"));
+        assert!(l.bars.iter().all(|b| b.id != "act two"));
+
+        notes[2].event_parent = Some("act two".into());
+        for rule in [SpanRule::Fit, SpanRule::Clamp, SpanRule::Free] {
+            let l = both(&notes, rule, None);
+            let act = bar(&l, "act two");
+            assert!(act.derived, "{rule:?}");
+            let siege = bar(&l, "siege");
+            assert!(act.x0 <= siege.x0 + 0.01 && act.x1 + 0.01 >= siege.x1, "{rule:?}");
+            assert_eq!((siege.depth, bar(&l, "breach").depth), (1, 2), "{rule:?}");
+            assert!(l.held.iter().all(|h| h.id != "act two"), "{rule:?}");
+        }
+    }
+
+    #[test]
+    fn deep_nesting_stacks_bands_inside_bands() {
+        let notes = vec![
+            spanned("war", 1200, 1220, &[]),
+            inside(spanned("siege", 1206, 1208, &[]), "war"),
+            inside(spanned("breach", 1207, 1207, &[]), "siege"),
+            inside(event("gate", 1207, &[]), "breach"),
+        ];
+        let l = both(&notes, SpanRule::Fit, None);
+        let depths: Vec<usize> = ["war", "siege", "breach", "gate"].iter().map(|id| bar(&l, id).depth).collect();
+        assert_eq!(depths, vec![0, 1, 2, 3]);
+        let rows: Vec<usize> = ["war", "siege", "breach", "gate"].iter().map(|id| bar(&l, id).row).collect();
+        assert!(rows.windows(2).all(|w| w[0] < w[1]), "{rows:?}");
+        let (war, siege, breach) = (band_of(&l, "war"), band_of(&l, "siege"), band_of(&l, "breach"));
+        assert!(war.y0 < siege.y0 && siege.y0 < breach.y0);
+        assert!(war.y1 >= siege.y1 && siege.y1 >= breach.y1);
+    }
+
+    #[test]
+    fn a_corrupt_nesting_loop_still_draws() {
+        let notes = vec![
+            inside(event("a", 1206, &[]), "b"),
+            inside(event("b", 1207, &[]), "a"),
+            inside(event("c", 1208, &[]), "c"),
+        ];
+        let l = both(&notes, SpanRule::Fit, None);
+        assert_eq!(l.bars.len(), 3);
+        assert!(l.bars.iter().all(|b| b.depth == 0));
+        assert!(l.bands.is_empty());
+    }
+
+    #[test]
+    fn nesting_under_an_entity_or_a_missing_note_is_not_drawn_as_nesting() {
+        let notes = vec![
+            entity("Vess"),
+            inside(event("birthday", 1206, &["Vess"]), "Vess"),
+            inside(event("orphan", 1207, &[]), "deleted-note"),
+        ];
+        let l = both(&notes, SpanRule::Fit, None);
+        assert!(l.bars.iter().all(|b| b.depth == 0));
+        assert!(l.bars.iter().all(|b| b.id != "Vess"));
+    }
+
+    #[test]
+    fn labels_that_have_nowhere_to_go_are_counted() {
+        // A crowd of one-day scenes in one year: most labels cannot fit.
+        let cal = Calendar::default();
+        let mut notes = vec![spanned("siege", 1206, 1206, &[])];
+        for d in 0..30 {
+            let p = cal.parse_point(&format!("1206 Mar {}", d % 28 + 1)).unwrap();
+            notes.push(inside(
+                Note { span: Some(TimeSpan::at(p)), ..note(&format!("a rather long scene name {d}")) },
+                "siege",
+            ));
+        }
+        let l = both(&notes, SpanRule::Fit, None);
+        assert_eq!(l.labels.len() + l.dropped_labels, l.bars.len());
+        assert!(l.dropped_labels > 0);
+        // Every bar still has its name as a tooltip-ready title.
+        assert!(l.bars.iter().all(|b| !b.title.is_empty()));
     }
 }

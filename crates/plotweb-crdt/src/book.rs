@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc};
 
-use plotweb_common::{Calendar, FontSettings, NoteLinks, RelativeTime, TimeSpan};
+use plotweb_common::{Calendar, FontSettings, NoteLinks, RelativeTime, SpanRule, TimeSpan};
 
 use crate::RoundTrip;
 
@@ -37,6 +37,10 @@ pub struct NoteEntry {
     /// Contained in time by this note. **Not** the tree parent, which lives in
     /// `root_order` / `children` and means only where the author filed the note.
     pub event_parent: Option<String>,
+    /// Pinned in time — see `plotweb_common::Note::pinned`. A facet carried exactly
+    /// like `is_entity`: a `false`/absent note never touches the document, and clearing
+    /// it writes a `false` tombstone.
+    pub pinned: bool,
     /// `#tag` / `@mention` / `$ref` edges, derived from the body. Never authored here —
     /// a write recomputes it from the body it just saved.
     pub links: NoteLinks,
@@ -69,6 +73,11 @@ pub struct BookStructureInput {
     /// and **absent** rather than defaulted when the book has none — so a book that never
     /// set a calendar holds exactly the document it held before calendars existed.
     pub calendar: Option<Calendar>,
+    /// The book's own span rule, if it chose one — see `plotweb_common::SpanRule`.
+    /// Stored beside the calendar, as a plain word (`SpanRule::as_str`) rather than
+    /// JSON, and **absent** rather than defaulted when the book never chose — so a book
+    /// that never sets one holds exactly the document it held before span rules existed.
+    pub span_rule: Option<SpanRule>,
     /// `(chapter_id, title)` in **authoritative order** (`book.json` `chapter_order`).
     pub chapters: Vec<(String, String)>,
     /// Notes tree: root order.
@@ -99,6 +108,11 @@ pub struct BookStructure {
     pub created_at: String,
     /// The calendar as its stored JSON string, `None` when the book has none.
     pub calendar_json: Option<String>,
+    /// The span rule as its stored plain word (`meta.span_rule`), `None` when the book
+    /// has none. Not validated here — an unrecognised word reads back as `None` (auto
+    /// [`SpanRule::Fit`]) only at the point something turns it into a typed `SpanRule`
+    /// (`SpanRule::parse`); this field just carries whatever the document holds.
+    pub span_rule: Option<String>,
     /// `(chapter_id, title)` in authoritative order.
     pub chapters: Vec<(String, String)>,
     pub root_order: Vec<String>,
@@ -112,6 +126,8 @@ pub struct BookStructure {
     pub note_relatives: BTreeMap<String, RelativeTime>,
     /// The notes carrying the entity facet.
     pub note_entities: BTreeSet<String>,
+    /// The notes carrying the pinned facet.
+    pub note_pinned: BTreeSet<String>,
     /// `note -> the note that contains it in time`. A separate hierarchy from
     /// `root_order` / `children`, which stay exactly what they were: where the author
     /// filed each note. A note can sit anywhere in the tree and nest under an unrelated
@@ -129,6 +145,11 @@ fn calendar_json(calendar: &Option<Calendar>) -> Option<String> {
     calendar.as_ref().and_then(|c| serde_json::to_string(c).ok())
 }
 
+/// `meta.span_rule`'s stored word — `SpanRule::as_str`, not JSON, and absent for `None`.
+pub fn span_rule_str(rule: Option<SpanRule>) -> Option<String> {
+    rule.map(|r| r.as_str().to_string())
+}
+
 impl BookStructureInput {
     /// The structure we EXPECT to read back, with the same filtering the projection
     /// applies (empty child lists dropped; colors only for notes that have one).
@@ -144,6 +165,7 @@ impl BookStructureInput {
         let mut note_spans = BTreeMap::new();
         let mut note_relatives = BTreeMap::new();
         let mut note_entities = BTreeSet::new();
+        let mut note_pinned = BTreeSet::new();
         let mut note_event_parents = BTreeMap::new();
         let mut note_links = BTreeMap::new();
         for note in &self.notes {
@@ -160,6 +182,9 @@ impl BookStructureInput {
             if note.is_entity {
                 note_entities.insert(note.id.clone());
             }
+            if note.pinned {
+                note_pinned.insert(note.id.clone());
+            }
             if let Some(parent) = &note.event_parent {
                 note_event_parents.insert(note.id.clone(), parent.clone());
             }
@@ -174,6 +199,7 @@ impl BookStructureInput {
             cover_ref: self.cover_ref.clone(),
             created_at: self.created_at.clone(),
             calendar_json: calendar_json(&self.calendar),
+            span_rule: span_rule_str(self.span_rule),
             chapters: self.chapters.clone(),
             root_order: self.root_order.clone(),
             children,
@@ -183,6 +209,7 @@ impl BookStructureInput {
             note_spans,
             note_relatives,
             note_entities,
+            note_pinned,
             note_event_parents,
             note_links,
         }
@@ -337,6 +364,16 @@ pub fn apply_book_structure(
             }
         }
     }
+    if current.span_rule != want.span_rule {
+        match &want.span_rule {
+            Some(word) => {
+                let _ = doc.put(&meta, "span_rule", word.as_str());
+            }
+            None => {
+                let _ = doc.delete(&meta, "span_rule");
+            }
+        }
+    }
 
     // Chapters: order in a list, titles in a map beside it.
     let chapter_ids: Vec<String> = want.chapters.iter().map(|(id, _)| id.clone()).collect();
@@ -432,9 +469,24 @@ pub fn apply_book_structure(
         let _ = doc.put(&entities_obj, id.as_str(), true);
     }
 
+    let pinned_obj = ensure_obj(&mut doc, &notes_obj, "pinned", ObjType::Map)?;
+    for id in current.note_pinned.difference(&want.note_pinned) {
+        // `false`, not a delete: the pinned facet's tombstone, exactly like entities.
+        let _ = doc.put(&pinned_obj, id.as_str(), false);
+    }
+    for id in want.note_pinned.difference(&current.note_pinned) {
+        let _ = doc.put(&pinned_obj, id.as_str(), true);
+    }
+
     // A note that no longer exists takes its tombstones with it: there is nothing left
     // for them to protect.
-    for obj in [&spans_obj, &relatives_obj, &event_parents_obj, &entities_obj] {
+    for obj in [
+        &spans_obj,
+        &relatives_obj,
+        &event_parents_obj,
+        &entities_obj,
+        &pinned_obj,
+    ] {
         let stale: Vec<String> = doc
             .keys(obj)
             .filter(|id| !want.note_titles.contains_key(id))
@@ -515,6 +567,9 @@ fn keeping_unmirrored(
         }
         if current.note_entities.contains(id) {
             want.note_entities.insert(id.clone());
+        }
+        if current.note_pinned.contains(id) {
+            want.note_pinned.insert(id.clone());
         }
         if let Some(parent) = current.note_event_parents.get(id) {
             want.note_event_parents.insert(id.clone(), parent.clone());
@@ -667,6 +722,9 @@ fn build_book_doc(doc: &mut AutoCommit, input: &BookStructureInput) {
     if let Some(json) = calendar_json(&input.calendar) {
         let _ = doc.put(&meta, "calendar", json.as_str());
     }
+    if let Some(word) = span_rule_str(input.span_rule) {
+        let _ = doc.put(&meta, "span_rule", word.as_str());
+    }
 
     // chapters (order List + titles Map)
     let chs = doc.put_object(ROOT, "chapters", ObjType::List).unwrap();
@@ -705,6 +763,7 @@ fn build_book_doc(doc: &mut AutoCommit, input: &BookStructureInput) {
     let spans = doc.put_object(&notes_obj, "spans", ObjType::Map).unwrap();
     let relatives = doc.put_object(&notes_obj, "relatives", ObjType::Map).unwrap();
     let entities = doc.put_object(&notes_obj, "entities", ObjType::Map).unwrap();
+    let pinned = doc.put_object(&notes_obj, "pinned", ObjType::Map).unwrap();
     let event_parents = doc
         .put_object(&notes_obj, "event_parents", ObjType::Map)
         .unwrap();
@@ -727,6 +786,9 @@ fn build_book_doc(doc: &mut AutoCommit, input: &BookStructureInput) {
         }
         if note.is_entity {
             let _ = doc.put(&entities, id, true);
+        }
+        if note.pinned {
+            let _ = doc.put(&pinned, id, true);
         }
         if let Some(parent) = &note.event_parent {
             let _ = doc.put(&event_parents, id, parent.as_str());
@@ -758,6 +820,7 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
         .and_then(|m| get_str(doc, m, "created_at"))
         .unwrap_or_default();
     let calendar_json = meta.as_ref().and_then(|m| get_str(doc, m, "calendar"));
+    let span_rule = meta.as_ref().and_then(|m| get_str(doc, m, "span_rule"));
 
     let order = get_obj(doc, &ROOT, "chapters")
         .map(|o| read_list_strings(doc, &o))
@@ -847,6 +910,21 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
         }
     }
 
+    let mut note_pinned = BTreeSet::new();
+    if let Some(pinned_obj) = notes_obj.as_ref().and_then(|n| get_obj(doc, n, "pinned")) {
+        for key in doc.keys(&pinned_obj) {
+            if doc
+                .get(&pinned_obj, key.as_str())
+                .ok()
+                .flatten()
+                .and_then(|(v, _)| v.to_bool())
+                .unwrap_or(false)
+            {
+                note_pinned.insert(key);
+            }
+        }
+    }
+
     BookStructure {
         title,
         description,
@@ -854,6 +932,7 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
         cover_ref,
         created_at,
         calendar_json,
+        span_rule,
         chapters,
         root_order,
         children,
@@ -863,6 +942,7 @@ fn read_book_structure(doc: &AutoCommit) -> BookStructure {
         note_spans,
         note_relatives,
         note_entities,
+        note_pinned,
         note_event_parents,
         note_links,
     }
@@ -887,6 +967,9 @@ fn describe_book_diff(expected: &BookStructure, actual: &BookStructure) -> Strin
     }
     if expected.calendar_json != actual.calendar_json {
         parts.push("meta.calendar".to_string());
+    }
+    if expected.span_rule != actual.span_rule {
+        parts.push("meta.span_rule".to_string());
     }
     if expected.chapters != actual.chapters {
         parts.push("chapters (order/titles)".to_string());
@@ -914,6 +997,9 @@ fn describe_book_diff(expected: &BookStructure, actual: &BookStructure) -> Strin
     }
     if expected.note_entities != actual.note_entities {
         parts.push("notes.entities".to_string());
+    }
+    if expected.note_pinned != actual.note_pinned {
+        parts.push("notes.pinned".to_string());
     }
     if expected.note_event_parents != actual.note_event_parents {
         parts.push("notes.event_parents".to_string());
@@ -1000,6 +1086,7 @@ mod tests {
             cover_ref: Some("cover-hash".into()),
             created_at: "2026-01-01 00:00:00".into(),
             calendar: None,
+            span_rule: None,
             chapters: vec![
                 ("c1".into(), "Opening".into()),
                 ("c2".into(), "The Storm".into()),
@@ -1027,6 +1114,7 @@ mod tests {
             open_ended: false,
         });
         input.notes[1].is_entity = true;
+        input.notes[1].pinned = true;
         input.notes[1].event_parent = Some("n3".into());
         input.notes[1].links = NoteLinks {
             tags: vec!["cast".into()],
@@ -1277,6 +1365,7 @@ mod tests {
             cover_ref: None,
             created_at: "2026-01-01 00:00:00".into(),
             calendar: None,
+            span_rule: None,
             chapters: vec![],
             root_order: vec![],
             children: HashMap::new(),
@@ -1306,7 +1395,7 @@ mod tests {
         let mut doc = AutoCommit::load(&bytes).expect("load");
         // Strip the facet maps entirely, as a pre-revamp writer would have left it.
         let notes = get_obj(&doc, &ROOT, "notes").expect("notes");
-        for prop in ["spans", "relatives", "entities", "event_parents", "links"] {
+        for prop in ["spans", "relatives", "entities", "pinned", "event_parents", "links"] {
             doc.delete(&notes, prop).expect("delete");
         }
         let older = doc.save();
@@ -1315,6 +1404,7 @@ mod tests {
         assert_eq!(got, sample().structure());
         assert!(got.note_spans.is_empty());
         assert!(got.note_entities.is_empty());
+        assert!(got.note_pinned.is_empty());
         assert!(got.note_event_parents.is_empty());
         assert!(got.note_links.is_empty());
     }
@@ -1402,6 +1492,7 @@ mod tests {
             faceted().structure().note_spans.get("n2")
         );
         assert!(merged.note_entities.contains("n2"));
+        assert!(merged.note_pinned.contains("n2"));
         assert_eq!(merged.note_event_parents.get("n2"), Some(&"n3".to_string()));
     }
 
@@ -1438,6 +1529,7 @@ mod tests {
         cleared.notes[1].span = None;
         cleared.notes[1].event_parent = None;
         cleared.notes[1].is_entity = false;
+        cleared.notes[1].pinned = false;
         cleared.notes[2].relative = None;
 
         let applied = apply_book_structure(&bytes, &cleared, &[]).expect("apply");
@@ -1445,6 +1537,7 @@ mod tests {
         assert_eq!(raw_facet(&applied, "relatives", "n3").as_deref(), Some(FACET_TOMBSTONE));
         assert_eq!(raw_facet(&applied, "event_parents", "n2").as_deref(), Some(""));
         assert_eq!(raw_facet(&applied, "entities", "n2").as_deref(), Some("Some(false)"));
+        assert_eq!(raw_facet(&applied, "pinned", "n2").as_deref(), Some("Some(false)"));
 
         // …and every reader sees nothing there, so git and the canonical copy agree.
         assert_eq!(merged_with(&bytes, &applied), cleared.structure());
@@ -1467,7 +1560,7 @@ mod tests {
         gone.notes.retain(|n| n.id != "n2");
         gone.children.clear();
         let applied = apply_book_structure(&applied, &gone, &["n2".into()]).expect("apply");
-        for prop in ["spans", "relatives", "event_parents", "entities"] {
+        for prop in ["spans", "relatives", "event_parents", "entities", "pinned"] {
             assert_eq!(raw_facet(&applied, prop, "n2"), None, "{prop}");
         }
     }
@@ -1520,6 +1613,52 @@ mod tests {
         );
         let reset = apply_book_structure(&applied, &sample(), &[]).expect("apply");
         assert_eq!(materialize_book_structure(&reset).unwrap().calendar_json, None);
+    }
+
+    #[test]
+    fn a_span_rule_round_trips_and_is_absent_until_a_book_sets_one() {
+        let mut input = sample();
+        assert_eq!(input.structure().span_rule, None);
+        let bytes = project_book_structure(&input).expect("project");
+        let doc = AutoCommit::load(&bytes).expect("load");
+        let meta = get_obj(&doc, &ROOT, "meta").expect("meta");
+        assert_eq!(
+            get_str(&doc, &meta, "span_rule"),
+            None,
+            "a book that never chose a span rule holds no span_rule key"
+        );
+
+        input.span_rule = Some(SpanRule::Clamp);
+        assert_eq!(input.structure().span_rule.as_deref(), Some("clamp"));
+        assert_eq!(roundtrip_book_structure(&input), RoundTrip::Clean);
+
+        // Set through an apply, as a REST write would, and reset again.
+        let applied = apply_book_structure(&bytes, &input, &[]).expect("apply");
+        let merged = merged_with(&bytes, &applied);
+        assert_eq!(merged.span_rule.as_deref(), Some("clamp"));
+        assert_eq!(SpanRule::parse("clamp"), Some(SpanRule::Clamp));
+
+        let reset = apply_book_structure(&applied, &sample(), &[]).expect("apply");
+        assert_eq!(materialize_book_structure(&reset).unwrap().span_rule, None);
+    }
+
+    #[test]
+    fn an_unrecognised_span_rule_word_reads_as_none_not_an_error() {
+        // A doc holding a word a future or older build invented — never rejected, since
+        // an unreadable rule must draw as SpanRule::Fit, not fail the whole structure.
+        let bytes = project_book_structure(&sample()).expect("project");
+        let mut doc = AutoCommit::load(&bytes).expect("load");
+        let meta = get_obj(&doc, &ROOT, "meta").expect("meta");
+        doc.put(&meta, "span_rule", "bogus").expect("write");
+        let bytes = doc.save();
+
+        let got = materialize_book_structure(&bytes).expect("materialize");
+        assert_eq!(got.span_rule.as_deref(), Some("bogus"), "carried as-is by this field");
+        assert_eq!(
+            SpanRule::parse(got.span_rule.as_deref().unwrap()),
+            None,
+            "and reads as None — auto SpanRule::Fit — only where it becomes a typed rule"
+        );
     }
 
     #[test]

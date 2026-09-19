@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::error::{GitStoreError, Result};
 use crate::repo;
-use plotweb_common::{Calendar, FontSettings};
+use plotweb_common::{Calendar, FontSettings, SpanRule};
 
 /// On-disk representation of book.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,6 +21,10 @@ pub struct BookJson {
     /// never set one keeps a byte-identical `book.json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<Calendar>,
+    /// See `plotweb_common::Book::span_rule`. Skipped when absent, like `calendar`, so a
+    /// book that never chooses keeps a byte-identical `book.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_rule: Option<SpanRule>,
 }
 
 /// Data returned from BookStore book operations
@@ -34,6 +38,7 @@ pub struct BookData {
     pub created_at: String,
     pub updated_at: String,
     pub calendar: Option<Calendar>,
+    pub span_rule: Option<SpanRule>,
 }
 
 /// Parent directory for a book (contains manuscript/ and notes/ subdirs).
@@ -73,6 +78,7 @@ pub fn create_book(
         chapter_order: Vec::new(),
         created_at: created_at.to_string(),
         calendar: None,
+        span_rule: None,
     };
 
     repo::write_json(&ms_dir.join("book.json"), &book)?;
@@ -108,6 +114,7 @@ pub fn get_book(base_dir: &PathBuf, book_id: &str) -> Result<BookData> {
         created_at: book.created_at,
         updated_at,
         calendar: book.calendar,
+        span_rule: book.span_rule,
     })
 }
 
@@ -119,6 +126,7 @@ pub fn update_book(
     font_settings: Option<&FontSettings>,
     cover_image: Option<Option<String>>,
     calendar: Option<Option<Calendar>>,
+    span_rule: Option<Option<SpanRule>>,
 ) -> Result<()> {
     let path = book_json_path(base_dir, book_id);
     if !path.exists() {
@@ -141,6 +149,9 @@ pub fn update_book(
     }
     if let Some(calendar) = calendar {
         book.calendar = calendar;
+    }
+    if let Some(span_rule) = span_rule {
+        book.span_rule = span_rule;
     }
 
     repo::write_json(&path, &book)?;
@@ -175,6 +186,7 @@ pub fn get_book_at_commit(base_dir: &PathBuf, book_id: &str, commit_hex: &str) -
         created_at: book.created_at,
         updated_at: String::new(),
         calendar: book.calendar,
+        span_rule: book.span_rule,
     })
 }
 

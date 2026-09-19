@@ -29,6 +29,10 @@ pub struct NoteJson {
     /// not the tree parent, which lives in `notes.json` and is untouched by this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_parent: Option<String>,
+    /// See `plotweb_common::Note::pinned`. Skipped when `false`, like `is_entity`, so a
+    /// note that never pins stays byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 /// A patch over a note's facet fields: `None` leaves the stored value alone,
@@ -42,6 +46,7 @@ pub struct NoteFacetPatch {
     pub relative: Option<Option<RelativeTime>>,
     pub is_entity: Option<bool>,
     pub event_parent: Option<Option<String>>,
+    pub pinned: Option<bool>,
 }
 
 impl NoteFacetPatch {
@@ -52,6 +57,7 @@ impl NoteFacetPatch {
             && self.relative.is_none()
             && self.is_entity.is_none()
             && self.event_parent.is_none()
+            && self.pinned.is_none()
     }
 
     /// The patch that sets every facet to what `note` carries — what the mirror needs
@@ -61,12 +67,14 @@ impl NoteFacetPatch {
         relative: Option<RelativeTime>,
         is_entity: bool,
         event_parent: Option<String>,
+        pinned: bool,
     ) -> Self {
         Self {
             span: Some(span),
             relative: Some(relative),
             is_entity: Some(is_entity),
             event_parent: Some(event_parent),
+            pinned: Some(pinned),
         }
     }
 }
@@ -105,6 +113,7 @@ pub struct NoteData {
     pub relative: Option<RelativeTime>,
     pub is_entity: bool,
     pub event_parent: Option<String>,
+    pub pinned: bool,
 }
 
 /// Git repo directory for notes (separate from manuscript).
@@ -222,6 +231,7 @@ fn note_data(id: String, n: NoteJson, updated_at: String) -> NoteData {
         relative: n.relative,
         is_entity: n.is_entity,
         event_parent: n.event_parent,
+        pinned: n.pinned,
     }
 }
 
@@ -252,6 +262,7 @@ pub fn create_note(
         relative: None,
         is_entity: false,
         event_parent: None,
+        pinned: false,
     };
     let path = note_path(base_dir, book_id, note_id);
     repo::write_json(&path, &n)?;
@@ -289,6 +300,7 @@ pub fn create_note(
         relative: None,
         is_entity: false,
         event_parent: None,
+        pinned: false,
     })
 }
 
@@ -331,6 +343,9 @@ pub fn update_note(
     }
     if let Some(event_parent) = facets.event_parent.clone() {
         n.event_parent = event_parent;
+    }
+    if let Some(pinned) = facets.pinned {
+        n.pinned = pinned;
     }
 
     repo::write_json(&path, &n)?;

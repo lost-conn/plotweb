@@ -95,6 +95,57 @@ pub struct Book {
     /// the calendar serialises exactly as it did before there was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<Calendar>,
+    /// How the timeline's event ribbon draws a parent event against its children —
+    /// see [`SpanRule`]. `None` for every book that never chose, which reads as
+    /// [`SpanRule::Fit`]; stored beside the calendar and absent in exactly the same way,
+    /// so a book that never touches it serialises as it did before there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_rule: Option<SpanRule>,
+}
+
+/// The per-book rule for drawing a nested event against its parent on the ribbon.
+///
+/// Every rule is applied **when drawing** only. None of them ever rewrites a typed span:
+/// a fitted parent's dates are what the ribbon computes, not what the note stores.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum SpanRule {
+    /// A parent is drawn across its own dates plus its children's (fitted, recursively),
+    /// unless the parent is [`Note::pinned`]. The default.
+    #[default]
+    Fit,
+    /// A parent's typed dates win; a child running past them is drawn cut off at the
+    /// parent's edge, with a marker. A parent with no dates of its own clamps nothing.
+    Clamp,
+    /// Everything is drawn as typed; a child escaping its parent pokes out and is flagged.
+    Free,
+}
+
+impl SpanRule {
+    /// The rule a book actually draws with: its own, or [`SpanRule::Fit`].
+    pub fn effective(rule: Option<SpanRule>) -> SpanRule {
+        rule.unwrap_or_default()
+    }
+
+    /// The word stored for it — `meta.span_rule` in the `book:` document, and the JSON.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SpanRule::Fit => "fit",
+            SpanRule::Clamp => "clamp",
+            SpanRule::Free => "free",
+        }
+    }
+
+    /// Read a stored word back. Anything else is `None` — which draws as
+    /// [`SpanRule::Fit`], never as an error.
+    pub fn parse(word: &str) -> Option<SpanRule> {
+        match word {
+            "fit" => Some(SpanRule::Fit),
+            "clamp" => Some(SpanRule::Clamp),
+            "free" => Some(SpanRule::Free),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +169,14 @@ pub struct UpdateBookRequest {
         deserialize_with = "deserialize_double_option"
     )]
     pub calendar: Option<Option<Calendar>>,
+    /// A patch, like `calendar`: absent leaves the rule alone, `null` returns the book to
+    /// the default ([`SpanRule::Fit`]), a value sets it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub span_rule: Option<Option<SpanRule>>,
 }
 
 // ── Chapter ──
@@ -415,6 +474,12 @@ pub struct Note {
     /// overlapping, because two events can coincide without one containing the other.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_parent: Option<String>,
+    /// Pinned in time: under the book's [`SpanRule::Fit`] the ribbon draws this note
+    /// across its own typed dates only, never stretched to fit its children. A facet
+    /// like [`Note::is_entity`], and carried the same way (a clear is a `false`
+    /// tombstone in the `book:` document).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
     /// What this note's body points at — derived from the body on every write, never
     /// authored. Served alongside the note so the editor's context rail, and later the
     /// timeline, can draw the graph from the notes list alone rather than opening
@@ -488,6 +553,9 @@ pub struct UpdateNoteRequest {
         deserialize_with = "deserialize_double_option"
     )]
     pub event_parent: Option<Option<String>>,
+    /// See [`Note::pinned`]. A patch like `is_entity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

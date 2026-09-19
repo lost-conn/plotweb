@@ -117,6 +117,11 @@ fn book_fingerprint(input: &BookStructureInput) -> String {
     if let Some(calendar) = &input.calendar {
         let _ = writeln!(s, "calendar\t{}", serde_json::to_string(calendar).unwrap_or_default());
     }
+    // Only when set, exactly like the calendar — so every book without a chosen span
+    // rule keeps the fingerprint it had before span rules existed.
+    if let Some(rule) = input.span_rule {
+        let _ = writeln!(s, "span_rule\t{}", rule.as_str());
+    }
     for (id, title) in &input.chapters {
         let _ = writeln!(s, "ch\t{id}\t{title}");
     }
@@ -135,10 +140,21 @@ fn book_fingerprint(input: &BookStructureInput) -> String {
         // Facets and the derived link index are part of the source: a note gaining a
         // span changes the `book:` document, so it has to change the fingerprint or the
         // resume gate would skip re-projecting it.
+        // `pinned` is appended only when true, exactly like the calendar above — so
+        // every existing note (never pinned) keeps the fingerprint it had before the
+        // facet existed.
         let _ = writeln!(
             s,
-            "note\t{}\t{}\t{:?}\t{:?}\t{:?}\t{}\t{:?}\t{:?}",
-            n.id, n.title, n.color, n.span, n.relative, n.is_entity, n.event_parent, n.links
+            "note\t{}\t{}\t{:?}\t{:?}\t{:?}\t{}\t{:?}\t{:?}{}",
+            n.id,
+            n.title,
+            n.color,
+            n.span,
+            n.relative,
+            n.is_entity,
+            n.event_parent,
+            n.links,
+            if n.pinned { "\tpinned" } else { "" }
         );
     }
     s

@@ -411,6 +411,7 @@ pub fn project_books(store: AppStore) {
                     // book itself is fetched.
                     cutover: cut_over,
                     calendar: None,
+                    span_rule: None,
                 });
             }
         }
@@ -511,6 +512,7 @@ mod tests {
             cover_image: cover.map(|c| c.to_string()),
             cutover: false,
             calendar: None,
+            span_rule: None,
         }
     }
 

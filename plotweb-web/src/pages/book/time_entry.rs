@@ -422,6 +422,7 @@ mod tests {
             relative: None,
             is_entity: false,
             event_parent: None,
+            pinned: false,
             links: Default::default(),
         }
     }

@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use plotweb_common::{UpdateBookRequest, UpdateChapterRequest};
+use plotweb_common::{SpanRule, UpdateBookRequest, UpdateChapterRequest};
 use plotweb_git::error::GitStoreError;
 use plotweb_git::BookStore;
 use plotweb_crdt::{BodyKind, BookStructure};
@@ -299,7 +299,8 @@ pub(crate) async fn mirror_structure(
         || have.description != want.description
         || have.font_settings_json != want.font_settings_json
         || have.cover_ref != want.cover_ref
-        || have.calendar_json != want.calendar_json;
+        || have.calendar_json != want.calendar_json
+        || have.span_rule != want.span_rule;
     if meta_changed {
         let update = UpdateBookRequest {
             title: (have.title != want.title).then(|| want.title.clone()),
@@ -316,6 +317,10 @@ pub(crate) async fn mirror_structure(
                     Some(json) => serde_json::from_str(json).ok().map(Some),
                 })
                 .flatten(),
+            // An unrecognised word reads as "no rule" (auto SpanRule::Fit) rather than
+            // being refused — see SpanRule::parse.
+            span_rule: (have.span_rule != want.span_rule)
+                .then(|| SpanRule::parse(want.span_rule.as_deref().unwrap_or(""))),
         };
         match books.update_book(book_id, &update).await {
             Ok(()) => wrote = true,
@@ -401,6 +406,7 @@ async fn mirror_notes(
             want.note_relatives.get(id).cloned(),
             want.note_entities.contains(id),
             want.note_event_parents.get(id).cloned(),
+            want.note_pinned.contains(id),
         )
     };
 
@@ -436,6 +442,7 @@ async fn mirror_notes(
                 let refacet = have.note_spans.get(id) != want.note_spans.get(id)
                     || have.note_relatives.get(id) != want.note_relatives.get(id)
                     || have.note_entities.contains(id) != want.note_entities.contains(id)
+                    || have.note_pinned.contains(id) != want.note_pinned.contains(id)
                     || have.note_event_parents.get(id) != want.note_event_parents.get(id);
                 if retitle || recolor || refacet {
                     let result = books

@@ -109,6 +109,7 @@ pub(super) fn save_font_settings(
             font_settings: Some(fs),
             cover_image: None,
             calendar: None,
+            span_rule: None,
         };
         api::put::<_, serde_json::Value>(&format!("/api/books/{}", bid), &req, move |_result| {});
     }))));

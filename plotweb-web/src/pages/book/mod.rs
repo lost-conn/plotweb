@@ -29,6 +29,7 @@ mod sidebar;
 pub(crate) mod sigils;
 mod state;
 mod time_entry;
+mod ribbon;
 mod timeline_layout;
 
 use state::BookState;
@@ -488,6 +489,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             font_settings: None,
             cover_image: Some(cover.clone()),
             calendar: None,
+            span_rule: None,
         };
         api::put::<_, serde_json::Value>(
             &format!("/api/books/{}", bid),

@@ -478,6 +478,7 @@ async fn a_span_set_on_a_device_reaches_git() {
             plotweb_common::TimePoint::base_unit(1204),
         ));
         note.is_entity = true;
+        note.pinned = true;
         note.event_parent = Some("some-other-note".into());
     })
     .await;
@@ -489,6 +490,7 @@ async fn a_span_set_on_a_device_reaches_git() {
         Some(1204 * plotweb_common::TICKS_PER_BASE_UNIT)
     );
     assert!(git.note_entities.contains(&n1));
+    assert!(git.note_pinned.contains(&n1));
     assert_eq!(
         git.note_event_parents.get(&n1).map(String::as_str),
         Some("some-other-note")

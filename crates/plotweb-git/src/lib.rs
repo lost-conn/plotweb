@@ -103,6 +103,7 @@ impl BookStore {
         let font_settings = update.font_settings.clone();
         let cover_image = update.cover_image.clone();
         let calendar = update.calendar.clone();
+        let span_rule = update.span_rule.clone();
         tokio::task::spawn_blocking(move || {
             book::update_book(
                 &base,
@@ -112,6 +113,7 @@ impl BookStore {
                 font_settings.as_ref(),
                 cover_image,
                 calendar,
+                span_rule,
             )
         })
         .await
