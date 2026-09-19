@@ -51,6 +51,14 @@ pub(super) struct BookState {
     /// through the schedulers), cleared when a document loads and after a save lands.
     pub chapter_dirty: Signal<bool>,
     pub note_dirty: Signal<bool>,
+    /// The note id whose content is currently loaded in the note editor model — the
+    /// note-side twin of `loaded_chapter_id`, and needed for the same reason: one
+    /// editor model is reused for every note, so save-on-leave must confirm the model
+    /// holds the note it is about to write before writing it. Set by both note-open
+    /// paths (`panes::notes`' card click and `panes::note_editor::open_note_by_id`),
+    /// and cleared the moment a load is started so a flush landing mid-switch can't
+    /// write the outgoing note's text under the incoming note's id.
+    pub loaded_note_id: Signal<Option<String>>,
     pub auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
 
     /// True while the author is actively typing in the chapter editor — sidebar,
@@ -166,13 +174,79 @@ pub(super) struct BookState {
     pub note_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
     pub note_editor_title: Signal<String>,
     pub note_editor_color: Signal<Option<String>>,
+    /// The sigil token the caret is sitting at the end of, and where the caret is, so
+    /// the completion menu can hang off it. `None` closes the menu — which is also what
+    /// typing a space does, since the token ends there.
+    pub sigil_active: Signal<Option<super::sigils::ActiveSigil>>,
+    pub sigil_caret: Signal<Option<crate::pages::editor_utils::CaretAnchor>>,
+    pub sigil_rows: Signal<Vec<super::sigils::Completion>>,
+    /// Which row Enter would take. Reset to 0 whenever the rows change, so a keystroke
+    /// that narrows the list cannot leave the highlight pointing past the end.
+    pub sigil_highlight: Signal<usize>,
+    /// The document handle `caret_anchor` needs, captured from the render scope — an
+    /// event handler has no render scope of its own to ask.
+    pub sigil_doc: Signal<Option<crate::pages::editor_utils::DocRef>>,
+    /// Which notes view is on screen. Card 5 adds the timeline beside the tree.
+    ///
+    /// This and the two below sit here — on the page's state, *above* the view switcher
+    /// — rather than inside the notes surface, which is the whole reason the switcher
+    /// can be a re-render instead of a navigation: changing view keeps the narrowing and
+    /// the selected note (`design/04-notes-wireframes.html`, "Placement and the phone").
+    pub notes_view: Signal<super::panes::notes::NotesView>,
+    // ── Time and the calendar (notes card 4) ────────────────────
+    /// The note whose time is open for editing in the facet strip. An id rather than a
+    /// flag, so opening another note closes the editor by no longer matching.
+    pub time_editing: Signal<Option<String>>,
+    /// The time field's text, as typed. See [`super::time_entry`].
+    pub time_draft: Signal<String>,
+    /// Why the last commit of the time field was refused, until the next keystroke.
+    pub time_error: Signal<Option<String>>,
+    /// The calendar screen's form: the calendar's name and one row per unit.
+    pub calendar_name_draft: Signal<String>,
+    pub calendar_rows: Signal<Vec<super::calendar_form::UnitDraft>>,
+    /// One key per row, changing only when a row is added or removed. The row loop is
+    /// driven by this rather than by `calendar_rows`, so typing into a field (which
+    /// rewrites `calendar_rows`) never re-renders the row it is typing into.
+    pub calendar_row_ids: Signal<Vec<u32>>,
+    pub calendar_status: Signal<Option<String>>,
+    /// The span rule's save state, beside the calendar's.
+    pub span_rule_status: Signal<Option<String>>,
+    /// Where the calendar screen's back arrow goes: the note it was opened from, or the
+    /// notes surface.
+    pub calendar_return: Signal<BookPane>,
+    /// The shared filter: chips cycling off / must / any of / without, applied
+    /// identically by every notes view. See [`super::notes_filter`].
+    pub notes_filter: Signal<super::notes_filter::Filter>,
+    /// The note the tree is highlighting. Distinct from `BookPane::NoteEditor`'s id: a
+    /// selection survives leaving the editor, and card 5's timeline highlights the same
+    /// note without opening it.
+    pub notes_selected: Signal<Option<String>>,
     pub dragging_note_id: Signal<Option<String>>,
     pub drop_target: Signal<Option<(Option<String>, usize)>>,
-    /// Floating drag ghost, positioned from ondragmove (see render_note_card).
+    /// Floating drag ghost, positioned from ondragmove (see `panes::notes`).
     pub ghost_visible: Signal<bool>,
     pub ghost_pos: Signal<(f32, f32)>,
     pub ghost_label: Signal<String>,
     pub ghost_color: Signal<String>,
+    // ── The timeline (notes card 5) ─────────────────────────────
+    /// How the entity lanes are stacked. Here rather than in the timeline so it survives
+    /// switching to the tree and back, like the filter.
+    pub timeline_order: Signal<super::timeline_layout::LaneOrder>,
+    /// The holding-rail note being dragged onto the line. Separate from
+    /// `dragging_note_id`, which the tree's drop zones answer to.
+    pub timeline_dragging: Signal<Option<String>>,
+    /// Where on the plot a drag is hovering, as a fraction of its width — what a drop
+    /// turns into a date. `None` off the plot.
+    pub timeline_drop: Signal<Option<f32>>,
+    /// Which timeline zones are on (card 6). The pane keeps at least one on.
+    pub timeline_ribbon: Signal<bool>,
+    pub timeline_lanes: Signal<bool>,
+    /// The ribbon bar being dragged by its handle, to nest it or take it out.
+    pub ribbon_dragging: Signal<Option<String>>,
+    /// What that drag is over: `Some(Some(id))` a bar, `Some(None)` the empty ribbon.
+    pub ribbon_over: Signal<Option<Option<String>>>,
+    /// Why the last drop was refused, shown until the next drag starts.
+    pub ribbon_refusal: Signal<Option<String>>,
 
     // ── History state ─────────────────────────────────────────────
     pub history_commits: Signal<Vec<CommitInfo>>,
@@ -201,6 +275,7 @@ impl BookState {
             loaded_chapter_id: Signal::new(None),
             chapter_dirty: Signal::new(false),
             note_dirty: Signal::new(false),
+            loaded_note_id: Signal::new(None),
             auto_save_timer_id: Signal::new(None),
 
             editor_writing: Signal::new(false),
@@ -270,6 +345,31 @@ impl BookState {
             note_save_timer_id: Signal::new(None),
             note_editor_title: Signal::new(String::new()),
             note_editor_color: Signal::new(None),
+            sigil_active: Signal::new(None),
+            sigil_caret: Signal::new(None),
+            sigil_rows: Signal::new(Vec::new()),
+            sigil_highlight: Signal::new(0),
+            sigil_doc: Signal::new(None),
+            notes_view: Signal::new(super::panes::notes::NotesView::Tree),
+            time_editing: Signal::new(None),
+            time_draft: Signal::new(String::new()),
+            time_error: Signal::new(None),
+            calendar_name_draft: Signal::new(String::new()),
+            calendar_rows: Signal::new(Vec::new()),
+            calendar_row_ids: Signal::new(Vec::new()),
+            calendar_status: Signal::new(None),
+            span_rule_status: Signal::new(None),
+            calendar_return: Signal::new(BookPane::Notes),
+            notes_filter: Signal::new(super::notes_filter::Filter::default()),
+            notes_selected: Signal::new(None),
+            timeline_order: Signal::new(Default::default()),
+            timeline_dragging: Signal::new(None),
+            timeline_drop: Signal::new(None),
+            timeline_ribbon: Signal::new(true),
+            timeline_lanes: Signal::new(true),
+            ribbon_dragging: Signal::new(None),
+            ribbon_over: Signal::new(None),
+            ribbon_refusal: Signal::new(None),
             dragging_note_id: Signal::new(None),
             drop_target: Signal::new(None),
             ghost_visible: Signal::new(false),

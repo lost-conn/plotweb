@@ -58,6 +58,7 @@ pub use body::{
 pub use book::{
     apply_book_structure, compare_book_structure, materialize_book_structure,
     project_book_structure, roundtrip_book_structure, BookStructure, BookStructureInput,
+    NoteEntry,
 };
 pub use user::{project_user_index, roundtrip_user_index, UserIndexInput};
 

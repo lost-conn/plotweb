@@ -1,3 +1,4 @@
+use plotweb_common::{RelativeTime, TimeSpan};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -7,6 +8,10 @@ use crate::error::{GitStoreError, Result};
 use crate::repo;
 
 /// On-disk representation of a note JSON file.
+///
+/// Every facet field defaults, so a note written before the notes revamp — which is
+/// every note that exists — loads as lore: no span, no entity mark, no event parent,
+/// and its tree position untouched.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoteJson {
     pub title: String,
@@ -14,6 +19,64 @@ pub struct NoteJson {
     #[serde(default)]
     pub color: Option<String>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<TimeSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative: Option<RelativeTime>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_entity: bool,
+    /// Containment in time — see `plotweb_common::Note::event_parent`. Emphatically
+    /// not the tree parent, which lives in `notes.json` and is untouched by this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_parent: Option<String>,
+    /// See `plotweb_common::Note::pinned`. Skipped when `false`, like `is_entity`, so a
+    /// note that never pins stays byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+}
+
+/// A patch over a note's facet fields: `None` leaves the stored value alone,
+/// `Some(None)` clears it, `Some(Some(v))` sets it.
+///
+/// A flat `Option` would be enough to *set* a span and not enough to clear one, and
+/// "undate this event" is an ordinary gesture.
+#[derive(Debug, Clone, Default)]
+pub struct NoteFacetPatch {
+    pub span: Option<Option<TimeSpan>>,
+    pub relative: Option<Option<RelativeTime>>,
+    pub is_entity: Option<bool>,
+    pub event_parent: Option<Option<String>>,
+    pub pinned: Option<bool>,
+}
+
+impl NoteFacetPatch {
+    /// Whether this patch would change anything at all — the cheap check the write
+    /// paths use before deciding a note file needs rewriting.
+    pub fn is_empty(&self) -> bool {
+        self.span.is_none()
+            && self.relative.is_none()
+            && self.is_entity.is_none()
+            && self.event_parent.is_none()
+            && self.pinned.is_none()
+    }
+
+    /// The patch that sets every facet to what `note` carries — what the mirror needs
+    /// when it is writing the canonical document's view of a note back into git.
+    pub fn setting_all(
+        span: Option<TimeSpan>,
+        relative: Option<RelativeTime>,
+        is_entity: bool,
+        event_parent: Option<String>,
+        pinned: bool,
+    ) -> Self {
+        Self {
+            span: Some(span),
+            relative: Some(relative),
+            is_entity: Some(is_entity),
+            event_parent: Some(event_parent),
+            pinned: Some(pinned),
+        }
+    }
 }
 
 /// On-disk representation of notes.json (tree structure).
@@ -46,6 +109,11 @@ pub struct NoteData {
     pub color: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    pub span: Option<TimeSpan>,
+    pub relative: Option<RelativeTime>,
+    pub is_entity: bool,
+    pub event_parent: Option<String>,
+    pub pinned: bool,
 }
 
 /// Git repo directory for notes (separate from manuscript).
@@ -127,14 +195,7 @@ pub fn list_notes(base_dir: &PathBuf, book_id: &str) -> Result<(Vec<NoteData>, N
         let path = note_path(base_dir, book_id, note_id);
         if let Ok(n) = repo::read_json::<NoteJson>(&path) {
             let updated_at = book::file_mtime_str(&path);
-            notes.push(NoteData {
-                id: note_id.clone(),
-                title: n.title,
-                content: n.content,
-                color: n.color,
-                created_at: n.created_at,
-                updated_at,
-            });
+            notes.push(note_data(note_id.clone(), n, updated_at));
         }
     }
 
@@ -153,14 +214,25 @@ pub fn get_note(base_dir: &PathBuf, book_id: &str, note_id: &str) -> Result<Note
     let n: NoteJson = repo::read_json(&path)?;
     let updated_at = book::file_mtime_str(&path);
 
-    Ok(NoteData {
-        id: note_id.to_string(),
+    Ok(note_data(note_id.to_string(), n, updated_at))
+}
+
+/// Adapt a stored note file into the shape the stores hand out. One place, so a facet
+/// added later cannot reach `list_notes` and miss `get_note`.
+fn note_data(id: String, n: NoteJson, updated_at: String) -> NoteData {
+    NoteData {
+        id,
         title: n.title,
         content: n.content,
         color: n.color,
         created_at: n.created_at,
         updated_at,
-    })
+        span: n.span,
+        relative: n.relative,
+        is_entity: n.is_entity,
+        event_parent: n.event_parent,
+        pinned: n.pinned,
+    }
 }
 
 pub fn create_note(
@@ -179,12 +251,18 @@ pub fn create_note(
 
     ensure_notes_dir(base_dir, book_id);
 
-    // Write note file
+    // Write note file. A new note is lore: no span, no entity mark, no event parent.
+    // Facets arrive by a later edit, never at creation.
     let n = NoteJson {
         title: title.to_string(),
         content: String::new(),
         color: color.map(|s| s.to_string()),
         created_at: created_at.to_string(),
+        span: None,
+        relative: None,
+        is_entity: false,
+        event_parent: None,
+        pinned: false,
     };
     let path = note_path(base_dir, book_id, note_id);
     repo::write_json(&path, &n)?;
@@ -218,6 +296,11 @@ pub fn create_note(
         color: color.map(|s| s.to_string()),
         created_at: created_at.to_string(),
         updated_at,
+        span: None,
+        relative: None,
+        is_entity: false,
+        event_parent: None,
+        pinned: false,
     })
 }
 
@@ -228,6 +311,7 @@ pub fn update_note(
     title: Option<&str>,
     content: Option<&str>,
     color: Option<Option<&str>>,
+    facets: &NoteFacetPatch,
 ) -> Result<()> {
     if !valid_id(note_id) {
         return Err(GitStoreError::NoteNotFound(note_id.to_string()));
@@ -247,6 +331,21 @@ pub fn update_note(
     }
     if let Some(c) = color {
         n.color = c.map(|s| s.to_string());
+    }
+    if let Some(span) = facets.span.clone() {
+        n.span = span;
+    }
+    if let Some(relative) = facets.relative.clone() {
+        n.relative = relative;
+    }
+    if let Some(is_entity) = facets.is_entity {
+        n.is_entity = is_entity;
+    }
+    if let Some(event_parent) = facets.event_parent.clone() {
+        n.event_parent = event_parent;
+    }
+    if let Some(pinned) = facets.pinned {
+        n.pinned = pinned;
     }
 
     repo::write_json(&path, &n)?;

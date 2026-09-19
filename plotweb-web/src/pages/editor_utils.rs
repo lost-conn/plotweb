@@ -149,6 +149,154 @@ fn current_heading_level(handle: &EditorHandle) -> Option<i64> {
     resolved.parent().attrs().get_int("level")
 }
 
+/// Where the caret is on screen, as far as it can be known without a layout pass.
+///
+/// `dx`/`dy` are **block-relative**, because that is the frame rinch reports a caret
+/// in; turning them into viewport coordinates needs the block's own box, which arrives
+/// asynchronously — see [`caret_viewport_point`].
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct CaretAnchor {
+    /// The textblock the caret sits in, as rinch's host node id.
+    pub block: usize,
+    /// The caret's UTF-8 byte offset within that block's flat host text.
+    pub byte: usize,
+    /// The caret's offset within the block's box.
+    pub dx: f32,
+    pub dy: f32,
+    /// The line height at the caret, so a popover can clear the line it hangs off.
+    pub height: f32,
+}
+
+/// Read the caret's position out of a live editor.
+///
+/// **This is possible, contrary to the note that used to sit on `editor_toolbar`.**
+/// The route is entirely public API and does not touch rinch-web's `pub(crate)` node
+/// registry, which is what the earlier pass got stuck on:
+///
+/// 1. [`EditorHandle::selection`] gives the model position — a document offset.
+/// 2. [`EditorHandle::caret_address`] maps that to `(textblock host node id, byte)`.
+///    That id is a plain `NodeId`, and [`NodeHandle::new`] is public, so it can be
+///    turned back into a handle without any reverse lookup.
+/// 3. `NodeHandle::query_caret_position` returns the caret's offset *within that
+///    block*, computed by the backend — on the web from a real DOM `Range`, which
+///    works even though the editor is not `contenteditable` because rinch drives the
+///    range from the model's byte offset rather than the browser's selection.
+/// 4. `NodeHandle::bounds_signal` gives that block's viewport-absolute box, so the two
+///    add up to a viewport point — see [`caret_viewport_point`], kept separate because
+///    the bounds signal is reactive and has to be read where a re-read can re-render.
+///
+/// The one thing rinch genuinely does not expose is a *selection-change* callback, so
+/// this is only worth reading from somewhere that already knows the caret moved —
+/// after a document edit (`on_change`), or after placing the caret deliberately.
+///
+/// `None` when the caret is not in a textblock, or the block has no inline layout (an
+/// empty paragraph has no glyphs to measure).
+///
+/// Safe to call from `on_change`: `EditorHandle::update` projects the change into the
+/// host **before** it notifies, so the geometry read here is already of the new text.
+pub fn caret_anchor(handle: &EditorHandle, doc: &DocRef) -> Option<CaretAnchor> {
+    let (block, byte) = handle.caret_address(handle.selection().head())?;
+    let node = NodeHandle::new(rinch_core::dom::NodeId(block), doc.clone());
+    let (dx, dy) = node.query_caret_position(byte)?;
+    let height = node
+        .query_glyph_bounds(byte)
+        .map(|g| g.height)
+        .filter(|h| (4.0..=80.0).contains(h))
+        .unwrap_or(20.0);
+    Some(CaretAnchor {
+        block,
+        byte,
+        dx,
+        dy,
+        height,
+    })
+}
+
+/// The caret's viewport position, given an anchor taken earlier.
+///
+/// The block's own position is summed from `query_node_layout`, which is
+/// **parent-relative** by the trait's contract, up the ancestor chain — so the terms
+/// telescope into the block's offset from the document root. `bounds_signal` would be
+/// the obvious way to ask for the same number in one call, but it is filled in by the
+/// runtime's *next* layout pass and reads as a zero rect until then, which put the menu
+/// at the top-left corner of the window on the frame it opened.
+///
+/// It is still subscribed to, unread, so that this re-runs when the block moves —
+/// a scroll or a resize — and the menu follows the caret rather than staying put.
+/// **Call this inside a reactive closure** for that to mean anything.
+pub fn caret_viewport_point(anchor: &CaretAnchor, doc: &DocRef) -> (f32, f32) {
+    let node = NodeHandle::new(rinch_core::dom::NodeId(anchor.block), doc.clone());
+    let _track = node.bounds_signal().get();
+    let (mut x, mut y) = (anchor.dx, anchor.dy);
+    let Some(document) = doc.upgrade() else {
+        return (x, y);
+    };
+    let document = document.borrow();
+    let mut at = Some(rinch_core::dom::NodeId(anchor.block));
+    // Bounded: a runaway parent chain would hang the UI thread, and no editor nests
+    // anywhere near this deep.
+    for _ in 0..64 {
+        let Some(id) = at else { break };
+        if let Some((nx, ny, _, _)) = document.query_node_layout(id.0 as u64) {
+            x += nx;
+            y += ny;
+        }
+        at = document.parent_node(id);
+    }
+    (x, y)
+}
+
+/// The document handle the caret helpers need, captured from a `RenderScope`
+/// (`__scope.doc_weak()`) at render time — there is no render scope inside an event
+/// handler, so it has to be carried in.
+pub type DocRef = std::rc::Weak<std::cell::RefCell<dyn rinch_core::dom::DomDocument>>;
+
+/// The text of the caret's textblock up to the caret.
+///
+/// Read out of the **model**, not the host: `DomDocument::text_content` has no
+/// implementation on the web backend (it is a defaulted trait method returning `None`
+/// there), so the host answer would be empty in a browser and correct on desktop —
+/// exactly the kind of split that only shows up in production. The model is also
+/// authoritative and needs no layout.
+pub fn text_before_caret(handle: &EditorHandle) -> Option<String> {
+    let state = handle.state();
+    let head = state.selection.head();
+    let resolved = state.doc.resolve(head).ok()?;
+    let parent = resolved.parent();
+    if !parent.is_textblock() {
+        return None;
+    }
+    Some(
+        parent
+            .content()
+            .cut(0, resolved.parent_offset())
+            .iter()
+            .filter_map(|n| n.text())
+            .collect(),
+    )
+}
+
+/// Replace the `chars` model characters immediately before the caret with `text`.
+///
+/// Used to swap the half-typed `$Ve` for the chosen `$Vess`. Counted in model
+/// characters rather than host bytes because the two only agree for plain ASCII, and
+/// the token being replaced is by construction a contiguous run of text ending at the
+/// caret — so stepping back from the caret is exact whatever else the block holds.
+///
+/// One `set_selection` + `replace_selection_with_text`, which is a single transaction:
+/// undo steps back over the completion in one press, as it does for a paste.
+pub fn replace_before_caret(handle: &EditorHandle, chars: usize, text: &str) -> bool {
+    let head = handle.selection().head();
+    let Some(start) = head.0.checked_sub(chars) else {
+        return false;
+    };
+    let (Some(from), Some(to)) = (Some(rinch_editor_core::Pos(start)), Some(head)) else {
+        return false;
+    };
+    handle.set_selection(rinch_editor_core::Selection::text(from, to));
+    handle.replace_selection_with_text(text)
+}
+
 /// Editor CSS — focused writing environment with semantic colors.
 pub const EDITOR_CSS: &str = r#"
 .editor-layout {
@@ -522,32 +670,23 @@ fn fmt_button(
 /// A plain function (not `#[component]`) so it can take the non-`Copy` `EditorHandle`
 /// and the `on_edit` closure directly.
 ///
-/// **This is a permanent toolbar, not a selection popover, because rinch does not
-/// expose enough to build one.** A selection-anchored popover needs two things: a
-/// signal that fires on selection change, and the selection's screen-space
-/// rectangle. `EditorHandle` has neither:
-/// - `selection()` returns model [`Selection`] (document positions), not geometry.
-/// - `caret_address(pos)` maps a model position to `(textblock DOM node id, byte
-///   offset)`, but that node id is rinch's own internal id — the reverse lookup to
-///   an actual `web_sys::Element` (`node_by_nid` / `NODE_REGISTRY` in
-///   `rinch-web::web_document`) is `pub(crate)` to rinch-web, unreachable from here.
-/// - The one thing that *does* compute real selection rectangles —
-///   `DomDocument::query_selection_rects`, used internally to paint the selection
-///   highlight — is private to `rinch-editor-view`'s `View`, never surfaced on
-///   `EditorHandle`.
-/// - There's no `on_selection_change` callback; `on_change` fires only for
-///   document *mutations*, not selection-only changes (by design — see its doc
-///   comment).
+/// **This is a permanent toolbar rather than a selection popover, but not because
+/// anchoring to the caret is impossible — it isn't.** See [`caret_anchor`], which the
+/// note editor's sigil menu uses. What is still missing is the *trigger*: there is no
+/// `on_selection_change` on `EditorHandle` (`on_change` fires only for document
+/// mutations, by design — see its doc comment), so a popover that should appear when
+/// the author *selects* text has nothing to wake it. The sigil menu does not need one,
+/// since typing a sigil is a document mutation.
 ///
 /// `#editor-main` also isn't `contenteditable`, so `document.getSelection()` /
-/// `getRangeAt(0).getBoundingClientRect()` (what the reference mockup's popover
-/// uses) describe nothing here. Faking a position from font-metrics + the model
-/// selection's byte offsets was considered and rejected: it would drift from the
-/// real caret under wrapping, at different zoom levels, and near soft line breaks,
-/// and a popover in the wrong place is worse than a toolbar that's always right
-/// where it says it is. So instead this toolbar fades with the rest of the chrome
-/// on the typing-collapse (`is-writing`, see EDITOR_CSS) rather than disappearing
-/// only when there's no selection.
+/// `getRangeAt(0).getBoundingClientRect()` (what the reference mockup's popover uses)
+/// describe nothing here — the browser has no selection inside it. rinch's own
+/// `query_caret_position` is driven from the *model's* byte offset instead, which is
+/// why it works where the browser's does not.
+///
+/// So this toolbar fades with the rest of the chrome on the typing-collapse
+/// (`is-writing`, see EDITOR_CSS) rather than disappearing only when there's a
+/// selection.
 pub fn editor_toolbar(
     __scope: &mut RenderScope,
     handle: EditorHandle,

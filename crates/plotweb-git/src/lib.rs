@@ -102,6 +102,8 @@ impl BookStore {
         let description = update.description.clone();
         let font_settings = update.font_settings.clone();
         let cover_image = update.cover_image.clone();
+        let calendar = update.calendar.clone();
+        let span_rule = update.span_rule.clone();
         tokio::task::spawn_blocking(move || {
             book::update_book(
                 &base,
@@ -110,6 +112,8 @@ impl BookStore {
                 description.as_deref(),
                 font_settings.as_ref(),
                 cover_image,
+                calendar,
+                span_rule,
             )
         })
         .await
@@ -455,6 +459,7 @@ impl BookStore {
         title: Option<&str>,
         content: Option<&str>,
         color: Option<Option<&str>>,
+        facets: note::NoteFacetPatch,
     ) -> Result<()> {
         let lock = self.notes_lock(book_id);
         let _guard = lock.lock().await;
@@ -472,6 +477,7 @@ impl BookStore {
                 title.as_deref(),
                 content.as_deref(),
                 color.as_ref().map(|o| o.as_deref()),
+                &facets,
             )
         })
         .await

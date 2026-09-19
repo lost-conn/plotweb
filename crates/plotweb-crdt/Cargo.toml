@@ -14,6 +14,7 @@ automerge = "0.5"
 rinch-editor-core = { workspace = true }
 rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "62cbda6", default-features = false }
 plotweb-common = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

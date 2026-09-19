@@ -46,6 +46,8 @@ pub async fn list(
                     font_settings: data.font_settings,
                     cover_image: data.cover_image,
                 cutover: cut_over,
+                    calendar: data.calendar,
+                    span_rule: data.span_rule,
                 });
             }
             Err(_) => {
@@ -62,6 +64,8 @@ pub async fn list(
                     font_settings: None,
                     cover_image: None,
                 cutover: cut_over,
+                    calendar: None,
+                    span_rule: None,
                 });
             }
         }
@@ -130,6 +134,8 @@ pub async fn create(
         font_settings: None,
         cover_image: None,
     cutover: cut_over,
+        calendar: None,
+        span_rule: None,
     };
     (StatusCode::CREATED, Json(serde_json::to_value(book).unwrap()))
 }
@@ -178,6 +184,20 @@ pub async fn get(
                     .map(|s| s.cover_ref.clone())
                     .unwrap_or(data.cover_image),
             cutover: cut_over,
+                // Structure, like typography: the canonical copy's when cut over.
+                calendar: match &canonical {
+                    Some(s) => s
+                        .calendar_json
+                        .as_deref()
+                        .and_then(|json| serde_json::from_str(json).ok()),
+                    None => data.calendar,
+                },
+                // Structure, like the calendar: the canonical copy's when cut over. An
+                // unrecognised word reads as None (auto SpanRule::Fit), never an error.
+                span_rule: match &canonical {
+                    Some(s) => s.span_rule.as_deref().and_then(SpanRule::parse),
+                    None => data.span_rule,
+                },
             };
             (StatusCode::OK, Json(serde_json::to_value(book).unwrap()))
         }
@@ -209,6 +229,14 @@ pub async fn update(
                 Json(json!({ "error": "title is required" })),
             );
         }
+    }
+
+    // A calendar is refused whole rather than stored and then read as the default: every
+    // date in the book is read through it, so a broken one would silently re-date them.
+    if let Some(Some(calendar)) = &req.calendar
+        && let Err(reason) = calendar.validate()
+    {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": reason })));
     }
 
     // Update git repo first; bail with 500 if it fails so the metadata row

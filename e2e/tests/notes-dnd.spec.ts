@@ -45,6 +45,12 @@ async function mouseDragNote(
   await page.mouse.down();
   // Cross the 5px WEB_DRAG_THRESHOLD to activate the drag (fires ondragstart).
   await page.mouse.move(cx + 6, cy, { steps: 2 });
+  // The zones expand in a rinch effect, a tick after ondragstart — wait for one to
+  // actually carry the class before measuring. Reading the target box too early
+  // yields a point ~8px above where the card ends up, and since the outline's rows
+  // are ~35px tall that is the difference between the middle third (nest) and the
+  // top third (insert before).
+  await page.locator(".note-drop-zone.visible, .note-drop-zone.active").first().waitFor();
   // Now that drop zones have expanded, resolve the (shifted) target point.
   const p = await targetPoint();
   await page.mouse.move(p.x, p.y, { steps: 8 });

@@ -18,12 +18,20 @@ use crate::pages::editor_utils;
 use crate::router;
 use crate::store::{AppStore, Route};
 
+mod calendar_form;
 mod css;
 mod feedback;
+mod flush;
 mod modals;
+mod notes_filter;
 mod panes;
 mod sidebar;
+pub(crate) mod sigils;
+mod spine_layout;
 mod state;
+mod time_entry;
+mod ribbon;
+mod timeline_layout;
 
 use state::BookState;
 
@@ -43,6 +51,10 @@ enum BookPane {
     Notes,
     NoteEditor(String),
     History,
+    /// The book's calendar (notes card 4). Reached from the notes surface and from a
+    /// note's time field, never from the tools strip: a book that keeps the default
+    /// calendar need never see it.
+    Calendar,
 }
 
 #[component]
@@ -123,8 +135,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
         new_note_color,
         note_save_status,
         note_save_timer_id,
-        note_editor_title,
-        note_editor_color,
         history_commits,
         show_book_settings_modal,
         edit_book_title,
@@ -479,6 +489,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
             description: Some(desc.clone()),
             font_settings: None,
             cover_image: Some(cover.clone()),
+            calendar: None,
+            span_rule: None,
         };
         api::put::<_, serde_json::Value>(
             &format!("/api/books/{}", bid),
@@ -670,49 +682,23 @@ pub fn book_page(book_id: String) -> NodeHandle {
         );
     };
 
-    // Synchronously flush a pending (debounced) chapter autosave before leaving
-    // the editor pane. Without this, navigating away via the back-arrow or any
-    // sidebar button discards edits made in the last ~3s, because the pending
-    // debounce timer later sees active_pane != Editor and skips the save.
-    let flush_editor_if_active = move || {
-        if let BookPane::Editor(ref current_id) = active_pane.get() {
-            let current_id = current_id.clone();
-            // Clear the pending debounce timer so it doesn't fire a redundant/stale save.
-            if let Some(h) = auto_save_timer_id.get() {
-                rinch_core::clear_timeout(h);
-                auto_save_timer_id.set(None);
-            }
-            // Don't flush while the chapter is still loading: the model holds the
-            // previous chapter's content, so saving it to `current_id` would overwrite
-            // this chapter with another chapter's content.
-            if loaded_chapter_id.get().as_deref() != Some(current_id.as_str()) {
-                return;
-            }
-            let bid = bid_signal.get();
-            if let Some(content) = editor_utils::editor_content_json(&chapter_handle.get()) {
-                save_status.set("saving");
-                panes::chapters::save_chapter_body(
-                    format!("/api/books/{}/chapters/{}", bid, current_id),
-                    content,
-                    !sends_body_content(),
-                    save_status,
-                    save_alert,
-                );
-            }
-        }
-    };
+    // Synchronously flush whichever prose surface is active before leaving it — see
+    // `flush.rs` for why every exit must do this and what each guard is for. Was
+    // `flush_editor_if_active` (chapter-only); the note editor had no equivalent, so
+    // every exit but its back arrow discarded the last ~800ms of a note.
+    let flush_pending_edits = move || flush::flush_pending_edits(state, store);
 
     // Leaving the book page entirely has to flush for the same reason switching
     // panes does — these three were the only exits that didn't. An edit made in
     // the last ~3s was silently discarded, and the still-armed debounce timer
     // went on to read signals belonging to the disposed page scope.
     let go_dashboard = move || {
-        flush_editor_if_active();
+        flush_pending_edits();
         router::navigate(Route::Dashboard);
     };
 
     let logout = move || {
-        flush_editor_if_active();
+        flush_pending_edits();
         api::post::<_, serde_json::Value>("/api/auth/logout", &serde_json::json!({}), move |_result| {
             store.current_user.set(None);
             router::navigate(Route::Login);
@@ -730,7 +716,16 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Factory closures capture only Copy types (Signals) so they are Copy themselves.
     // This lets the rsx macro use them in multiple for-loops without move issues.
     let open_chapter = move |chapter_id: String| {
-        move || panes::chapters::do_switch_chapter(active_pane, save_alert, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle, chapter_title, store, &bid_signal.get(), &chapter_id)
+        move || {
+            // Opening a chapter is an exit from whatever was open before — including a
+            // note. `do_switch_chapter` saves the *chapter* it is leaving but knows
+            // nothing about the note editor, so without this a note edit made in the
+            // last ~800ms died on the way to a chapter. When a chapter is what we're
+            // leaving this is idempotent: it clears `chapter_dirty`, so the switch's own
+            // save-on-leave then finds nothing to do and only one PUT goes out.
+            flush_pending_edits();
+            panes::chapters::do_switch_chapter(active_pane, save_alert, auto_save_timer_id, chapter_title_save_timer_id, save_status, editor_word_count, loaded_chapter_id, chapter_dirty, chapter_handle, chapter_title, store, &bid_signal.get(), &chapter_id)
+        }
     };
 
     // Navigate to a feedback item: switch to the chapter editor, open the feedback
@@ -745,7 +740,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     return;
                 }
             }
-            // Otherwise switch chapter and scroll after load
+            // Otherwise switch chapter and scroll after load — same exit, same flush as
+            // `open_chapter` above.
+            flush_pending_edits();
             pending_feedback_scroll.set(Some((selected_text.clone(), context_block.clone())));
             show_feedback_sidebar.set(true);
             panes::chapters::do_switch_chapter_inner(
@@ -970,25 +967,25 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
     // ── Sidebar click handlers ──────────────────────────────────
     let _open_chapters_pane = move || {
-        flush_editor_if_active();
+        flush_pending_edits();
         active_pane.set(BookPane::Chapters);
         store.sidebar_open.set(false);
     };
 
     let open_typography_pane = move || {
-        flush_editor_if_active();
+        flush_pending_edits();
         active_pane.set(BookPane::Typography);
         store.sidebar_open.set(false);
     };
 
     let open_beta_pane = move || {
-        flush_editor_if_active();
+        flush_pending_edits();
         active_pane.set(BookPane::BetaReaders);
         store.sidebar_open.set(false);
     };
 
     let open_history_pane = move || {
-        flush_editor_if_active();
+        flush_pending_edits();
         active_pane.set(BookPane::History);
         store.sidebar_open.set(false);
         let bid = bid_signal.get();
@@ -1003,13 +1000,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let open_notes_pane = move || {
-        flush_editor_if_active();
+        flush_pending_edits();
         active_pane.set(BookPane::Notes);
         store.sidebar_open.set(false);
         // Fetch notes
         let bid = bid_signal.get();
+        let bid_rest = bid.clone();
         api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid), move |result| {
             if let Ok(resp) = result {
+                // What REST said, kept apart from the projection's output — the
+                // fallback for any facet the local document has not heard of yet.
+                crate::local_book::rest_notes(&bid_rest, &resp.notes);
                 store.notes.set(resp.notes);
                 store.note_tree.set(Some(resp.tree));
                 // Read path: re-project the local `book:` doc's structure over the
@@ -1028,6 +1029,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
         let color = new_note_color.get();
         let bid = bid_signal.get();
         show_note_modal.set(false);
+        // Creating a note from inside an open note leaves that note: flush before the
+        // pane moves, or the text typed just before reaching for "+" is discarded.
+        flush_pending_edits();
         // Switch to Notes pane so the new note is visible
         active_pane.set(BookPane::Notes);
         let req = CreateNoteRequest {
@@ -1043,9 +1047,12 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     // Refresh tree
                     api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid_refresh), move |resp_result| {
                         if let Ok(resp) = resp_result {
+                            crate::local_book::rest_notes(&bid_sync, &resp.notes);
                             crate::local_book::sync_notes(&bid_sync, &resp.notes, &resp.tree);
                             store.notes.set(resp.notes);
                             store.note_tree.set(Some(resp.tree));
+                            // The list is REST's; what the author sees is the document's over it.
+                            crate::local_book::project_notes(store);
                         }
                     });
                 }
@@ -1054,38 +1061,13 @@ pub fn book_page(book_id: String) -> NodeHandle {
         });
     };
 
-    let save_note_content = move || {
-        // Nothing was edited: writing here could only ever overwrite the stored note
-        // with whatever the editor was handed.
-        if !note_dirty.get() {
-            return;
-        }
-        note_dirty.set(false);
-        if let BookPane::NoteEditor(ref nid) = active_pane.get() {
-            let nid = nid.clone();
-            let bid = bid_signal.get();
-            let title_val = note_editor_title.get();
-            let color_val = note_editor_color.get();
-
-            // Serialize the durable save shape (DocNode JSON) from the note editor model.
-            let content = editor_utils::editor_content_json(&note_handle.get()).unwrap_or_default();
-
-            // Local-first: mirror the rename/recolor into the `book:` doc's note
-            // titles/colors Maps (structure decoupled), beside the REST PUT below.
-            crate::local_book::note_meta(&bid, &nid, Some(&title_val), color_val.as_deref());
-
-            note_save_status.set("saving");
-            panes::note_editor::save_note_body(
-                format!("/api/books/{}/notes/{}", bid, nid),
-                title_val,
-                content,
-                color_val,
-                !sends_body_content(),
-                note_save_status,
-                save_alert,
-            );
-        }
-    };
+    // The debounced note save and the save-on-leave are the same write, so they are the
+    // same code (`flush::flush_note`). Keeping them separate is what let them disagree:
+    // this one used to clear `note_dirty` *before* checking the pane, so once any exit
+    // had moved the pane on, the 800ms timer would mark the note clean and save nothing
+    // — the edit was gone, and no later flush could recover it because the surface now
+    // looked untouched.
+    let save_note_content = move || flush::flush_pending_edits(state, store);
 
     let schedule_note_save = move || {
         note_dirty.set(true);
@@ -1094,6 +1076,10 @@ pub fn book_page(book_id: String) -> NodeHandle {
             rinch_core::clear_timeout(h);
         }
         note_save_timer_id.set(Some(rinch_core::reactive::unowned(|| rinch_core::set_timeout(800, move || {
+            // Same guard as the chapter autosave timer (PR #62): this callback can
+            // outlive the page scope, and the first thing the save does is read
+            // `note_dirty` — `Signal::get()` panics on a freed slot.
+            bail_if_stale!();
             save_note_content();
         }))));
     };
@@ -1106,17 +1092,35 @@ pub fn book_page(book_id: String) -> NodeHandle {
         bail_if_stale!();
         if matches!(active_pane.get(), BookPane::NoteEditor(_)) {
             schedule_note_save();
+            // A sigil only ever arrives by being typed, so the edit notification is
+            // also the completion menu's trigger — rinch has no selection-change
+            // callback, and this is the one moment it would need.
+            panes::note_editor::refresh_sigil_menu(state, store);
         }
     });
 
+    // Jump from the chapter editor's "Notes here" strip to the note that named it —
+    // the same load the notes tree does, so the note arrives with its body attached.
+    let open_note_by_id = move |note_id: String| {
+        panes::note_editor::open_note_by_id(state, store, note_id);
+    };
+
     let go_back_to_notes = move || {
-        // Save before navigating back
-        save_note_content();
+        // The back arrow was already the one exit that saved — it is now the same
+        // `flush_pending_edits` every other exit calls, rather than its own private copy
+        // of the logic. (This is the path `notes-sigils.spec.ts` was routed through to
+        // dodge the sidebar bug.)
+        panes::note_editor::close_sigil_menu(state);
+        flush_pending_edits();
         active_pane.set(BookPane::Notes);
         // Refresh notes list
         let bid = bid_signal.get();
+        let bid_rest = bid.clone();
         api::get::<NotesResponse>(&format!("/api/books/{}/notes", bid), move |result| {
             if let Ok(resp) = result {
+                // What REST said, kept apart from the projection's output — the
+                // fallback for any facet the local document has not heard of yet.
+                crate::local_book::rest_notes(&bid_rest, &resp.notes);
                 store.notes.set(resp.notes);
                 store.note_tree.set(Some(resp.tree));
                 crate::local_book::project_notes(store);
@@ -1125,7 +1129,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     let go_back_to_chapters = move || {
-        flush_editor_if_active();
+        flush_pending_edits();
         active_pane.set(BookPane::Chapters);
     };
 
@@ -1251,7 +1255,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                                 variant: "subtle",
                                 size: "xs",
                                 onclick: move || {
-                                    flush_editor_if_active();
+                                    flush_pending_edits();
                                     active_pane.set(BookPane::Chapters);
                                     store.sidebar_open.set(false);
                                     editing_chapter_id.set(None);
@@ -1281,7 +1285,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                         SectionHeader {
                             label: "Notes",
                             count: {move || Some(store.notes.get().len() as i64)},
-                            active: {move || matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_))},
+                            active: {move || matches!(active_pane.get(), BookPane::Notes | BookPane::NoteEditor(_) | BookPane::Calendar)},
                             style: "margin-top: var(--pw-space-sm);",
                             onclick: open_notes_pane,
                             ActionIcon {
@@ -1328,7 +1332,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             class: "tool",
                             data-tip: "Preview as reader",
                             onclick: move || {
-                                flush_editor_if_active();
+                                flush_pending_edits();
                                 router::navigate(Route::ReaderPreview(bid_signal.get()));
                             },
                             {render_tabler_icon(__scope, TablerIcon::Eye, TablerIconStyle::Outline)}
@@ -1398,6 +1402,8 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     {panes::editor::render(
                         __scope,
                         state,
+                        store,
+                        open_note_by_id,
                         book_id.clone(),
                         saved_here_only,
                         go_back_to_chapters,
@@ -1433,6 +1439,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                     {panes::note_editor::render(
                         __scope,
                         state,
+                        store,
                         book_id.clone(),
                         saved_here_only,
                         go_back_to_notes,
@@ -1441,6 +1448,9 @@ pub fn book_page(book_id: String) -> NodeHandle {
 
                     // History pane (CSS toggle)
                     {panes::history::render(__scope, state)}
+
+                    // Calendar pane (CSS toggle) — notes card 4
+                    {panes::calendar::render(__scope, state, store)}
                 }
             }
 

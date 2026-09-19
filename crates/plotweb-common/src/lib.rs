@@ -90,6 +90,62 @@ pub struct Book {
     /// "Saved" meant two different things depending on a flag the author could not see.
     #[serde(default)]
     pub cutover: bool,
+    /// The book's calendar — how a note's time reads. `None` for every book that never
+    /// set one, which reads through [`Calendar::default`]; so a book that never touches
+    /// the calendar serialises exactly as it did before there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calendar: Option<Calendar>,
+    /// How the timeline's event ribbon draws a parent event against its children —
+    /// see [`SpanRule`]. `None` for every book that never chose, which reads as
+    /// [`SpanRule::Fit`]; stored beside the calendar and absent in exactly the same way,
+    /// so a book that never touches it serialises as it did before there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_rule: Option<SpanRule>,
+}
+
+/// The per-book rule for drawing a nested event against its parent on the ribbon.
+///
+/// Every rule is applied **when drawing** only. None of them ever rewrites a typed span:
+/// a fitted parent's dates are what the ribbon computes, not what the note stores.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum SpanRule {
+    /// A parent is drawn across its own dates plus its children's (fitted, recursively),
+    /// unless the parent is [`Note::pinned`]. The default.
+    #[default]
+    Fit,
+    /// A parent's typed dates win; a child running past them is drawn cut off at the
+    /// parent's edge, with a marker. A parent with no dates of its own clamps nothing.
+    Clamp,
+    /// Everything is drawn as typed; a child escaping its parent pokes out and is flagged.
+    Free,
+}
+
+impl SpanRule {
+    /// The rule a book actually draws with: its own, or [`SpanRule::Fit`].
+    pub fn effective(rule: Option<SpanRule>) -> SpanRule {
+        rule.unwrap_or_default()
+    }
+
+    /// The word stored for it — `meta.span_rule` in the `book:` document, and the JSON.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SpanRule::Fit => "fit",
+            SpanRule::Clamp => "clamp",
+            SpanRule::Free => "free",
+        }
+    }
+
+    /// Read a stored word back. Anything else is `None` — which draws as
+    /// [`SpanRule::Fit`], never as an error.
+    pub fn parse(word: &str) -> Option<SpanRule> {
+        match word {
+            "fit" => Some(SpanRule::Fit),
+            "clamp" => Some(SpanRule::Clamp),
+            "free" => Some(SpanRule::Free),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,13 +154,29 @@ pub struct CreateBookRequest {
     pub description: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateBookRequest {
     pub title: Option<String>,
     pub description: Option<String>,
     pub font_settings: Option<FontSettings>,
     #[serde(default, deserialize_with = "deserialize_double_option")]
     pub cover_image: Option<Option<String>>,
+    /// A patch, like `cover_image`: absent leaves the calendar alone, `null` returns the
+    /// book to the default calendar, a value replaces it whole.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub calendar: Option<Option<Calendar>>,
+    /// A patch, like `calendar`: absent leaves the rule alone, `null` returns the book to
+    /// the default ([`SpanRule::Fit`]), a value sets it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub span_rule: Option<Option<SpanRule>>,
 }
 
 // ── Chapter ──
@@ -359,6 +431,18 @@ pub struct ImportChapter {
 
 // ── Notes ──
 
+pub mod calendar;
+pub mod note_links;
+pub mod note_time;
+
+pub use calendar::{Calendar, CalendarUnit, ShownBelow};
+
+pub use note_links::{
+    extract_note_links, extract_note_links_in, fold_token, note_plain_text, token_for_title,
+    LinkIndex, LinkTarget, NoteLink, NoteLinks,
+};
+pub use note_time::{RelativeTime, TimePoint, TimeRelation, TimeSpan, TICKS_PER_BASE_UNIT};
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Note {
     pub id: String,
@@ -368,6 +452,52 @@ pub struct Note {
     pub color: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// When this note happens, if it happens at all. `Some` is what makes a note act
+    /// as an **event**; `None` is lore. See [`note_time`] for the representation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<TimeSpan>,
+    /// A constraint against another note ("after the parley") for a note whose place
+    /// in time is known only relative to something else. Independent of [`Note::span`]:
+    /// a note may carry both, neither, or either.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative: Option<RelativeTime>,
+    /// The **entity** facet: this note is a person, place or thing that can appear in
+    /// events and gets a lane on the timeline. Orthogonal to the event facet — a
+    /// character with a lifespan is one note carrying both.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_entity: bool,
+    /// The note that contains this one **in time** — the siege that holds the breach.
+    ///
+    /// Deliberately **not** the tree parent. [`NoteTree`] says where the author filed
+    /// a note; this says what contains it on the timeline. Neither implies the other,
+    /// and this is only ever set explicitly — never inferred from two spans
+    /// overlapping, because two events can coincide without one containing the other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_parent: Option<String>,
+    /// Pinned in time: under the book's [`SpanRule::Fit`] the ribbon draws this note
+    /// across its own typed dates only, never stretched to fit its children. A facet
+    /// like [`Note::is_entity`], and carried the same way (a clear is a `false`
+    /// tombstone in the `book:` document).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pinned: bool,
+    /// What this note's body points at — derived from the body on every write, never
+    /// authored. Served alongside the note so the editor's context rail, and later the
+    /// timeline, can draw the graph from the notes list alone rather than opening
+    /// every `note:{id}` document. See [`note_links`].
+    #[serde(default, skip_serializing_if = "NoteLinks::is_empty")]
+    pub links: NoteLinks,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Note {
+    /// Whether this note is placed in time at all — by a span, or by a constraint
+    /// against another note. The **event** facet; [`Note::is_entity`] is the other.
+    pub fn is_event(&self) -> bool {
+        self.span.is_some() || self.relative.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -391,13 +521,41 @@ pub struct CreateNoteRequest {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateNoteRequest {
     pub title: Option<String>,
     pub content: Option<String>,
     /// See [`UpdateChapterRequest::content`]. Title and colour are structure, which
     /// REST still carries for every book.
     pub color: Option<String>,
+    /// The facet fields are **patches**: absent leaves the stored value alone, an
+    /// explicit `null` clears it, a value sets it. A bare `Option` cannot say "clear
+    /// this note's span", which is a gesture card 4 needs.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub span: Option<Option<TimeSpan>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub relative: Option<Option<RelativeTime>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub is_entity: Option<bool>,
+    /// Containment in time. Always stated by the client, never derived here — see
+    /// [`Note::event_parent`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_double_option"
+    )]
+    pub event_parent: Option<Option<String>>,
+    /// See [`Note::pinned`]. A patch like `is_entity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

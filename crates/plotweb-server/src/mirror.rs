@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use plotweb_common::{UpdateBookRequest, UpdateChapterRequest};
+use plotweb_common::{SpanRule, UpdateBookRequest, UpdateChapterRequest};
 use plotweb_git::error::GitStoreError;
 use plotweb_git::BookStore;
 use plotweb_crdt::{BodyKind, BookStructure};
@@ -217,7 +217,7 @@ async fn mirror_body(
             let id = doc_id.trim_start_matches("note:").to_string();
             state
                 .books
-                .update_note(book_id, &id, None, Some(&content), None)
+                .update_note(book_id, &id, None, Some(&content), None, Default::default())
                 .await
         }
     };
@@ -298,7 +298,9 @@ pub(crate) async fn mirror_structure(
     let meta_changed = have.title != want.title
         || have.description != want.description
         || have.font_settings_json != want.font_settings_json
-        || have.cover_ref != want.cover_ref;
+        || have.cover_ref != want.cover_ref
+        || have.calendar_json != want.calendar_json
+        || have.span_rule != want.span_rule;
     if meta_changed {
         let update = UpdateBookRequest {
             title: (have.title != want.title).then(|| want.title.clone()),
@@ -307,6 +309,18 @@ pub(crate) async fn mirror_structure(
                 .then_some(font_settings)
                 .flatten(),
             cover_image: (have.cover_ref != want.cover_ref).then(|| want.cover_ref.clone()),
+            // A calendar this build cannot read is left as git has it rather than
+            // mirrored as "no calendar", which would reset every date in the book.
+            calendar: (have.calendar_json != want.calendar_json)
+                .then(|| match &want.calendar_json {
+                    None => Some(None),
+                    Some(json) => serde_json::from_str(json).ok().map(Some),
+                })
+                .flatten(),
+            // An unrecognised word reads as "no rule" (auto SpanRule::Fit) rather than
+            // being refused — see SpanRule::parse.
+            span_rule: (have.span_rule != want.span_rule)
+                .then(|| SpanRule::parse(want.span_rule.as_deref().unwrap_or(""))),
         };
         match books.update_book(book_id, &update).await {
             Ok(()) => wrote = true,
@@ -382,6 +396,20 @@ async fn mirror_notes(
     let mut wrote = false;
     let now = crate::sync::now_stamp();
 
+    // The facets as the canonical copy has them, ready to write into git. Note that the
+    // link index is **not** among them: it is derived from the body, git holds the body,
+    // and `structure_input` recomputes it on every read — so mirroring it back would be
+    // copying a cache onto the thing it is a cache of.
+    let facets = |id: &String| {
+        plotweb_git::note::NoteFacetPatch::setting_all(
+            want.note_spans.get(id).cloned(),
+            want.note_relatives.get(id).cloned(),
+            want.note_entities.contains(id),
+            want.note_event_parents.get(id).cloned(),
+            want.note_pinned.contains(id),
+        )
+    };
+
     for (id, title) in &want.note_titles {
         let color = want.note_colors.get(id).map(String::as_str);
         match have.note_titles.get(id) {
@@ -392,14 +420,31 @@ async fn mirror_notes(
                     .create_note(book_id, id, title, None, color, &now)
                     .await
                 {
-                    Ok(_) => wrote = true,
+                    Ok(_) => {
+                        wrote = true;
+                        // `create_note` writes a lore note; a note that arrived from a
+                        // device carrying a span needs that span written too, or the
+                        // mirror would report a divergence it had just created.
+                        let patch = facets(id);
+                        if let Err(e) = books
+                            .update_note(book_id, id, None, None, None, patch)
+                            .await
+                        {
+                            eprintln!("[mirror] book:{book_id}: facets for new note {id} failed: {e}");
+                        }
+                    }
                     Err(e) => eprintln!("[mirror] book:{book_id}: create note {id} failed: {e}"),
                 }
             }
             Some(have_title) => {
                 let retitle = have_title != title;
                 let recolor = have.note_colors.get(id) != want.note_colors.get(id);
-                if retitle || recolor {
+                let refacet = have.note_spans.get(id) != want.note_spans.get(id)
+                    || have.note_relatives.get(id) != want.note_relatives.get(id)
+                    || have.note_entities.contains(id) != want.note_entities.contains(id)
+                    || have.note_pinned.contains(id) != want.note_pinned.contains(id)
+                    || have.note_event_parents.get(id) != want.note_event_parents.get(id);
+                if retitle || recolor || refacet {
                     let result = books
                         .update_note(
                             book_id,
@@ -407,6 +452,11 @@ async fn mirror_notes(
                             retitle.then_some(title.as_str()),
                             None,
                             recolor.then_some(color),
+                            if refacet {
+                                facets(id)
+                            } else {
+                                Default::default()
+                            },
                         )
                         .await;
                     match result {

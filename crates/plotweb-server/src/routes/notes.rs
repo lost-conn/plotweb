@@ -10,6 +10,30 @@ use crate::auth::AuthSession;
 use crate::routes::verify_book_ownership;
 use crate::AppState;
 
+/// A note as git holds it, with its link index derived from the body git holds.
+///
+/// The one adaptation, so a facet cannot reach the list and miss the single-note read.
+/// Edges are derived rather than stored (see `plotweb_common::note_links`), and this is
+/// the non-cut-over path — a cut-over read overlays the canonical structure's copy on
+/// top, because git's body lags it by the mirror's debounce.
+fn git_note(book_id: &str, n: plotweb_git::note::NoteData, index: &LinkIndex) -> Note {
+    Note {
+        links: extract_note_links_in(&n.content, index),
+        id: n.id,
+        book_id: book_id.to_string(),
+        title: n.title,
+        content: n.content,
+        color: n.color,
+        created_at: n.created_at,
+        updated_at: n.updated_at,
+        span: n.span,
+        relative: n.relative,
+        is_entity: n.is_entity,
+        event_parent: n.event_parent,
+        pinned: n.pinned,
+    }
+}
+
 pub async fn list(
     State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
@@ -42,6 +66,16 @@ pub async fn list(
                                 color: structure.note_colors.get(id).cloned(),
                                 created_at: git.map(|n| n.created_at.clone()).unwrap_or_default(),
                                 updated_at: git.map(|n| n.updated_at.clone()).unwrap_or_default(),
+                                // Facets come from the canonical structure for the same
+                                // reason titles do: it is the source of truth for a
+                                // cut-over book, and it is the copy the timeline will be
+                                // drawn from.
+                                span: structure.note_spans.get(id).cloned(),
+                                relative: structure.note_relatives.get(id).cloned(),
+                                is_entity: structure.note_entities.contains(id),
+                                event_parent: structure.note_event_parents.get(id).cloned(),
+                                pinned: structure.note_pinned.contains(id),
+                                links: structure.note_links.get(id).cloned().unwrap_or_default(),
                             }
                         })
                         .collect();
@@ -52,25 +86,20 @@ pub async fn list(
                     };
                     (listed, tree)
                 }
-                None => (
+                None => {
+                    let index = crate::structure::read_link_index(&state.books, &book_id).await;
+                    (
                     notes
                         .into_iter()
-                        .map(|n| Note {
-                            id: n.id,
-                            book_id: book_id.clone(),
-                            title: n.title,
-                            content: n.content,
-                            color: n.color,
-                            created_at: n.created_at,
-                            updated_at: n.updated_at,
-                        })
+                        .map(|n| git_note(&book_id, n, &index))
                         .collect(),
                     NoteTree {
                         root_order: tree.root_order,
                         children: tree.children,
                         collapsed: tree.collapsed,
                     },
-                ),
+                )
+                }
             };
             let resp = NotesResponse { notes, tree };
             (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
@@ -112,18 +141,24 @@ pub async fn get(
                 &n.content,
                 plotweb_crdt::BodyKind::Note,
             ) {
-                super::CutoverRead::Git => n.content,
+                super::CutoverRead::Git => n.content.clone(),
                 super::CutoverRead::Canonical(content) => content,
             };
-            let note = Note {
-                id: n.id,
-                book_id,
-                title: n.title,
-                content,
-                color: n.color,
-                created_at: n.created_at,
-                updated_at: n.updated_at,
-            };
+            let index = crate::structure::read_link_index(&state.books, &book_id).await;
+            let mut note = git_note(&book_id, n, &index);
+            note.content = content;
+            // Facets are structure, so for a cut-over book they come from the canonical
+            // document — git's copy of them lags by the mirror's debounce exactly as its
+            // titles do.
+            if let Some(structure) = super::cutover_structure(&state, &book_id).await {
+                let id = &note.id;
+                note.span = structure.note_spans.get(id).cloned();
+                note.relative = structure.note_relatives.get(id).cloned();
+                note.is_entity = structure.note_entities.contains(id);
+                note.event_parent = structure.note_event_parents.get(id).cloned();
+                note.pinned = structure.note_pinned.contains(id);
+                note.links = structure.note_links.get(id).cloned().unwrap_or_default();
+            }
             (StatusCode::OK, Json(serde_json::to_value(note).unwrap()))
         }
         Err(_) => (
@@ -172,15 +207,9 @@ pub async fn create(
     {
         Ok(n) => {
             super::apply_cutover_structure(&state, &book_id, &[]).await;
-            let note = Note {
-                id: n.id,
-                book_id,
-                title: n.title,
-                content: n.content,
-                color: n.color,
-                created_at: n.created_at,
-                updated_at: n.updated_at,
-            };
+            // A new note is lore — no span, no entity mark, no event parent, and an
+            // empty body, so no edges either. Facets only ever arrive by a later edit.
+            let note = git_note(&book_id, n, &LinkIndex::new());
             (
                 StatusCode::CREATED,
                 Json(serde_json::to_value(note).unwrap()),
@@ -220,7 +249,18 @@ pub async fn update(
 
     let carries_content = req.content.is_some();
     let content = if sync_owns_body { None } else { req.content.clone() };
-    let wrote_to_git = content.is_some() || req.title.is_some() || req.color.is_some();
+
+    // Facets are structure, like the title: REST carries them for every book, cut over
+    // or not, and they go to git even when sync owns the body.
+    let facets = plotweb_git::note::NoteFacetPatch {
+        span: req.span.clone(),
+        relative: req.relative.clone(),
+        is_entity: req.is_entity,
+        event_parent: req.event_parent.clone(),
+        pinned: req.pinned,
+    };
+    let wrote_to_git =
+        content.is_some() || req.title.is_some() || req.color.is_some() || !facets.is_empty();
 
     // For color, if it's present in the request we pass Some(value), otherwise None (don't update)
     let color = req.color.as_ref().map(|c| Some(c.as_str()));
@@ -233,6 +273,7 @@ pub async fn update(
             req.title.as_deref(),
             content.as_deref(),
             color,
+            facets.clone(),
         )
         .await
     {
@@ -270,10 +311,22 @@ pub async fn update(
         }
         None => false,
     };
-    // A note's title and colour live in the book structure, its body does not — so an
-    // autosave of the body alone skips the book read.
-    if req.title.is_some() || req.color.is_some() {
-        super::apply_cutover_structure(&state, &book_id, &[]).await;
+    // A note's title, colour and facets live in the book structure — and so, since the
+    // notes revamp, does the link index derived from its body. So an autosave of the
+    // body alone no longer skips the book read: the timeline is drawn from the structure
+    // document, and stale `$ref` edges there would put a character in the wrong scene.
+    //
+    // The body is passed through rather than re-read, because when sync owns it git has
+    // not seen this text yet and would yield the *previous* index.
+    match req.content.as_deref() {
+        Some(content) => {
+            super::apply_cutover_structure_with_note_body(&state, &book_id, &note_id, content)
+                .await
+        }
+        None if req.title.is_some() || req.color.is_some() || !facets.is_empty() => {
+            super::apply_cutover_structure(&state, &book_id, &[]).await
+        }
+        None => {}
     }
 
     let mut receipt = SaveReceipt {

@@ -113,6 +113,15 @@ fn book_fingerprint(input: &BookStructureInput) -> String {
     let _ = writeln!(s, "font\t{font}");
     let _ = writeln!(s, "cover\t{:?}", input.cover_ref);
     let _ = writeln!(s, "created\t{}", input.created_at);
+    // Only when set, so every book without a calendar keeps the fingerprint it had.
+    if let Some(calendar) = &input.calendar {
+        let _ = writeln!(s, "calendar\t{}", serde_json::to_string(calendar).unwrap_or_default());
+    }
+    // Only when set, exactly like the calendar — so every book without a chosen span
+    // rule keeps the fingerprint it had before span rules existed.
+    if let Some(rule) = input.span_rule {
+        let _ = writeln!(s, "span_rule\t{}", rule.as_str());
+    }
     for (id, title) in &input.chapters {
         let _ = writeln!(s, "ch\t{id}\t{title}");
     }
@@ -126,9 +135,27 @@ fn book_fingerprint(input: &BookStructureInput) -> String {
     collapsed.sort();
     let _ = writeln!(s, "collapsed\t{}", collapsed.join(","));
     let mut notes = input.notes.clone();
-    notes.sort_by(|a, b| a.0.cmp(&b.0));
-    for (id, title, color) in &notes {
-        let _ = writeln!(s, "note\t{id}\t{title}\t{color:?}");
+    notes.sort_by(|a, b| a.id.cmp(&b.id));
+    for n in &notes {
+        // Facets and the derived link index are part of the source: a note gaining a
+        // span changes the `book:` document, so it has to change the fingerprint or the
+        // resume gate would skip re-projecting it.
+        // `pinned` is appended only when true, exactly like the calendar above — so
+        // every existing note (never pinned) keeps the fingerprint it had before the
+        // facet existed.
+        let _ = writeln!(
+            s,
+            "note\t{}\t{}\t{:?}\t{:?}\t{:?}\t{}\t{:?}\t{:?}{}",
+            n.id,
+            n.title,
+            n.color,
+            n.span,
+            n.relative,
+            n.is_entity,
+            n.event_parent,
+            n.links,
+            if n.pinned { "\tpinned" } else { "" }
+        );
     }
     s
 }
@@ -268,24 +295,10 @@ pub async fn run_content_backfill(data_dir: &str, crdt_dir: &str) -> Result<Back
         let book_doc_id = format!("book:{book_id}");
         match &book_data {
             Ok(d) => {
-                let input = BookStructureInput {
-                    title: d.title.clone(),
-                    description: d.description.clone(),
-                    font_settings: d.font_settings.clone(),
-                    cover_ref: d.cover_image.clone(),
-                    created_at: d.created_at.clone(),
-                    chapters: chapters
-                        .iter()
-                        .map(|c| (c.id.clone(), c.title.clone()))
-                        .collect(),
-                    root_order: notes_tree.root_order.clone(),
-                    children: notes_tree.children.clone(),
-                    collapsed: notes_tree.collapsed.clone(),
-                    notes: notes_list
-                        .iter()
-                        .map(|n| (n.id.clone(), n.title.clone(), n.color.clone()))
-                        .collect(),
-                };
+                // The one adaptation, shared with the audit and the write path — see
+                // `crate::structure`.
+                let input =
+                    crate::structure::structure_input(d, &chapters, &notes_list, &notes_tree);
                 let fp = book_fingerprint(&input);
                 let outcome =
                     backfill_doc(&store, &book_doc_id, "book", &fp, project_book_structure(&input));

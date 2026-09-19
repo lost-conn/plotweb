@@ -151,7 +151,7 @@ pub async fn reconcile_body(
                     .await
                     .map_err(|e| format!("git write failed: {e}"))?,
                 BodyKind::Note => books
-                    .update_note(book_id, id, None, Some(&content), None)
+                    .update_note(book_id, id, None, Some(&content), None, Default::default())
                     .await
                     .map_err(|e| format!("git write failed: {e}"))?,
             }
@@ -267,7 +267,9 @@ fn describe_structure_change(have: &BookStructure, want: &BookStructure) -> Stri
     let meta = have.title != want.title
         || have.description != want.description
         || have.font_settings_json != want.font_settings_json
-        || have.cover_ref != want.cover_ref;
+        || have.cover_ref != want.cover_ref
+        || have.calendar_json != want.calendar_json
+        || have.span_rule != want.span_rule;
 
     let mut parts = Vec::new();
     if added > 0 {
