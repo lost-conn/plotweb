@@ -20,8 +20,11 @@ import { openNotesPane, registerNewUser } from "./helpers";
  *    one onto it dates it through the time field's own write path, and the date
  *    survives a reload. Driven by mouse and by a real long-press touch drag.
  * 6. **Opening a note from the timeline is an exit that saves** (`pages/book/flush.rs`).
- * 7. **390px.** The drawing scrolls sideways inside its own box; the page body never
- *    does, and a tap on an event still opens it.
+ * 7. **Touch, at a width that still shows the drawing.** The drawing scrolls sideways
+ *    inside its own box; the page body never does, and a tap on an event still opens
+ *    it. Card 7 (notes revamp) gave *phone* width (≤768px) a different drawing — the
+ *    vertical spine, `notes-timeline-spine.spec.ts` — so this touch coverage of the
+ *    ribbon/lanes drawing's own horizontal scroll now runs at a wider touch viewport.
  */
 
 const NOTE_EDITOR = "#note-editor-main [data-pm-editor]";
@@ -427,7 +430,7 @@ test("opening an event from the timeline saves the note being left", async ({ pa
   await expect(page.locator(NOTE_EDITOR)).toContainText(text);
 });
 
-test.describe("phone", () => {
+test.describe("touch", () => {
   async function touch(cdp: CDPSession, type: string, x?: number, y?: number) {
     await cdp.send("Input.dispatchTouchEvent", {
       type,
@@ -435,11 +438,14 @@ test.describe("phone", () => {
     });
   }
 
-  test("at 390px the drawing scrolls in its own box, and touch opens and drops", async ({
+  // 800px, not 390px: see the docstring's point 7. This spec exercises the
+  // ribbon/lanes drawing's own touch handling (its horizontal scroller, its holding
+  // rail drag), which only shows at widths above card 7's phone breakpoint.
+  test("the drawing scrolls in its own box, and touch opens and drops", async ({
     browser,
   }) => {
     const ctx = await browser.newContext({
-      viewport: { width: 390, height: 780 },
+      viewport: { width: 800, height: 780 },
       hasTouch: true,
       isMobile: true,
     });

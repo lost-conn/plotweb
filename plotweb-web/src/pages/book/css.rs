@@ -1409,10 +1409,166 @@ pub(super) const NOTES_CSS: &str = r#"
     color: var(--rinch-color-dimmed);
     white-space: nowrap;
 }
+
+/* ── The timeline: the phone spine (card 7) ──
+   take B of design/04-notes-wireframes.html. Same data, same filter, same
+   selection as `.tl` above — only the drawing differs, and which one is on
+   screen is decided purely by the media query at the bottom of this block, so
+   the native desktop build (no media queries) always keeps `.tl`. */
+.tl-spine {
+    display: none;
+    flex-direction: column;
+    gap: var(--pw-space-md);
+    padding: var(--pw-space-sm) var(--pw-space-lg) var(--pw-space-2xl) var(--pw-space-lg);
+    min-width: 0;
+}
+.spine {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-sm);
+    min-width: 0;
+}
+.spine-card {
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    background: var(--rinch-color-surface);
+    padding: var(--pw-space-xs) var(--pw-space-sm);
+    cursor: pointer;
+    min-width: 0;
+}
+.spine-card:hover {
+    border-color: var(--rinch-color-placeholder);
+}
+.spine-card.is-on {
+    border-color: var(--rinch-color-teal-6);
+}
+/* Drawn only because it contains a match — the tree's "path to a result" rule,
+   applied here exactly as `.note-row.is-muted` and `.tl-event.is-muted` apply it. */
+.spine-card.is-muted {
+    opacity: 0.5;
+}
+/* Approximate ("~1206"): a dotted rather than solid frame, the same softening
+   `.tl-event.is-fuzzy` and `.tl-life.is-fuzzy` give it on the desktop drawing. */
+.spine-card.is-fuzzy {
+    border-style: dashed;
+}
+.spine-card-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--pw-space-sm);
+}
+.spine-card-title {
+    margin: 0;
+    font-size: var(--pw-text-md);
+    font-weight: 600;
+    color: var(--rinch-color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.spine-card-when {
+    flex: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-dimmed);
+    white-space: nowrap;
+}
+.spine-card-refs {
+    margin-top: 2px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-dimmed);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* The span rule's effect, spelled out where the ribbon would draw a marker
+   (`.tl-clip`, `.tl-escape`) — there is no drawing here to put one on. */
+.spine-card-badge {
+    display: inline-block;
+    margin-top: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-orange-6);
+    border: 1px dashed var(--rinch-color-orange-6);
+    border-radius: 999px;
+    padding: 1px 8px;
+}
+/* Two or more overlapping siblings, neither containing the other — an explicit
+   group instead of a geometric accident. */
+.spine-simul {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-2xs);
+    min-width: 0;
+}
+.spine-simul-lbl {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-dimmed);
+}
+.spine-loose {
+    margin-top: var(--pw-space-xs);
+    padding-top: var(--pw-space-sm);
+    border-top: 1px dashed var(--pw-hairline);
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-2xs);
+}
+.spine-loose-heading {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-dimmed);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+}
+.spine-loose-chip {
+    display: flex;
+    align-items: baseline;
+    gap: var(--pw-space-xs);
+    border: 1px dashed var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    padding: 4px 10px;
+    cursor: pointer;
+    min-width: 0;
+}
+.spine-loose-chip:hover {
+    border-color: var(--rinch-color-placeholder);
+}
+.spine-loose-chip.is-on {
+    border-color: var(--rinch-color-teal-6);
+}
+.spine-loose-title {
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.spine-loose-refs {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-dimmed);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 @media (max-width: 768px) {
     .tl {
         padding-left: var(--pw-space-md);
         padding-right: var(--pw-space-md);
+    }
+    /* Card 7: the phone gets the vertical spine instead of the ribbon-over-lanes
+       drawing. Both are always mounted (`panes/notes.rs`); this is the only
+       place the choice is made, so the native desktop build — no media
+       queries — always keeps `.tl`. */
+    .tl {
+        display: none;
+    }
+    .tl-spine {
+        display: flex;
     }
 }
 "#;

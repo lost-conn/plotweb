@@ -27,6 +27,7 @@ mod notes_filter;
 mod panes;
 mod sidebar;
 pub(crate) mod sigils;
+mod spine_layout;
 mod state;
 mod time_entry;
 mod ribbon;

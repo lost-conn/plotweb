@@ -18,7 +18,11 @@ import { openNotesPane, registerNewUser } from "./helpers";
  * 4. **Pinning** keeps a parent's own dates under auto-fit, and survives a reload.
  * 5. **Ribbon / lanes toggles** collapse either zone, and never both.
  * 6. **Labels that have nowhere to go are counted aloud.**
- * 7. **390px, touch:** a long-press on a handle drags a bar into another.
+ * 7. **Touch, at a width that still shows the ribbon:** a long-press on a handle drags
+ *    a bar into another. Card 7 (notes revamp) gave the *phone* width (≤768px) a
+ *    different drawing — the vertical spine, `notes-timeline-spine.spec.ts` — so this
+ *    drag-by-handle touch coverage now runs at a wider touch viewport, where `.tl` is
+ *    still the one on screen.
  */
 
 const YEAR = 31_536_000;
@@ -438,7 +442,7 @@ test("labels with nowhere to go are counted, and keep their name as a tooltip", 
   expect(title).toContain("A rather long scene name 7");
 });
 
-test.describe("phone", () => {
+test.describe("touch", () => {
   async function touch(cdp: CDPSession, type: string, x?: number, y?: number) {
     await cdp.send("Input.dispatchTouchEvent", {
       type,
@@ -446,11 +450,16 @@ test.describe("phone", () => {
     });
   }
 
-  test("at 390px a long-press on a handle drags a bar into another, and a tap opens one", async ({
+  // 800px, not 390px: card 7 (notes revamp) swaps the Timeline tab to the vertical
+  // spine at ≤768px, which has no drag-to-nest handle (see `spine_layout.rs` and
+  // `notes-timeline-spine.spec.ts`). This spec is about the ribbon's own touch-drag
+  // nesting, so it now runs at a width that still shows `.tl`, hasTouch/isMobile kept
+  // so the gesture itself is still exercised on a touch viewport.
+  test("a long-press on a handle drags a bar into another, and a tap opens one", async ({
     browser,
   }) => {
     const ctx = await browser.newContext({
-      viewport: { width: 390, height: 780 },
+      viewport: { width: 800, height: 780 },
       hasTouch: true,
       isMobile: true,
     });

@@ -666,6 +666,31 @@ pub fn ribbon_of(notes: &[Note], calendar: &Calendar, rule: SpanRule) -> Ribbon 
     Ribbon { drawn, parent }
 }
 
+/// Which events are drawn under the shared filter, and whether each is itself a match
+/// (`false`) or only present because it contains one (`true`, muted) — the tree's
+/// "ancestor of a match" rule, applied to `event_parent` instead of the tree parent.
+///
+/// Shared by the ribbon ([`layout`]) and the phone spine (`super::spine_layout`): both
+/// draw the same set of events, one over the axis, one down the page.
+pub fn shown_events(notes: &[Note], filter: &Filter, rib: &Ribbon) -> BTreeMap<String, bool> {
+    let by_id: HashMap<&str, &Note> = notes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut shown: BTreeMap<String, bool> = BTreeMap::new();
+    for id in rib.drawn.keys() {
+        let Some(n) = by_id.get(id.as_str()) else { continue };
+        if !filter.matches(n) {
+            continue;
+        }
+        shown.insert(id.clone(), false);
+        let mut cur = id.clone();
+        for _ in 0..notes.len() {
+            let Some(p) = rib.parent.get(&cur) else { break };
+            shown.entry(p.clone()).or_insert(true);
+            cur = p.clone();
+        }
+    }
+    shown
+}
+
 pub fn layout(input: &Input) -> Layout {
     let Input {
         notes,
@@ -712,22 +737,11 @@ pub fn layout(input: &Input) -> Layout {
 
     // The ribbon's bars: matching events (dated, or fitted from what they contain), and
     // — muted — every ancestor of one, the tree's rule for the path to a match.
-    let mut shown: BTreeMap<String, bool> = BTreeMap::new(); // id -> muted
-    if ribbon_on {
-        for id in rib.drawn.keys() {
-            let Some(n) = by_id.get(id.as_str()) else { continue };
-            if !matches(n) {
-                continue;
-            }
-            shown.insert(id.clone(), false);
-            let mut cur = id.clone();
-            for _ in 0..notes.len() {
-                let Some(p) = rib.parent.get(&cur) else { break };
-                shown.entry(p.clone()).or_insert(true);
-                cur = p.clone();
-            }
-        }
-    }
+    let shown: BTreeMap<String, bool> = if ribbon_on {
+        shown_events(notes, filter, &rib)
+    } else {
+        BTreeMap::new()
+    };
 
     // Lanes: every matching entity, plus — muted — anyone a drawn event names.
     let mut lane_ids: Vec<(String, String)> = Vec::new();

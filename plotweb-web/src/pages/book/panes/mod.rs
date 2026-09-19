@@ -12,4 +12,5 @@ pub(super) mod history;
 pub(super) mod note_editor;
 pub(super) mod notes;
 pub(super) mod timeline;
+pub(super) mod timeline_spine;
 pub(super) mod typography;

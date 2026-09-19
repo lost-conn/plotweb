@@ -733,8 +733,14 @@ pub(in crate::pages::book) fn render(__scope: &mut RenderScope, state: BookState
                 }
             }
 
+            // Both the desktop drawing and the phone spine are mounted together; only
+            // CSS (`.tl` / `.tl-spine`, the `@media (max-width: 768px)` rule in
+            // `pages/book/css.rs`) decides which one shows. See
+            // `panes::timeline_spine`'s module header for why this is a CSS flag
+            // rather than a Rust-side width check.
             if notes_view.get() == NotesView::Timeline && !store.notes.get().is_empty() {
                 {super::timeline::render(__scope, state, store)}
+                {super::timeline_spine::render(__scope, state, store)}
             }
 
             if notes_view.get() == NotesView::Tree && !store.notes.get().is_empty() {
