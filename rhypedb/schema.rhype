@@ -103,3 +103,18 @@ type BetaReply {
     content: String
     created_at: String
 }
+
+// user_dictionaries — a user's custom spellcheck words (the words they told the
+// editor were not mistakes: character names, coinages, place names).
+//
+// ONE row per user, keyed by `uuid` like everything else, with `user_id` carrying
+// the owning account. The word list is stored as a JSON array string rather than a
+// repeated field because rhypedb has no list type, and because the client owns the
+// list: it pushes the whole set it holds and the server replaces the row, so the
+// contents are never queried field-wise — only read back whole.
+type UserDictionary {
+    uuid: String @unique
+    user_id: String @indexed
+    words_json: String
+    updated_at: String
+}

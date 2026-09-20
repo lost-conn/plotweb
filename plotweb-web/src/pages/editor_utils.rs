@@ -299,6 +299,80 @@ pub fn replace_before_caret(handle: &EditorHandle, chars: usize, text: &str) -> 
 
 /// Editor CSS — focused writing environment with semantic colors.
 pub const EDITOR_CSS: &str = r#"
+/* ── Spellcheck ────────────────────────────────────────────────────────
+   The squiggle itself is rinch's: the editor view's own stylesheet styles
+   `[data-pm-editor] [data-pm-deco].pm-spell-error`, and the plugin does
+   nothing but name that class. Only the suggestion menu is ours, and it
+   borrows the popover's language (surface, hairline, shadow-2, radius-sm)
+   so it reads as the same family as the chapter tooltips and the feedback
+   popover rather than as a second menu system. */
+.spell-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--pw-z-popover);
+}
+
+.spell-menu {
+    position: fixed;
+    z-index: calc(var(--pw-z-popover) + 1);
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    box-shadow: var(--pw-shadow-2);
+    font-family: var(--pw-font-ui);
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-text);
+}
+
+.spell-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 5px 9px;
+    border: 0;
+    border-radius: var(--pw-radius-xs, 3px);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.spell-menu-item:hover {
+    background: var(--pw-color-deep);
+}
+
+/* The repairs are the point of the menu; the two actions under the rule are
+   housekeeping, so only the repairs carry weight. */
+.spell-menu-suggestion {
+    font-weight: 600;
+}
+
+.spell-menu-empty {
+    padding: 5px 9px;
+    color: var(--rinch-color-dimmed);
+    font-style: italic;
+}
+
+.spell-menu-sep {
+    height: 1px;
+    margin: 4px 2px;
+    background: var(--pw-hairline);
+}
+
+/* The Typography pane's switch row — the same left-aligned block the font and
+   spacing grids sit in, without the two-column grid they need. */
+.typo-switch-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .editor-layout {
     display: flex;
     flex-direction: column;

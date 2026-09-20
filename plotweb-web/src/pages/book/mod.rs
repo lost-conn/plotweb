@@ -152,6 +152,37 @@ pub fn book_page(book_id: String) -> NodeHandle {
         note_handle.get().set_dark_mode(dark);
     });
 
+    // ── Keep the spellchecker's word lists current ───────────────
+    // The book's entity notes are its proper nouns; feeding their titles to the
+    // speller is what stops a character's name being underlined on every page.
+    // Re-run whenever the notes change (a note created, renamed, or given the
+    // entity facet), because each of those changes the set of names.
+    //
+    // All three effects repaint both prose surfaces: one speller serves them, a
+    // note's body is prose too, and a word added from the chapter editor should
+    // stop being underlined in the note editor as well.
+    __scope.create_effect(move || {
+        let words = crate::spell::entity_words_from_notes(&store.notes.get());
+        crate::spell::plugin::set_entity_words(&chapter_handle.get(), words);
+        crate::spell::plugin::force_redraw(&note_handle.get());
+    });
+
+    // The account's own words. `local_dictionary` hands them to the plugin as they
+    // arrive (from local storage, then the server, then an "Add to dictionary")
+    // and then sets this signal; this is the half that makes the editor redraw.
+    __scope.create_effect(move || {
+        let _ = store.user_dictionary.get();
+        crate::spell::plugin::user_words_changed(&chapter_handle.get());
+        crate::spell::plugin::force_redraw(&note_handle.get());
+    });
+
+    // The switch. Held in the store so the Typography pane can flip it from a
+    // pane that knows nothing about editors.
+    __scope.create_effect(move || {
+        crate::spell::plugin::set_enabled(&chapter_handle.get(), store.spellcheck_enabled.get());
+        crate::spell::plugin::force_redraw(&note_handle.get());
+    });
+
     // Whether the chapter currently open in the editor has any feedback — the
     // mobile hamburger bar's message-circle toggle only makes sense to show when
     // there's something for it to open. (The desktop editor topbar has its own

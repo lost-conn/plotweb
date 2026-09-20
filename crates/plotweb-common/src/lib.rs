@@ -611,6 +611,37 @@ pub struct ImageUploadResponse {
     pub filename: String,
 }
 
+// ── User dictionary (spellcheck) ──
+
+/// `GET /api/me/dictionary` — the signed-in user's custom spellcheck words.
+///
+/// `words` is normalised by the server (trimmed, de-duplicated, sorted); an account
+/// that has never saved one gets an empty list and an empty `updated_at`, so the
+/// client never has to distinguish "no row" from "an empty list".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct UserDictionary {
+    pub words: Vec<String>,
+    pub updated_at: String,
+}
+
+/// Body for `PUT /api/me/dictionary` — replaces the whole list.
+///
+/// A replace rather than an append because the client is the local-first owner of
+/// this list: it holds the union of what every device has added and pushes that
+/// whole set. See `plotweb-web/src/local_dictionary.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdateUserDictionaryRequest {
+    pub words: Vec<String>,
+}
+
+/// The most words one account's custom dictionary may hold. A list beyond this is
+/// refused rather than truncated — silently dropping an author's words is worse
+/// than telling them the list is full.
+pub const MAX_USER_DICTIONARY_WORDS: usize = 10_000;
+
+/// The longest a single custom word may be. Anything longer is not a word.
+pub const MAX_USER_DICTIONARY_WORD_LEN: usize = 64;
+
 // ── Error ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

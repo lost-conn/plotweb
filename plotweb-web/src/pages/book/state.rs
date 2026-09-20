@@ -20,6 +20,45 @@ use crate::rinch_backend::EditorHandle;
 
 use super::BookPane;
 
+/// The open spellcheck suggestion menu: what was right-clicked, what to offer, and
+/// where to draw it.
+///
+/// `None` is the resting state, and every way out of the menu (a suggestion, a
+/// dictionary add, an ignore, a click on the backdrop) sets it back. Held as one
+/// value rather than a handful of parallel signals because the parts are only ever
+/// meaningful together — a position with no word is a menu that cannot act.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SpellMenu {
+    /// Viewport coordinates of the press that opened it.
+    pub x: f64,
+    pub y: f64,
+    /// Viewport size at that moment, so the menu can be kept on screen without
+    /// re-reading it (and without a browser-only API on the native build).
+    pub viewport_w: f64,
+    pub viewport_h: f64,
+    /// The misspelled word's range in the document.
+    pub from: usize,
+    pub to: usize,
+    /// The word itself — what "Add to dictionary" and "Ignore" act on.
+    pub word: String,
+    /// Up to five repairs, best first.
+    pub suggestions: Vec<String>,
+}
+
+/// A fresh prose editor with the spellchecker registered.
+///
+/// Registration has to happen *here* rather than after the editor is mounted:
+/// adding a plugin rebuilds the editor state, which discards the undo history,
+/// and this is the one moment there is none to lose. The plugin stays registered
+/// whether or not spellcheck is switched on — the switch lives in the plugin's
+/// shared state (see `crate::spell::plugin`), so flipping it costs a repaint
+/// rather than the author's undo stack.
+fn spellchecked_editor() -> EditorHandle {
+    let handle = crate::rinch_backend::create_editor();
+    crate::spell::plugin::register(&handle);
+    handle
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct BookState {
     // ── Book / chapter editor state ─────────────────────────────
@@ -76,6 +115,9 @@ pub(super) struct BookState {
     /// Signals so the (Copy) save/switch closures can grab a clone via `.get()`.
     pub chapter_handle: Signal<EditorHandle>,
     pub note_handle: Signal<EditorHandle>,
+
+    /// The spellcheck suggestion menu, when one is open. See [`SpellMenu`].
+    pub spell_menu: Signal<Option<SpellMenu>>,
 
     pub bid_signal: Signal<String>,
 
@@ -281,8 +323,10 @@ impl BookState {
             editor_writing: Signal::new(false),
             editor_writing_idle_timer_id: Signal::new(None),
 
-            chapter_handle: Signal::new(crate::rinch_backend::create_editor()),
-            note_handle: Signal::new(crate::rinch_backend::create_editor()),
+            chapter_handle: Signal::new(spellchecked_editor()),
+            note_handle: Signal::new(spellchecked_editor()),
+
+            spell_menu: Signal::new(None),
 
             bid_signal: Signal::new(book_id.to_string()),
 

@@ -5,8 +5,10 @@
 
 pub mod api;
 pub mod local_book;
+pub mod local_dictionary;
 pub mod local_store;
 pub mod local_user;
+pub mod spell;
 pub mod store;
 pub mod sync;
 pub mod router;
@@ -49,6 +51,23 @@ fn app() -> NodeHandle {
             Err(e) => log::warn!("local-first: could not list rescued copies: {e}"),
         }
     });
+
+    // The account's custom spellcheck words, brought up the moment there *is* an
+    // account — on the session check at startup, and again after a login or a
+    // register. Deliberately not on the dashboard: opening `/book/{id}` directly (a
+    // bookmark, a reload while writing) never renders the dashboard, and an
+    // author's own words have to survive that. `enter_user` is idempotent, so
+    // re-running it on any `current_user` change is free.
+    __scope.create_effect(move || {
+        if let Some(user) = store.current_user.get() {
+            local_dictionary::enter_user(user.id, store);
+        }
+    });
+
+    // Does this device want its writing spellchecked? Read before any editor
+    // exists, so the first chapter opened is already right (the default is on, so
+    // a slow read only ever turns it off a moment later — never on).
+    spell::settings::hydrate(store);
 
     // Which books are cut over, as far as this device was last told. Read before the
     // session check, because it decides whether writing on this device can reach the
