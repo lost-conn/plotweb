@@ -871,13 +871,20 @@ where
                 div {
                     style: "display: flex; align-items: center; gap: 8px;",
                     div {
-                        class: "note-save-indicator",
+                        // Carries the state as a class like the chapter footer's
+                        // `.save-indicator` does, so "unsupported" can be styled as
+                        // the warning it is rather than reading like ordinary
+                        // "Unsaved".
+                        class: {|| format!("note-save-indicator {}", note_save_status.get())},
                         {move || match note_save_status.get() {
                             "saving" => "Saving...".to_string(),
                             "saved" if saved_here_only() => {
                                 "Saved on this device".to_string()
                             }
                             "saved" => "Saved".to_string(),
+                            // The note half of the chapter footer's stall state —
+                            // see `panes::editor` and `pages::book::stall`.
+                            "unsupported" => "Unsaved — unsupported content".to_string(),
                             _ => "Unsaved".to_string(),
                         }}
                     }

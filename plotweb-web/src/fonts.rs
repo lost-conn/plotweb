@@ -10,10 +10,19 @@ pub struct FontInfo {
     pub popularity: i64,
 }
 
-/// Global signal holding the fetched font catalog.
-/// Initialized empty; populated by `fetch_font_catalog()`.
+// Global signal holding the fetched font catalog. Initialized empty; populated
+// by `fetch_font_catalog()`.
+//
+// Created `unowned` on purpose. A `thread_local!` initializes on first touch, and
+// the first touch is `fetch_font_catalog()` inside the book page's render — so a
+// plain `Signal::new` here was attributed to *that page's* scope, not the app.
+// Leaving the book disposed the scope and freed the signal while this handle
+// lived on; re-entering any book then read the dead slot and rinch panicked
+// (`Signal::get() on a freed signal`), which blanked the page. App lifetime is
+// the ownership this cache always meant to have.
 thread_local! {
-    static FONT_CATALOG: Signal<Vec<FontInfo>> = Signal::new(Vec::new());
+    static FONT_CATALOG: Signal<Vec<FontInfo>> =
+        rinch_core::reactive::unowned(|| Signal::new(Vec::new()));
 }
 
 pub fn font_catalog() -> Signal<Vec<FontInfo>> {

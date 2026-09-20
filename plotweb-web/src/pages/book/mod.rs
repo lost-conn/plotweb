@@ -28,6 +28,7 @@ mod panes;
 mod sidebar;
 pub(crate) mod sigils;
 mod spine_layout;
+mod stall;
 mod state;
 mod time_entry;
 mod ribbon;
@@ -372,6 +373,22 @@ pub fn book_page(book_id: String) -> NodeHandle {
             return;
         };
         let bid = bid_signal.get();
+        // Sync is the only writer of this body in a cut-over book, so if it is stalled
+        // the PUT below would come back durable having carried nothing and flip the
+        // indicator to "Saved". Re-mark the surface dirty on the way out: it was
+        // cleared above for a write that is now refused, and leaving it clean would
+        // hide this text from the later flush that runs once the unsupported content
+        // is gone — the same rule `flush.rs` calls "a refused write never marks the
+        // surface clean".
+        if stall::veto_if_stalled(
+            crate::local_store::BodyKind::Chapter,
+            &chapter_handle.get(),
+            &bid,
+            save_status,
+        ) {
+            chapter_dirty.set(true);
+            return;
+        }
         save_status.set("saving");
         // Declare that sync is carrying this body rather than withholding the write.
         // Two writers on one body is how deleted text comes back — but *which* writer
@@ -398,6 +415,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
             return;
         }
         save_status.set("unsaved");
+        // Asked here, per edit, because this is the one function every chapter edit
+        // reaches — the `on_change` hook below *and* the toolbar's `on_edit` (which is
+        // how a blockquote arrives). Doing it now rather than at the end of the 3s
+        // debounce means the footer stops claiming anything the moment the document
+        // goes out of scope, instead of three seconds later.
+        stall::veto_if_stalled(
+            crate::local_store::BodyKind::Chapter,
+            &chapter_handle.get(),
+            &bid_signal.get(),
+            save_status,
+        );
         if let Some(h) = auto_save_timer_id.get() {
             rinch_core::clear_timeout(h);
         }
@@ -1084,6 +1112,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
         );
     };
 
+    // The sidebar's "Manuscript" header opens the chapters pane — the manuscript
+    // page (chapter list, counts, import/export) — the same way the "Notes" header
+    // opens the notes surface. It used to be a bare label: the caret beside it
+    // collapsed the list and the "+" added a chapter, but the word itself did
+    // nothing, and there was no other way back to that pane from an open chapter.
+    let open_chapters_pane = move || {
+        flush_pending_edits();
+        active_pane.set(BookPane::Chapters);
+        store.sidebar_open.set(false);
+    };
+
     let open_notes_pane = move || {
         flush_pending_edits();
         active_pane.set(BookPane::Notes);
@@ -1157,6 +1196,14 @@ pub fn book_page(book_id: String) -> NodeHandle {
     let schedule_note_save = move || {
         note_dirty.set(true);
         note_save_status.set("unsaved");
+        // Same question as the chapter autosave above, same reason — a note body in a
+        // cut-over book travels by sync alone too.
+        stall::veto_if_stalled(
+            crate::local_store::BodyKind::Note,
+            &note_handle.get(),
+            &bid_signal.get(),
+            note_save_status,
+        );
         if let Some(h) = note_save_timer_id.get() {
             rinch_core::clear_timeout(h);
         }
@@ -1332,6 +1379,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             label: "Manuscript",
                             count: {move || Some(store.chapters.get().len() as i64)},
                             active: {move || matches!(active_pane.get(), BookPane::Chapters)},
+                            onclick: open_chapters_pane,
                             span {
                                 style: "display: inline-flex; align-items: center; margin-right: 2px;",
                                 onclick: move || chapters_collapsed.update(|c| *c = !*c),
