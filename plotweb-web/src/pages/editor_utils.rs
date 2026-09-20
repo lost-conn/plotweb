@@ -961,6 +961,27 @@ pub fn editor_toolbar(
         }};
     }
 
+    // A heading button toggles: on a block that already is that heading level it
+    // runs `setParagraph`, otherwise `setHeadingN`. rinch's `setHeadingN` is a
+    // set, not a toggle — a no-op on a block already at that level — so without
+    // this the active (highlighted) button did nothing when clicked, and the
+    // only way out of a heading was the paragraph shortcut nobody knows.
+    macro_rules! heading_click {
+        ($level:expr, $cmd:expr) => {{
+            let h = handle.clone();
+            let r = refresh.clone();
+            move || {
+                if current_heading_level(&h) == Some($level) {
+                    h.command("setParagraph");
+                } else {
+                    h.command($cmd);
+                }
+                r();
+                on_edit();
+            }
+        }};
+    }
+
     rsx! {
         div { class: "toolbar",
             // Inline formatting marks
@@ -973,9 +994,9 @@ pub fn editor_toolbar(
             {separator(__scope)}
 
             // Headings
-            {fmt_button(__scope, TablerIcon::H1, cmd_click!("setHeading1"), s_h1)}
-            {fmt_button(__scope, TablerIcon::H2, cmd_click!("setHeading2"), s_h2)}
-            {fmt_button(__scope, TablerIcon::H3, cmd_click!("setHeading3"), s_h3)}
+            {fmt_button(__scope, TablerIcon::H1, heading_click!(1, "setHeading1"), s_h1)}
+            {fmt_button(__scope, TablerIcon::H2, heading_click!(2, "setHeading2"), s_h2)}
+            {fmt_button(__scope, TablerIcon::H3, heading_click!(3, "setHeading3"), s_h3)}
 
             {separator(__scope)}
 
