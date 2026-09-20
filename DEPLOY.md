@@ -155,15 +155,16 @@ source.
   which our `default-features = false` build requires; rhypedb `master` may not
   have it yet). Once that merges to `master`, repin all three `rhypedb-*` deps in
   the root `Cargo.toml` (and the matching note in `Cargo.toml` / `Dockerfile`).
-- **rinch** is pinned to `rev = a1ab0d3…` in `plotweb-web/Cargo.toml`, kept in
+- **rinch** is pinned to `rev = 3de0281…` in `plotweb-web/Cargo.toml`, kept in
   sync with the `Dockerfile`'s `RINCH_COMMIT` (and the `rinch-*` git deps in the
   root `Cargo.toml`, `plotweb-crdt` and `plotweb-server` — they must all name the
-  same rev). Repin them together as rinch's `main` advances. **`a1ab0d3` is the
-  tip of rinch PR #836 (`feat/editor-inline-decorations`), not yet on `main`** —
-  it carries the inline decorations / wavy underline / `add_plugin` seam that
-  spellcheck, find-and-replace and scene breaks need. Once Joe merges it (rinch
-  squash-merges, so the branch commits become unreachable if the branch is
-  deleted), repin every site above to the squash commit on `main`.
+  same rev). **rinch now comes from our fork, `lost-conn/rinch`, branch
+  `plotweb`** (upstream `main` plus the unmerged upstream PRs we depend on: #836
+  `feat/editor-inline-decorations` for inline decorations / wavy underline /
+  `add_plugin`, and #837 for caret scroll-into-view), rather than from
+  `joeleaver/rinch` directly. `3de0281` is the current tip of that branch. Repin
+  every site above as the `plotweb` branch advances; all sites must name the
+  same rev.
 
 ## Verification status
 

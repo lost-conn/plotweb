@@ -9,27 +9,30 @@ plotweb-common = { path = "../crates/plotweb-common" }
 
 # rinch as GIT deps (pinned) so the trunk buildpack's sealed build VM — which
 # can't see the sibling `../../rinch` path — fetches it from github in the fetch
-# phase. Repin as rinch's main advances (kept in sync with the Dockerfile's
-# RINCH_COMMIT). For local rinch co-dev, add an UNCOMMITTED [patch] (see DEPLOY.md).
+# phase. Pinned to our fork `lost-conn/rinch`, branch `plotweb` (upstream main
+# plus the unmerged upstream PRs we depend on: #836 inline decorations, #837
+# caret scroll-into-view). Repin as that branch advances (kept in sync with the
+# Dockerfile's RINCH_COMMIT). For local rinch co-dev, add an UNCOMMITTED [patch]
+# (see DEPLOY.md).
 # plotweb-common stays a path dep — it's in-repo and resolves via jkbase.toml's
 # `context = "."` (the build VM mounts the whole repo).
-rinch = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3", default-features = false, features = ["components", "theme"] }
-rinch-core = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3", features = ["theme"] }
-rinch-tabler-icons = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3" }
+rinch = { git = "https://github.com/lost-conn/rinch", rev = "3de0281", default-features = false, features = ["components", "theme"] }
+rinch-core = { git = "https://github.com/lost-conn/rinch", rev = "3de0281", features = ["theme"] }
+rinch-tabler-icons = { git = "https://github.com/lost-conn/rinch", rev = "3de0281" }
 # Shared with the copy rinch-web already pulls; `serde` lights up DocNode
 # (durable JSON save shape) + `Schema::node_from_doc` / `Node::to_doc`.
-rinch-editor-core = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3", features = ["serde"] }
+rinch-editor-core = { git = "https://github.com/lost-conn/rinch", rev = "3de0281", features = ["serde"] }
 # Cross-platform HTTP client (web fetch / native ureq); replaces the web-only
 # fetch in api.rs so the frontend compiles for desktop too.
-rinch-http = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3" }
+rinch-http = { git = "https://github.com/lost-conn/rinch", rev = "3de0281" }
 # Cross-platform durable local storage (native FsStore / web IdbStore). The local-
 # first seam for chapter-body Automerge docs (Phase 2). Cross-platform, so shared.
-rinch-storage = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3" }
+rinch-storage = { git = "https://github.com/lost-conn/rinch", rev = "3de0281" }
 # The body CRDT itself. Pulled transitively by rinch-web's `collaboration` feature and
 # by rinch on desktop, but named directly so a *rescued* generation can be replayed and
 # projected back to text without an editor attached (`local_store::project_rescue` — the
 # viewer that shows an author what this device kept). Cross-platform, so shared.
-rinch-editor-collab = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3" }
+rinch-editor-collab = { git = "https://github.com/lost-conn/rinch", rev = "3de0281" }
 # Hand-projected `book:` structure doc (chapter order/titles, notes tree, meta).
 # Already in the tree transitively (rinch-editor-collab / rinch-web `collaboration`);
 # named directly so `local_book.rs` can build/read a plain Automerge doc. On wasm the
@@ -88,14 +91,14 @@ debug-mcp = ["rinch/debug"]
 # `desktop` feature. The editor + mount come from whichever backend is active for
 # the target — see `src/rinch_backend.rs`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-rinch-web = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3", features = ["collaboration"] }
+rinch-web = { git = "https://github.com/lost-conn/rinch", rev = "3de0281", features = ["collaboration"] }
 # Browser randomness for the transitive automerge → uuid (Automerge actor ids).
 # Without a randomness feature, uuid refuses to compile on wasm32; on native it
 # uses the OS RNG by default (forcing the `js` feature there panics at startup).
 uuid = { version = "1", features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-rinch = { git = "https://github.com/joeleaver/rinch", rev = "a1ab0d3", features = ["desktop", "collaboration"] }
+rinch = { git = "https://github.com/lost-conn/rinch", rev = "3de0281", features = ["desktop", "collaboration"] }
 
 # Native durability proof (local_store::tests): drive the chapter-body Automerge
 # round-trip against a tempdir FsStore, no GUI needed. `rinch-editor-collab` is a
