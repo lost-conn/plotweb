@@ -4,6 +4,7 @@
 #![recursion_limit = "512"]
 
 pub mod api;
+pub mod find;
 pub mod local_book;
 pub mod local_dictionary;
 pub mod local_store;

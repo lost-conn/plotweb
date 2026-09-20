@@ -56,6 +56,12 @@ pub(super) struct SpellMenu {
 fn spellchecked_editor() -> EditorHandle {
     let handle = crate::rinch_backend::create_editor();
     crate::spell::plugin::register(&handle);
+    // The find panel's highlighter, registered here for exactly the same reason
+    // and at exactly the same moment: `add_plugin` rebuilds the editor state and
+    // discards the undo history, so both plugins go on before there is any.
+    // Distinct `PluginKey`s, so neither displaces the other, and a decoration
+    // from each over the same word lands as one span carrying both classes.
+    crate::find::plugin::register(&handle);
     handle
 }
 
@@ -118,6 +124,34 @@ pub(super) struct BookState {
 
     /// The spellcheck suggestion menu, when one is open. See [`SpellMenu`].
     pub spell_menu: Signal<Option<SpellMenu>>,
+
+    // ── Find and replace (see `panes::find`) ─────────────────────
+    /// Whether the find panel is on screen. It is a floating overlay rather than
+    /// a pane, so this — not `active_pane` — is what mounts it.
+    pub find_open: Signal<bool>,
+    pub find_query: Signal<String>,
+    pub find_replace: Signal<String>,
+    pub find_match_case: Signal<bool>,
+    pub find_whole_word: Signal<bool>,
+    /// `true` searches every chapter, `false` only the one in the editor. Set by
+    /// which shortcut opened the panel (Ctrl+Shift+F / Ctrl+F) and by the scope
+    /// switch inside it, so neither is a mode the author is stuck in.
+    pub find_book_scope: Signal<bool>,
+    /// The results, grouped by chapter, in book order.
+    pub find_results: Signal<Vec<super::panes::find::ChapterHits>>,
+    /// Which hit Prev/Next is standing on, as `(chapter_id, index within that
+    /// chapter)`. An **index**, never a document position: a hit in an unopened
+    /// chapter was found in a stored copy, and the position it had there is not
+    /// a promise about the document that chapter will load as.
+    pub find_current: Signal<Option<(String, usize)>>,
+    pub find_debounce_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
+    /// Progress while "Replace all in book" walks the chapters, or `None` when
+    /// it is not running. Doubles as the disable flag for every button in the
+    /// panel — the walk switches chapters underneath the author, and a second
+    /// one started midway would be replacing in a chapter the first had left.
+    pub find_busy: Signal<Option<String>>,
+    /// Whether the whole-book replace confirm is open.
+    pub find_confirm: Signal<bool>,
 
     pub bid_signal: Signal<String>,
 
@@ -327,6 +361,18 @@ impl BookState {
             note_handle: Signal::new(spellchecked_editor()),
 
             spell_menu: Signal::new(None),
+
+            find_open: Signal::new(false),
+            find_query: Signal::new(String::new()),
+            find_replace: Signal::new(String::new()),
+            find_match_case: Signal::new(false),
+            find_whole_word: Signal::new(false),
+            find_book_scope: Signal::new(true),
+            find_results: Signal::new(Vec::new()),
+            find_current: Signal::new(None),
+            find_debounce_timer_id: Signal::new(None),
+            find_busy: Signal::new(None),
+            find_confirm: Signal::new(false),
 
             bid_signal: Signal::new(book_id.to_string()),
 

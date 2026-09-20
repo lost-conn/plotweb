@@ -330,6 +330,29 @@ pub fn replace_before_caret(handle: &EditorHandle, chars: usize, text: &str) -> 
 
 /// Editor CSS — focused writing environment with semantic colors.
 pub const EDITOR_CSS: &str = r#"
+/* ── Find and replace ──────────────────────────────────────────────────
+   The classes `find::plugin` names on its decorations. rinch's editor view
+   projects an inline decoration as `<span data-pm-deco class="…">` and merges
+   overlapping ones into a single span carrying every class, so the current hit
+   is one element with both classes here — and a hit that is also misspelled
+   keeps its squiggle alongside the wash.
+
+   The colours are literals rather than theme tokens on purpose: a highlight
+   has to read as one in both themes, and translucent amber over the page does
+   that where a surface token cannot (it darkens a light page and lifts a dark
+   one, leaving the prose its own colour either way). The current hit is the
+   same hue at more weight plus a hairline, so "which one am I on" survives a
+   page where several hits sit in one paragraph. */
+[data-pm-editor] [data-pm-deco].pm-search-hit {
+    background: rgba(255, 193, 7, 0.28);
+    border-radius: 2px;
+}
+
+[data-pm-editor] [data-pm-deco].pm-search-hit-current {
+    background: rgba(255, 152, 0, 0.55);
+    box-shadow: 0 0 0 1px rgba(255, 152, 0, 0.9);
+}
+
 /* ── Spellcheck ────────────────────────────────────────────────────────
    The squiggle itself is rinch's: the editor view's own stylesheet styles
    `[data-pm-editor] [data-pm-deco].pm-spell-error`, and the plugin does

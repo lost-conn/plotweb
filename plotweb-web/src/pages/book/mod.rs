@@ -57,6 +57,27 @@ enum BookPane {
     Calendar,
 }
 
+/// Whether the caret is in one of the find panel's own fields.
+///
+/// The panel's query and replace boxes are raw `<input>`s — rsx gives a raw
+/// element no `onkeydown` prop (see `panes::chapters::focus_inline_input` for
+/// the full list of what it does give one) — so Enter and Shift+Enter are read
+/// off the window listener instead. This is what stops that read taking Enter
+/// away from the prose editor: the panel only gets the key when it is the thing
+/// being typed into.
+///
+/// Always `false` on native, where there is no document to ask. That is the same
+/// documented gap the inline chapter-title input has, and it fails safe — Enter
+/// goes to the editor, and the Prev/Next buttons still work.
+fn find_field_focused() -> bool {
+    crate::platform::document()
+        .and_then(|d| d.active_element())
+        .and_then(|el| el.get_attribute("id"))
+        .is_some_and(|id| {
+            id == panes::find::QUERY_INPUT_ID || id == panes::find::REPLACE_INPUT_ID
+        })
+}
+
 #[component]
 pub fn book_page(book_id: String) -> NodeHandle {
     let store = use_store::<AppStore>();
@@ -436,12 +457,39 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // the reader moves their mouse on the next page.
         let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
             bail_if_stale!();
-            if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
+            let accel = event.ctrl_key() || event.meta_key();
+            if accel && event.key() == "s" {
                 event.prevent_default();
                 if let BookPane::Editor(ref cid) = active_pane.get() {
                     save_content(cid.clone());
                 }
+            } else if accel && event.key().eq_ignore_ascii_case("f") {
+                // Ctrl+F searches the open chapter, Ctrl+Shift+F the whole book
+                // — the same panel either way, with its scope switch preset.
+                // `eq_ignore_ascii_case` because Shift makes `key()` report "F".
+                // `prevent_default` is what keeps the browser's own find bar
+                // out of the way; without it two find UIs open at once and only
+                // one of them knows what a chapter is.
+                event.prevent_default();
+                panes::find::open(state, store, event.shift_key());
+            } else if panes::find::is_open(state)
+                && event.key() == "Enter"
+                && find_field_focused()
+            {
+                // Enter / Shift+Enter cycle the hits, but only from inside the
+                // panel's own fields: a raw `input` gets no `onkeydown` prop
+                // from rsx (see `panes::chapters::focus_inline_input` on why),
+                // and an unscoped Enter here would fire while the author is
+                // typing a paragraph.
+                event.prevent_default();
+                panes::find::step(state, store, if event.shift_key() { -1 } else { 1 });
             } else if event.key() == "Escape" {
+                // Escape belongs to the find panel while it is open — closing it
+                // clears the highlights, which is the thing the author wants
+                // back first. The chrome-collapse escape still runs underneath.
+                if panes::find::is_open(state) {
+                    panes::find::close(state);
+                }
                 stop_writing();
             }
         }) as Box<dyn FnMut(_)>);
@@ -473,6 +521,18 @@ pub fn book_page(book_id: String) -> NodeHandle {
         if matches!(active_pane.get(), BookPane::Editor(_)) {
             schedule_chapter_autosave();
             start_writing();
+        }
+        // An open find panel is a question about the document, so an edit is a
+        // new answer: typing (or undoing a replace) has to move the counts.
+        // Debounced, like the autosave beside it.
+        //
+        // Not while a whole-book replace is walking, though — it is switching
+        // chapters underneath this, and its own final re-search is the one that
+        // should have the last word. The empty transaction the highlighter uses
+        // to repaint changes no document, so it never reaches here and there is
+        // no loop to break.
+        if panes::find::is_open(state) && state.find_busy.get().is_none() {
+            panes::find::schedule_search(state, store);
         }
     });
 
@@ -1174,6 +1234,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             style { {crate::components::dialog::DIALOG_CSS} }
             style { {crate::components::sheet::SHEET_CSS} }
             style { {editor_utils::EDITOR_CSS} }
+            style { {css::FIND_CSS} }
             // Editor font styles
             style {
                 {move || {
@@ -1496,6 +1557,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 add_beta_link,
                 update_beta_link,
             )}
+
+            // Find and replace — a floating overlay, not a pane: it stays open
+            // over whichever pane is showing, which is the whole point of a
+            // book-wide search.
+            {panes::find::render(__scope, state, store)}
         }
     }
 }
