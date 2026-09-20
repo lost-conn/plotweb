@@ -112,6 +112,29 @@ pub fn put<B: Serialize, T: DeserializeOwned + 'static>(
     fetch(req, move |res| on_done(parse::<T>(res)));
 }
 
+// ── Custom dictionary ────────────────────────────────────────────────────────
+// Thin wrappers over `get`/`put` so the two spellcheck endpoints are named once
+// rather than spelled out at every call site. See `crate::local_dictionary`.
+
+/// `GET /api/me/dictionary` — the signed-in account's custom spellcheck words.
+pub fn get_user_dictionary(on_done: impl ApiCallback<plotweb_common::UserDictionary>) {
+    get("/api/me/dictionary", on_done);
+}
+
+/// `PUT /api/me/dictionary` — replace the account's custom spellcheck words.
+///
+/// A replace, not an append: the client holds the union of every device's words and
+/// pushes that whole set (see `crate::local_dictionary`).
+pub fn put_user_dictionary(
+    words: &[String],
+    on_done: impl ApiCallback<plotweb_common::UserDictionary>,
+) {
+    let body = plotweb_common::UpdateUserDictionaryRequest {
+        words: words.to_vec(),
+    };
+    put("/api/me/dictionary", &body, on_done);
+}
+
 /// A failed binary request: the HTTP status (0 = transport failure, i.e. offline)
 /// plus a message. The sync engine branches on `status` — 401 is a *state*
 /// (signed out), not an error to retry.

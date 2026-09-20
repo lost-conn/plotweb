@@ -1776,19 +1776,39 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
     padding: var(--pw-space-xl) var(--pw-space-2xl);
 }
 
-/* ── Chrome collapse while typing (editor pane, Stage 5) ──────────────
+/* ── Chrome collapse while typing (editor pane) ────────────────────────
    `.book-workspace.is-writing` is set for as long as the author is actively
-   typing in the chapter editor (see `editor_writing` in book/mod.rs). Fades
-   the sidebar with opacity + pointer-events, never width/margin/display —
-   the prose column's x position must not move when this triggers, since the
-   cursor is mid-line when it does. The editor's own header/footer/rail fade
-   the same way; see EDITOR_CSS for those rules. */
-.book-sidebar {
-    transition: opacity var(--pw-dur-slow) var(--pw-ease);
-}
-.book-workspace.is-writing .book-sidebar {
-    opacity: 0;
-    pointer-events: none;
+   typing in the chapter editor (see `editor_writing` in book/mod.rs). On
+   desktop the sidebar now collapses all the way to zero width instead of
+   just dimming in place — width/min-width/border-right animate together
+   with opacity so the prose column visibly slides over to the viewport
+   center as the chrome clears. Scoped to `@media (min-width: 769px)`: the
+   ≤768px sidebar is an off-canvas overlay (see the mobile block below) that
+   this collapse must not touch. `.book-sidebar > div` gets a min-width floor
+   matching the resting sidebar width so its content can't reflow or wrap
+   mid-collapse — `overflow: hidden` on the sidebar itself just clips the
+   now-too-wide children as the box shrinks around them. The editor's own
+   header/toolbar/footer/rail fade the same way; see EDITOR_CSS for those
+   rules (the footer stays visible throughout — word count and save state are
+   exactly what you still want mid-sentence). */
+@media (min-width: 769px) {
+    .book-sidebar {
+        transition: width var(--pw-dur-slow) var(--pw-ease),
+            min-width var(--pw-dur-slow) var(--pw-ease),
+            border-right-width var(--pw-dur-slow) var(--pw-ease),
+            opacity var(--pw-dur-slow) var(--pw-ease);
+    }
+    .book-sidebar > div {
+        min-width: 250px;
+        flex-shrink: 0;
+    }
+    .book-workspace.is-writing .book-sidebar {
+        width: 0;
+        min-width: 0;
+        border-right-width: 0;
+        opacity: 0;
+        pointer-events: none;
+    }
 }
 
 /* ── Chapters pane: hairline rows, not cards ─────────── */
@@ -2184,5 +2204,285 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
 
 .editor-title-input input:focus {
     border-bottom-color: var(--rinch-color-teal-6) !important;
+}
+"#;
+
+/// CSS for the find-and-replace panel (`panes::find`).
+///
+/// A fixed card in the top-right of the workspace rather than a pane or a
+/// dialog: it has to stay legible over the chapter it is searching, and a
+/// centred overlay would cover the very paragraph whose highlight it is asking
+/// the author to look at. It sits at the popover step, under dialogs, so the
+/// whole-book confirm still lands on top of it.
+///
+/// The hit colours are deliberately **not** theme tokens. A highlight has to
+/// read as a highlight in both themes, which a surface colour cannot do: amber
+/// at low alpha darkens a light page and lifts a dark one, and the prose colour
+/// underneath stays the text colour either way — so one pair of values serves
+/// both, and neither needs a `prefers-color-scheme` twin.
+pub(super) const FIND_CSS: &str = r#"
+.find-panel {
+    position: fixed;
+    top: var(--pw-space-sm);
+    right: var(--pw-space-sm);
+    z-index: var(--pw-z-popover);
+    display: flex;
+    flex-direction: column;
+    gap: var(--pw-space-xs);
+    width: 380px;
+    max-width: calc(100vw - var(--pw-space-lg));
+    max-height: calc(100dvh - var(--pw-space-lg));
+    padding: var(--pw-space-sm);
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-md);
+    box-shadow: var(--pw-shadow-2);
+    font-family: var(--pw-font-ui);
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-text);
+}
+
+.find-row {
+    display: flex;
+    align-items: center;
+    gap: var(--pw-space-2xs);
+}
+
+.find-row svg {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    color: var(--rinch-color-dimmed);
+}
+
+.find-input {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    background: var(--rinch-color-body);
+    color: var(--rinch-color-text);
+    font-family: inherit;
+    font-size: var(--pw-text-sm);
+    outline: none;
+}
+
+.find-input:focus {
+    border-color: var(--rinch-color-teal-6);
+}
+
+.find-input::placeholder {
+    color: var(--rinch-color-placeholder);
+}
+
+/* Fixed width so the panel does not twitch sideways as the count changes from
+   "9 of 9" to "10 of 12" while the author holds Enter down. */
+.find-count {
+    flex-shrink: 0;
+    min-width: 72px;
+    text-align: right;
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
+    white-space: nowrap;
+}
+
+.find-step,
+.find-toggle,
+.find-action,
+.find-scope-option {
+    border: 1px solid transparent;
+    border-radius: var(--pw-radius-sm);
+    background: transparent;
+    color: var(--rinch-color-dimmed);
+    font: inherit;
+    cursor: pointer;
+}
+
+.find-step {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+}
+
+.find-step:hover,
+.find-toggle:hover,
+.find-action:hover,
+.find-scope-option:hover {
+    background: var(--pw-color-deep);
+    color: var(--rinch-color-text);
+}
+
+.find-toggle {
+    flex-shrink: 0;
+    min-width: 30px;
+    padding: 3px 7px;
+    border-color: var(--rinch-color-border);
+    font-size: var(--pw-text-xs);
+    font-weight: 600;
+}
+
+/* A translucent wash of the accent rather than `--rinch-color-teal-9`, which
+   the rest of the app reaches for here. That token is #087f5b in *both* themes
+   — rinch's scales do not flip — so on a light page it is a dark green block
+   under `--rinch-color-text`'s near-black, which cannot be read. At 20% the
+   same hue tints whatever is behind it and leaves the label its own colour. */
+.find-toggle.is-on,
+.find-scope-option.is-on {
+    background: rgba(18, 184, 134, 0.20);
+    border-color: var(--rinch-color-teal-6);
+    color: var(--rinch-color-text);
+}
+
+.find-action {
+    flex-shrink: 0;
+    padding: 4px 9px;
+    border-color: var(--rinch-color-border);
+    font-size: var(--pw-text-xs);
+    white-space: nowrap;
+}
+
+.find-action-wide {
+    width: 100%;
+}
+
+.find-row-options {
+    justify-content: flex-start;
+}
+
+.find-scope {
+    display: flex;
+    margin-left: auto;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    overflow: hidden;
+}
+
+.find-scope-option {
+    padding: 3px 9px;
+    border: 0;
+    border-radius: 0;
+    font-size: var(--pw-text-xs);
+}
+
+/* While a whole-book replace walks the chapters, every control that would
+   start a second one is dimmed. The click guards are in `panes::find`; this is
+   only what the author sees. The close button stays live on purpose — it is the
+   one thing that is always safe. */
+.find-panel.is-busy .find-action,
+.find-panel.is-busy .find-step:not(:last-child),
+.find-panel.is-busy .find-toggle,
+.find-panel.is-busy .find-scope-option,
+.find-panel.is-busy .find-hit {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.find-progress {
+    padding: 4px 8px;
+    border-radius: var(--pw-radius-sm);
+    background: var(--pw-color-deep);
+    font-size: var(--pw-text-xs);
+    color: var(--rinch-color-dimmed);
+}
+
+.find-results {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    margin: 0 calc(-1 * var(--pw-space-2xs));
+}
+
+.find-group + .find-group {
+    margin-top: var(--pw-space-2xs);
+    border-top: 1px solid var(--pw-hairline);
+}
+
+.find-group-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--pw-space-xs);
+    padding: var(--pw-space-2xs) var(--pw-space-2xs) var(--pw-space-3xs);
+    position: sticky;
+    top: 0;
+    background: var(--rinch-color-surface);
+}
+
+.find-group-title {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--pw-text-xs);
+    font-weight: 600;
+    color: var(--rinch-color-text);
+}
+
+.find-group-count {
+    flex-shrink: 0;
+    font-size: var(--pw-text-2xs);
+    color: var(--rinch-color-dimmed);
+}
+
+/* One line per hit, clipped rather than wrapped: forty rows of two-line
+   snippets is a list nobody scans. */
+.find-hit {
+    display: block;
+    width: 100%;
+    padding: 3px var(--pw-space-2xs);
+    border: 0;
+    border-radius: var(--pw-radius-sm);
+    background: transparent;
+    color: var(--rinch-color-dimmed);
+    font: inherit;
+    font-size: var(--pw-text-xs);
+    line-height: var(--pw-lh-ui);
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+.find-hit:hover {
+    background: var(--pw-color-deep);
+}
+
+/* The same wash, plus an accent bar — the wash alone is close enough to the
+   hover background that "which row am I on" would depend on where the pointer
+   happens to be. */
+.find-hit.is-current {
+    background: rgba(18, 184, 134, 0.20);
+    box-shadow: inset 2px 0 0 var(--rinch-color-teal-6);
+    color: var(--rinch-color-text);
+}
+
+.find-hit-match {
+    font-weight: 700;
+    color: var(--rinch-color-text);
+}
+
+.find-footer {
+    padding-top: var(--pw-space-2xs);
+    border-top: 1px solid var(--pw-hairline);
+}
+
+/* Under 768px the panel is the width of the screen, pinned to the top: a
+   380px card floating over a phone-width workspace covers the prose it is
+   searching, which is the one thing it must not do. */
+@media (max-width: 767px) {
+    .find-panel {
+        top: 0;
+        right: 0;
+        left: 0;
+        width: auto;
+        max-width: none;
+        border-radius: 0 0 var(--pw-radius-md) var(--pw-radius-md);
+    }
 }
 "#;

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } from "./helpers";
+import { addChapter, createBook, openChapter, registerNewUser, returnChrome, typeInEditor } from "./helpers";
 
 /**
  * Merely *looking* at a document must never write it.
@@ -26,6 +26,11 @@ test("editor: opening a chapter and leaving it writes nothing", async ({ page })
   await openChapter(page, "Alpha");
   await typeInEditor(page, "Alpha prose that must survive being looked at.");
   await page.waitForTimeout(4000); // let the autosave land
+
+  // The sidebar chrome collapsed to zero width while typing and (with the
+  // idle-return timer gone) stays that way until asked back — bring it back
+  // before the sidebar clicks below, exactly as reaching for the mouse would.
+  await returnChrome(page);
 
   // From here on, any PUT to a chapter is a write we did not ask for.
   const writes: string[] = [];
@@ -62,7 +67,10 @@ test("editor: an actual edit still saves on the way out", async ({ page }) => {
   await openChapter(page, "Alpha");
   await typeInEditor(page, "First pass.");
   // Leave immediately, inside the autosave debounce: the save-on-leave is what
-  // catches this, and the dirty guard must not have disabled it.
+  // catches this, and the dirty guard must not have disabled it. The sidebar
+  // click needs the chrome back first (see `returnChrome`) — Escape doesn't
+  // touch the pending edit, so save-on-leave still has something to flush.
+  await returnChrome(page);
   await openChapter(page, "Beta");
   await page.waitForTimeout(2000);
 

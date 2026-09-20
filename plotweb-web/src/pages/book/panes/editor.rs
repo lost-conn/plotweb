@@ -11,7 +11,7 @@ use crate::pages::editor_utils;
 use crate::rinch_backend::Editor;
 
 use super::super::sigils;
-use super::super::state::BookState;
+use super::super::state::{BookState, SpellMenu};
 use super::super::BookPane;
 use crate::store::AppStore;
 use super::super::feedback::editor_feedback_item;
@@ -403,6 +403,30 @@ fn byte_offset_to_node(node_offsets: &[(usize, usize)], byte_offset: usize) -> (
     (last, node_offsets.get(last).map(|o| o.1 - o.0).unwrap_or(0))
 }
 
+/// Inline `left`/`top` for the spellcheck menu, kept inside the viewport.
+///
+/// The height is an estimate rather than a measurement — reading the laid-out box
+/// would mean a DOM call on web and a different one natively, for a menu whose
+/// rows are a fixed height anyway. Erring tall only ever flips it above the
+/// pointer a little early.
+fn spell_menu_style(menu: &Option<SpellMenu>) -> String {
+    let Some(menu) = menu else {
+        return "display: none;".to_string();
+    };
+    const WIDTH: f64 = 200.0;
+    const ROW: f64 = 30.0;
+    const CHROME: f64 = 22.0;
+    let rows = menu.suggestions.len().max(1) as f64 + 2.0;
+    let height = rows * ROW + CHROME;
+    let left = menu.x.min((menu.viewport_w - WIDTH - 8.0).max(8.0));
+    let top = if menu.y + height + 8.0 <= menu.viewport_h {
+        menu.y
+    } else {
+        (menu.y - height).max(8.0)
+    };
+    format!("left: {left}px; top: {top}px; width: {WIDTH}px;")
+}
+
 /// Render the Editor pane (CSS toggle, always in DOM — preserves undo history).
 #[allow(clippy::too_many_arguments)]
 /// The notes whose bodies `@` the chapter currently open.
@@ -453,6 +477,7 @@ where
         pending_feedback_scroll,
         reply_drafts,
         editor_writing,
+        spell_menu,
         ..
     } = state;
 
@@ -466,10 +491,120 @@ where
         beta_feedback.get().into_iter().filter(|f| f.chapter_id == cid).collect::<Vec<_>>()
     };
 
+    // ── The spellcheck context menu ──────────────────────────────
+    // Pointer → document position is *not* computed here, and deliberately so.
+    // Both rinch backends apply the native caret rule to a context press before
+    // the app's `oncontextmenu` runs — a press outside the selection moves the
+    // caret to the press point — so the caret **is** the hit test, and the app
+    // needs no backend-specific geometry of its own.
+    //
+    // One cost, which is unavoidable with a statically attached handler: claiming
+    // the right-click inside `#editor-main` takes the browser's own Cut / Copy /
+    // Paste menu (rinch #814) with it, on a correctly spelled word as much as on a
+    // misspelled one. The claim is decided at pointer-down, before anything can
+    // know which of the two it was.
+    let close_spell_menu = move || spell_menu.set(None);
+
+    let open_spell_menu = move || {
+        if !store.spellcheck_enabled.get() {
+            spell_menu.set(None);
+            return;
+        }
+        let ctx = rinch_core::events::get_click_context();
+        let handle = chapter_handle.get();
+        let doc = handle.doc();
+        let pos = handle.selection().from();
+        let mut opened = None;
+        crate::spell::loader::with_loaded_speller(|speller| {
+            let Some(found) = crate::spell::misspelling_at(&doc, pos, speller) else {
+                return;
+            };
+            opened = Some(SpellMenu {
+                x: ctx.mouse_x as f64,
+                y: ctx.mouse_y as f64,
+                viewport_w: ctx.viewport_width as f64,
+                viewport_h: ctx.viewport_height as f64,
+                from: found.from.0,
+                to: found.to.0,
+                suggestions: speller.suggest(&found.word, 5),
+                word: found.word,
+            });
+        });
+        spell_menu.set(opened);
+    };
+
+    let apply_suggestion = move |replacement: String| {
+        if let Some(menu) = spell_menu.get() {
+            crate::spell::plugin::replace_word(
+                &chapter_handle.get(),
+                rinch_editor_core::Pos(menu.from),
+                rinch_editor_core::Pos(menu.to),
+                &replacement,
+            );
+        }
+        spell_menu.set(None);
+    };
+
+    let add_to_dictionary = move || {
+        if let (Some(menu), Some(user)) = (spell_menu.get(), store.current_user.get()) {
+            // Writes the signal, this device's local copy and the account's list;
+            // the effect on `store.user_dictionary` is what repaints the editor.
+            crate::local_dictionary::add_word(&user.id, &menu.word, store);
+        }
+        spell_menu.set(None);
+    };
+
+    let ignore_once = move || {
+        if let Some(menu) = spell_menu.get() {
+            crate::spell::plugin::ignore_for_session(&chapter_handle.get(), &menu.word);
+        }
+        spell_menu.set(None);
+    };
+
     rsx! {
         div {
             class: {move || if editor_writing.get() { "editor-layout is-writing" } else { "editor-layout" }},
             style: {move || if matches!(active_pane.get(), BookPane::Editor(_)) { "" } else { "display:none;" }},
+
+            // ── Spellcheck suggestions ───────────────────────────
+            // Drawn here (first child, `position: fixed`) rather than beside the
+            // word: the prose column scrolls and the feedback rail clips, and a
+            // menu anchored inside either goes with them.
+            //
+            // The backdrop is the click-outside: rinch fires `onclick` on
+            // pointer-down, so a `blur`-style dismissal would race the item click.
+            if spell_menu.get().is_some() {
+                div { class: "spell-menu-backdrop", onclick: close_spell_menu }
+                div {
+                    class: "spell-menu",
+                    style: {move || spell_menu_style(&spell_menu.get())},
+                    for suggestion in spell_menu.get().map(|m| m.suggestions).unwrap_or_default() {
+                        button {
+                            key: suggestion.clone(),
+                            class: "spell-menu-item spell-menu-suggestion",
+                            onclick: {
+                                let word = suggestion.clone();
+                                move || apply_suggestion(word.clone())
+                            },
+                            {suggestion.clone()}
+                        }
+                    }
+                    if spell_menu.get().is_some_and(|m| m.suggestions.is_empty()) {
+                        div { class: "spell-menu-empty", "No suggestions" }
+                    }
+                    div { class: "spell-menu-sep" }
+                    button {
+                        class: "spell-menu-item",
+                        onclick: add_to_dictionary,
+                        "Add to dictionary"
+                    }
+                    button {
+                        class: "spell-menu-item",
+                        onclick: ignore_once,
+                        "Ignore"
+                    }
+                }
+            }
 
             div { class: "editor-topbar",
                 div { class: "editor-topbar-left",
@@ -568,6 +703,7 @@ where
                     div {
                         class: "editor-content",
                         id: "editor-main",
+                        oncontextmenu: open_spell_menu,
                         Editor {
                             editor: chapter_handle.get(),
                             content: String::new(),

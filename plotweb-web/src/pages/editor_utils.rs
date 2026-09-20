@@ -4,6 +4,7 @@ use rinch::prelude::*;
 use rinch_core::Signal;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use crate::rinch_backend::EditorHandle;
+use rinch_editor_core::EditorState;
 use rinch_editor_core::serialize::DocNode;
 
 use wasm_bindgen::prelude::*;
@@ -147,6 +148,36 @@ fn current_heading_level(handle: &EditorHandle) -> Option<i64> {
     let state = handle.state();
     let resolved = state.doc.resolve(state.selection.head()).ok()?;
     resolved.parent().attrs().get_int("level")
+}
+
+/// The horizontal alignment of the textblock holding `state`'s selection head —
+/// `"left"`, `"center"`, `"right"` or `"justify"`.
+///
+/// `"left"` is the default and rinch stores it as the *absence* of the
+/// `text_align` attribute (see `commands::TEXT_ALIGN_VALUES`), so a missing attr
+/// reads back as `"left"`. Anything outside the three non-default values reads as
+/// `"left"` too: rinch's HTML serializer and its DOM projection whitelist exactly
+/// those three, so a stray value is invisible on screen and the toolbar should
+/// agree with the screen rather than with the model.
+///
+/// Split out of [`current_text_align`] so the part worth testing is a pure
+/// function of an `EditorState` and needs no live editor (hence no DOM).
+fn text_align_of(state: &EditorState) -> &'static str {
+    let Ok(resolved) = state.doc.resolve(state.selection.head()) else {
+        return "left";
+    };
+    match resolved.parent().attrs().get_str("text_align") {
+        Some("center") => "center",
+        Some("right") => "right",
+        Some("justify") => "justify",
+        _ => "left",
+    }
+}
+
+/// The alignment the cursor is in — drives the four alignment buttons' active
+/// states, the way [`current_heading_level`] drives H1/H2/H3.
+fn current_text_align(handle: &EditorHandle) -> &'static str {
+    text_align_of(&handle.state())
 }
 
 /// Where the caret is on screen, as far as it can be known without a layout pass.
@@ -299,6 +330,103 @@ pub fn replace_before_caret(handle: &EditorHandle, chars: usize, text: &str) -> 
 
 /// Editor CSS — focused writing environment with semantic colors.
 pub const EDITOR_CSS: &str = r#"
+/* ── Find and replace ──────────────────────────────────────────────────
+   The classes `find::plugin` names on its decorations. rinch's editor view
+   projects an inline decoration as `<span data-pm-deco class="…">` and merges
+   overlapping ones into a single span carrying every class, so the current hit
+   is one element with both classes here — and a hit that is also misspelled
+   keeps its squiggle alongside the wash.
+
+   The colours are literals rather than theme tokens on purpose: a highlight
+   has to read as one in both themes, and translucent amber over the page does
+   that where a surface token cannot (it darkens a light page and lifts a dark
+   one, leaving the prose its own colour either way). The current hit is the
+   same hue at more weight plus a hairline, so "which one am I on" survives a
+   page where several hits sit in one paragraph. */
+[data-pm-editor] [data-pm-deco].pm-search-hit {
+    background: rgba(255, 193, 7, 0.28);
+    border-radius: 2px;
+}
+
+[data-pm-editor] [data-pm-deco].pm-search-hit-current {
+    background: rgba(255, 152, 0, 0.55);
+    box-shadow: 0 0 0 1px rgba(255, 152, 0, 0.9);
+}
+
+/* ── Spellcheck ────────────────────────────────────────────────────────
+   The squiggle itself is rinch's: the editor view's own stylesheet styles
+   `[data-pm-editor] [data-pm-deco].pm-spell-error`, and the plugin does
+   nothing but name that class. Only the suggestion menu is ours, and it
+   borrows the popover's language (surface, hairline, shadow-2, radius-sm)
+   so it reads as the same family as the chapter tooltips and the feedback
+   popover rather than as a second menu system. */
+.spell-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--pw-z-popover);
+}
+
+.spell-menu {
+    position: fixed;
+    z-index: calc(var(--pw-z-popover) + 1);
+    display: flex;
+    flex-direction: column;
+    padding: 4px;
+    background: var(--rinch-color-surface);
+    border: 1px solid var(--rinch-color-border);
+    border-radius: var(--pw-radius-sm);
+    box-shadow: var(--pw-shadow-2);
+    font-family: var(--pw-font-ui);
+    font-size: var(--pw-text-sm);
+    color: var(--rinch-color-text);
+}
+
+.spell-menu-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 5px 9px;
+    border: 0;
+    border-radius: var(--pw-radius-xs, 3px);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.spell-menu-item:hover {
+    background: var(--pw-color-deep);
+}
+
+/* The repairs are the point of the menu; the two actions under the rule are
+   housekeeping, so only the repairs carry weight. */
+.spell-menu-suggestion {
+    font-weight: 600;
+}
+
+.spell-menu-empty {
+    padding: 5px 9px;
+    color: var(--rinch-color-dimmed);
+    font-style: italic;
+}
+
+.spell-menu-sep {
+    height: 1px;
+    margin: 4px 2px;
+    background: var(--pw-hairline);
+}
+
+/* The Typography pane's switch row — the same left-aligned block the font and
+   spacing grids sit in, without the two-column grid they need. */
+.typo-switch-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .editor-layout {
     display: flex;
     flex-direction: column;
@@ -341,6 +469,39 @@ pub const EDITOR_CSS: &str = r#"
     background: var(--rinch-color-border);
     margin: 0 6px;
     flex-shrink: 0;
+}
+
+/* Wrapper around each alignment ActionIcon — it exists to carry `data-align`
+   and `title`, which the component itself has no prop for. Purely a pass-through
+   box: it must not add its own metrics to the toolbar's flex row. */
+.toolbar-align {
+    display: inline-flex;
+    flex-shrink: 0;
+}
+
+/* ── Alignment vs. the first-line indent ───────────────────────────────
+   `paragraph_indent` (Typography pane) puts a `text-indent` on every editor
+   paragraph, which is right for a left-aligned or justified block — a justified
+   paragraph is still a normal indented paragraph, it just stretches its lines —
+   and wrong for a centred or right-aligned one, where the indent shoves the
+   first line off the axis the alignment just established.
+
+   These have to out-specify the runtime rule that sets the indent
+   (`#editor-main [data-pm-editor] p`, book/mod.rs), which the attribute selector
+   does. Both spellings of the declaration are matched because the two producers
+   disagree: the live editor projects the attribute through `set_style`, so the
+   CSSOM serializes it as `text-align: center;` (space, semicolon), while rinch's
+   HTML serializer writes the compact `text-align:center` — and history views
+   render serializer output into this same editor chrome. */
+#editor-main [data-pm-editor] p[style*="text-align: center"],
+#editor-main [data-pm-editor] p[style*="text-align:center"],
+#editor-main [data-pm-editor] p[style*="text-align: right"],
+#editor-main [data-pm-editor] p[style*="text-align:right"],
+#note-editor-main [data-pm-editor] p[style*="text-align: center"],
+#note-editor-main [data-pm-editor] p[style*="text-align:center"],
+#note-editor-main [data-pm-editor] p[style*="text-align: right"],
+#note-editor-main [data-pm-editor] p[style*="text-align:right"] {
+    text-indent: 0;
 }
 
 .editor-scroll {
@@ -488,7 +649,8 @@ pub const EDITOR_CSS: &str = r#"
 #note-editor-main [data-pm-editor] hr {
     border: none;
     border-top: 1px solid var(--rinch-color-border);
-    margin: 24px 0;
+    width: 30%;
+    margin: 32px auto;
 }
 
 #editor-main [data-pm-editor] strong,
@@ -574,32 +736,50 @@ pub const EDITOR_CSS: &str = r#"
     font-weight: 400;
 }
 
-/* ── Chrome collapse while typing (task 4) ─────────────────────────────
+/* ── Chrome collapse while typing ────────────────────────────────────
    `.editor-layout.is-writing` is set for as long as the author is actively
    typing (see `editor_writing` in book/mod.rs — driven by `EditorHandle::
    on_change`, the only cross-platform "an edit happened" signal available;
    there is no DOM `keydown` to hang this on since `#editor-main` isn't
-   `contenteditable`). Every rule here is opacity + `pointer-events: none` —
-   deliberately never `display`, `width`, or `margin` — so the prose column's
-   x position cannot shift mid-sentence. The feedback rail keeps its `width:
-   300px` (or is simply absent — task 3) the entire time; only its ink fades.
+   `contenteditable`). The topbar and toolbar fade with opacity +
+   `pointer-events: none`. The footer is deliberately left out of that list —
+   word count and save state are exactly what you still want visible
+   mid-sentence, so it stays fully opaque and clickable the whole time.
+   On desktop the feedback rail collapses to zero width (in step with the
+   `.book-sidebar` collapse over in book/css.rs) rather than just fading in
+   place, so the prose column re-centers into the freed space; its inner
+   content gets a min-width floor below so it can't reflow mid-collapse, with
+   `overflow: hidden` on the rail clipping the now-too-wide children. Mobile's
+   bottom-sheet rail keeps the older opacity-only treatment (see the
+   ≤768px block below) since it's summoned deliberately rather than being
+   ambient chrome.
    `prefers-reduced-motion` (see app_shell.rs) already zeroes every transition
    duration site-wide, so collapse/return is instant rather than animated for
    users who asked for that. */
 .editor-layout.is-writing .editor-topbar,
-.editor-layout.is-writing .toolbar,
-.editor-layout.is-writing .editor-footer {
+.editor-layout.is-writing .toolbar {
     opacity: 0;
     pointer-events: none;
 }
 
-.editor-feedback-sidebar {
-    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
-}
-
-.editor-layout.is-writing .editor-feedback-sidebar {
-    opacity: 0;
-    pointer-events: none;
+@media (min-width: 769px) {
+    .editor-feedback-sidebar {
+        transition: width var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+            min-width var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+            border-left-width var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+            opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
+    }
+    .editor-feedback-sidebar > div {
+        min-width: 300px;
+        flex-shrink: 0;
+    }
+    .editor-layout.is-writing .editor-feedback-sidebar {
+        width: 0;
+        min-width: 0;
+        border-left-width: 0;
+        opacity: 0;
+        pointer-events: none;
+    }
 }
 
 @media (max-width: 768px) {
@@ -664,8 +844,7 @@ fn fmt_button(
 /// The editor toolbar, driving `handle` (a `rinch-editor-view` [`EditorHandle`])
 /// through `handle.command(...)` — the same model-first API desktop uses. `on_edit`
 /// is called after any content-mutating action so the caller can schedule an
-/// autosave. Text alignment is intentionally omitted (no editor command yet — a
-/// separate upstream card adds it).
+/// autosave.
 ///
 /// A plain function (not `#[component]`) so it can take the non-`Copy` `EditorHandle`
 /// and the `on_edit` closure directly.
@@ -705,6 +884,13 @@ pub fn editor_toolbar(
     let s_bquote: Signal<bool> = Signal::new(false);
     let s_ul: Signal<bool> = Signal::new(false);
     let s_ol: Signal<bool> = Signal::new(false);
+    // Alignment is a four-way choice, not four toggles, so exactly one of these is
+    // ever true — and "left" starts true because it is the default every fresh
+    // paragraph has (stored as no `text_align` attribute at all).
+    let s_align_left: Signal<bool> = Signal::new(true);
+    let s_align_center: Signal<bool> = Signal::new(false);
+    let s_align_right: Signal<bool> = Signal::new(false);
+    let s_align_justify: Signal<bool> = Signal::new(false);
 
     // Recompute active states from the editor model. Shared (Rc) so every button
     // closure and the document listeners can call it.
@@ -723,6 +909,11 @@ pub fn editor_toolbar(
             s_bquote.set(h.in_node_type("blockquote"));
             s_ul.set(h.in_node_type("bullet_list"));
             s_ol.set(h.in_node_type("ordered_list"));
+            let align = current_text_align(&h);
+            s_align_left.set(align == "left");
+            s_align_center.set(align == "center");
+            s_align_right.set(align == "right");
+            s_align_justify.set(align == "justify");
         })
     };
 
@@ -784,12 +975,38 @@ pub fn editor_toolbar(
             {fmt_button(__scope, TablerIcon::Blockquote, cmd_click!("wrapInBlockquote"), s_bquote)}
             {fmt_button(__scope, TablerIcon::List, cmd_click!("toggleBulletList"), s_ul)}
             {fmt_button(__scope, TablerIcon::ListNumbers, cmd_click!("toggleOrderedList"), s_ol)}
+            {toolbar_button(__scope, TablerIcon::SeparatorHorizontal, "Scene break", cmd_click!("insertHorizontalRule"))}
 
             {separator(__scope)}
 
             // Indent / Outdent (no active state)
             {toolbar_button(__scope, TablerIcon::IndentIncrease, "Indent", cmd_click!("indent"))}
             {toolbar_button(__scope, TablerIcon::IndentDecrease, "Outdent", cmd_click!("outdent"))}
+
+            {separator(__scope)}
+
+            // Text alignment — a four-way choice over the textblock(s) under the
+            // selection, not four independent toggles.
+            //
+            // Each button is wrapped rather than carrying its own attributes because
+            // `ActionIcon` has no class/attribute prop, and setting one on the node
+            // `fmt_button` returns would not survive: a component with a reactive
+            // prop (the `variant` closure that draws the active state) re-renders
+            // into a *fresh* element on every change, dropping anything set on the
+            // old one. The wrapper is also where the native `title` tooltip lives,
+            // for the same reason — the keystrokes come from rinch's default keymap.
+            span { class: "toolbar-align", data-align: "left", title: "Align left (Ctrl+Shift+L)",
+                {fmt_button(__scope, TablerIcon::AlignLeft, cmd_click!("setTextAlignLeft"), s_align_left)}
+            }
+            span { class: "toolbar-align", data-align: "center", title: "Align center (Ctrl+Shift+E)",
+                {fmt_button(__scope, TablerIcon::AlignCenter, cmd_click!("setTextAlignCenter"), s_align_center)}
+            }
+            span { class: "toolbar-align", data-align: "right", title: "Align right (Ctrl+Shift+R)",
+                {fmt_button(__scope, TablerIcon::AlignRight, cmd_click!("setTextAlignRight"), s_align_right)}
+            }
+            span { class: "toolbar-align", data-align: "justify", title: "Justify (Ctrl+Shift+J)",
+                {fmt_button(__scope, TablerIcon::AlignJustified, cmd_click!("setTextAlignJustify"), s_align_justify)}
+            }
 
             {separator(__scope)}
 
@@ -987,4 +1204,64 @@ fn sanitize_node(el: &web_sys::Element) {
     }
 }
 
+#[cfg(test)]
+mod text_align_tests {
+    use super::text_align_of;
+    use rinch_editor_core::{AttrValue, Attrs, EditorState, Fragment, Schema};
+    use std::rc::Rc;
 
+    /// A one-paragraph document whose paragraph carries `attrs`, with the caret
+    /// left where `EditorState::create` puts it — inside that paragraph — so
+    /// `text_align_of` resolves the paragraph as the selection's parent.
+    fn state_with_paragraph_attrs(attrs: Attrs) -> EditorState {
+        let schema = Schema::starter_kit();
+        let para = schema
+            .create_node(
+                "paragraph",
+                attrs,
+                Fragment::from_node(schema.text("Prose").unwrap()),
+            )
+            .unwrap();
+        let doc = schema.branch("doc", Fragment::from_node(para)).unwrap();
+        EditorState::create(Rc::new(schema), doc, vec![])
+    }
+
+    fn align_with(attr: Option<&str>) -> &'static str {
+        let attrs = match attr {
+            Some(v) => Attrs::from_iter([("text_align", AttrValue::from(v))]),
+            None => Attrs::new(),
+        };
+        text_align_of(&state_with_paragraph_attrs(attrs))
+    }
+
+    #[test]
+    fn the_three_non_default_alignments_are_reported() {
+        assert_eq!(align_with(Some("center")), "center");
+        assert_eq!(align_with(Some("right")), "right");
+        assert_eq!(align_with(Some("justify")), "justify");
+    }
+
+    #[test]
+    fn a_missing_attribute_reads_as_left() {
+        // The default is stored as the *absence* of `text_align`, so this is the
+        // case every freshly typed paragraph hits — and the Left button has to
+        // light up for it.
+        assert_eq!(align_with(None), "left");
+    }
+
+    #[test]
+    fn an_explicit_left_reads_as_left() {
+        // `setTextAlignLeft` writes the attribute rather than removing it, so
+        // "left" arrives spelled out as well as absent.
+        assert_eq!(align_with(Some("left")), "left");
+    }
+
+    #[test]
+    fn an_unrecognized_alignment_reads_as_left() {
+        // rinch's serializer and its DOM projection both whitelist the three
+        // non-default values, so anything else renders left-aligned. The toolbar
+        // has to agree with the screen rather than with the model.
+        assert_eq!(align_with(Some("end")), "left");
+        assert_eq!(align_with(Some("center; color:red")), "left");
+    }
+}

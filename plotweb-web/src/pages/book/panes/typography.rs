@@ -294,6 +294,24 @@ pub(in crate::pages::book) fn render(
                             })}
                     }
                     Space { h: "lg" }
+                    Text { weight: "600", size: "sm", "Writing" }
+                    Space { h: "xs" }
+                    // Per *device*, not per account — a manuscript proofread on a
+                    // laptop and drafted on a phone wants different answers. See
+                    // `crate::spell::settings`.
+                    div { class: "typo-switch-row", id: "pw-spellcheck",
+                        Switch {
+                            label: "Spellcheck",
+                            description: "Underline misspelled words while you write. Remembered on this device.",
+                            checked_fn: move || store.spellcheck_enabled.get(),
+                            onchange: move || {
+                                let next = !store.spellcheck_enabled.get();
+                                store.spellcheck_enabled.set(next);
+                                crate::spell::settings::persist(next);
+                            },
+                        }
+                    }
+                    Space { h: "lg" }
                     Text { size: "sm", color: "dimmed", "Preview:" }
                     div { class: "font-preview-box", id: "font-preview",
                         h3 {

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } from "./helpers";
+import { addChapter, createBook, openChapter, registerNewUser, returnChrome, typeInEditor } from "./helpers";
 
 /**
  * Switching chapters must never let one chapter's text reach another.
@@ -42,8 +42,13 @@ test("editor: rapid chapter switching never mixes chapter bodies", async ({ page
 
   await openChapter(page, "Alpha");
   await typeInEditor(page, ALPHA);
+  // The chrome-collapse (sidebar hidden at zero width while `is-writing`, no
+  // idle timer to bring it back) means the next sidebar click has to ask for
+  // the chrome back first, the same way an author reaching for the mouse would.
+  await returnChrome(page);
   await openChapter(page, "Beta");
   await typeInEditor(page, BETA);
+  await returnChrome(page);
 
   // Leave the editor so the debounced autosave flushes, then reload so both
   // bodies come back from the server and each has a local doc on disk (the

@@ -52,9 +52,31 @@ pub fn split_chapters(data: &[u8]) -> Result<Vec<DetectedChapter>, ImportError> 
             }
             current_title = Some(para.text.clone());
         } else if !para.text.is_empty() {
-            if let Some(ref align) = para.alignment {
-                current_lines.push(format!("{{align:{}}}\n{}", align, para.text));
+            if is_scene_break_glyph(&para.text) {
+                // A paragraph that is nothing but a scene-break glyph (`***`,
+                // `# # #`, `⁂`, …) becomes a Markdown thematic break on its own
+                // line, blank-line separated from its neighbors so CommonMark
+                // never merges it with the preceding line into a setext
+                // heading. Any alignment Word recorded for this paragraph
+                // (scene breaks are often centered) is intentionally dropped
+                // rather than emitted as a marker: `---` has no `text_align`
+                // to carry, and a marker sitting in front of it would either
+                // be silently discarded by `apply_alignment_markers` (it only
+                // matches `paragraph`/`heading` siblings) or, worse, misattach
+                // to whatever block follows if that logic ever changes.
+                current_lines.push("---".to_string());
             } else {
+                if let Some(ref align) = para.alignment {
+                    // Emitted as its own markdown block (blank-line separated
+                    // from the paragraph it describes) so it always parses as
+                    // a distinct sibling node — `markdown_to_docnode_json`'s
+                    // post-pass looks for exactly that shape to fold the
+                    // alignment into the following block's `text_align` attr
+                    // and drop the marker. A single "\n" would let CommonMark
+                    // merge the two lines into one paragraph via a soft break
+                    // instead.
+                    current_lines.push(format!("{{align:{}}}", align));
+                }
                 current_lines.push(para.text.clone());
             }
         }
@@ -327,6 +349,35 @@ fn parse_document_xml(xml: &[u8], style_map: &StyleMap) -> Result<Vec<Paragraph>
     Ok(paragraphs)
 }
 
+/// True when `text` (already trimmed of leading/trailing whitespace) is
+/// nothing but a scene-break glyph: `***`, `* * *`, `#`, `# # #`, `~`,
+/// `~ ~ ~`, `⁂`, or 3+ of `*`/`~`/`#`/`-` with optional spaces between them.
+///
+/// A single `#` or `~` counts (authors commonly use exactly one as a scene
+/// break), but a single `*` or `-` does not — those are too easily a stray
+/// bullet or dash rather than an intentional break, so they require 3+.
+/// Anything with other text mixed in (`*** important ***`) is never a match.
+fn is_scene_break_glyph(text: &str) -> bool {
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    if compact == "⁂" {
+        return true;
+    }
+    let mut chars = compact.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !matches!(first, '*' | '~' | '#' | '-') {
+        return false;
+    }
+    if !chars.all(|c| c == first) {
+        return false;
+    }
+    match first {
+        '#' | '~' => true,
+        _ => compact.chars().count() >= 3,
+    }
+}
+
 /// Wrap text in markdown bold/italic markers.
 fn wrap_formatting(text: &str, bold: bool, italic: bool) -> String {
     match (bold, italic) {
@@ -343,5 +394,38 @@ fn local_name(full: &[u8]) -> &[u8] {
         &full[pos + 1..]
     } else {
         full
+    }
+}
+
+#[cfg(test)]
+mod glyph_tests {
+    use super::is_scene_break_glyph;
+
+    #[test]
+    fn recognizes_documented_scene_break_glyphs() {
+        for glyph in ["***", "* * *", "#", "# # #", "~", "~ ~ ~", "⁂", "----", "###"] {
+            assert!(is_scene_break_glyph(glyph), "expected a match for {glyph:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_single_asterisk_or_dash() {
+        // Too easily a stray bullet or dash to treat as an intentional break.
+        assert!(!is_scene_break_glyph("*"));
+        assert!(!is_scene_break_glyph("-"));
+        assert!(!is_scene_break_glyph("**"));
+        assert!(!is_scene_break_glyph("--"));
+    }
+
+    #[test]
+    fn rejects_text_mixed_with_glyphs() {
+        assert!(!is_scene_break_glyph("*** important ***"));
+        assert!(!is_scene_break_glyph("# Heading"));
+    }
+
+    #[test]
+    fn rejects_empty_or_mixed_glyph_runs() {
+        assert!(!is_scene_break_glyph(""));
+        assert!(!is_scene_break_glyph("*-*"));
     }
 }

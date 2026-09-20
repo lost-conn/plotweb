@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use crate::{ExportError, ExportInput, content_to_markdown, decode_entities};
-use docx_rs::{AlignmentType, BreakType, Docx, Paragraph, Run};
+use docx_rs::{AlignmentType, BreakType, Docx, LineSpacing, Paragraph, Run};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// Render the manuscript as a DOCX. Each chapter starts with a `Heading1`
@@ -153,6 +153,16 @@ fn render_chapter_body(mut docx: Docx, markdown: &str) -> Docx {
             Event::HardBreak => {
                 cur = cur.add_run(Run::new().add_break(BreakType::TextWrapping));
             }
+            Event::Rule => {
+                // Scene break: a standalone centered `* * *` paragraph with a
+                // little breathing room above/below, rather than the dropped-
+                // on-the-floor behavior of leaving `Event::Rule` unhandled.
+                let rule = Paragraph::new()
+                    .align(AlignmentType::Center)
+                    .line_spacing(LineSpacing::new().before(240).after(240))
+                    .add_run(Run::new().add_text("* * *"));
+                docx = docx.add_paragraph(rule);
+            }
             _ => {}
         }
     }
@@ -196,5 +206,87 @@ fn heading_style(level: HeadingLevel) -> &'static str {
         HeadingLevel::H4 => "Heading4",
         HeadingLevel::H5 => "Heading5",
         HeadingLevel::H6 => "Heading6",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ExportChapter;
+    use crate::test_support::aligned_paragraph_json;
+    use std::io::Read;
+
+    /// Render a one-chapter DOCX from `content` and return `word/document.xml`.
+    fn document_xml(content: &str) -> String {
+        let input = ExportInput {
+            title: "Book".into(),
+            description: String::new(),
+            chapters: vec![ExportChapter {
+                title: "One".into(),
+                content: content.into(),
+            }],
+        };
+        let bytes = render(&input).expect("docx renders");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip");
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .expect("word/document.xml present")
+            .read_to_string(&mut xml)
+            .expect("readable xml");
+        xml
+    }
+
+    #[test]
+    fn centered_paragraph_sets_w_jc_center() {
+        let xml = document_xml(&aligned_paragraph_json("center", "Centered"));
+        assert!(
+            xml.contains(r#"<w:jc w:val="center"/>"#) || xml.contains(r#"<w:jc w:val="center" />"#),
+            "document.xml was: {xml}"
+        );
+        assert!(xml.contains("Centered"), "document.xml was: {xml}");
+    }
+
+    #[test]
+    fn right_aligned_paragraph_sets_w_jc_right() {
+        let xml = document_xml(&aligned_paragraph_json("right", "Righty"));
+        assert!(
+            xml.contains(r#"<w:jc w:val="right"/>"#) || xml.contains(r#"<w:jc w:val="right" />"#),
+            "document.xml was: {xml}"
+        );
+    }
+
+    #[test]
+    fn justified_paragraph_sets_w_jc_both() {
+        // docx's justification value for "justify" is "both", not "justify".
+        let xml = document_xml(&aligned_paragraph_json("justify", "Justified"));
+        assert!(
+            xml.contains(r#"<w:jc w:val="both"/>"#) || xml.contains(r#"<w:jc w:val="both" />"#),
+            "document.xml was: {xml}"
+        );
+    }
+
+    #[test]
+    fn scene_break_becomes_centered_asterisks_paragraph() {
+        // `---` reaches the DOCX walker as `Event::Rule` (legacy Markdown passes
+        // through `content_to_markdown` untouched); it must become its own
+        // centered `* * *` paragraph rather than being silently dropped.
+        let xml = document_xml("Para one.\n\n---\n\nPara two.");
+        assert!(xml.contains("* * *"), "document.xml was: {xml}");
+        assert!(
+            xml.contains(r#"<w:jc w:val="center"/>"#) || xml.contains(r#"<w:jc w:val="center" />"#),
+            "document.xml was: {xml}"
+        );
+        assert!(xml.contains("Para one."), "document.xml was: {xml}");
+        assert!(xml.contains("Para two."), "document.xml was: {xml}");
+    }
+
+    #[test]
+    fn default_aligned_paragraph_sets_no_w_jc() {
+        // Left/default alignment must not appear as an explicit `w:jc` at all —
+        // matches `parse_align_marker` returning `None` for anything else.
+        let json = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Plain"}]}]}"#;
+        let xml = document_xml(json);
+        assert!(!xml.contains("w:jc"), "document.xml was: {xml}");
+        assert!(xml.contains("Plain"), "document.xml was: {xml}");
     }
 }

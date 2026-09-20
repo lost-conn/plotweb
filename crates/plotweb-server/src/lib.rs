@@ -177,6 +177,26 @@ pub fn api_router(state: AppState) -> Router {
                 .get(routes::sync::get_canonical_user_doc),
         )
         .route("/api/fonts", get(routes::fonts::list))
+        // Bundled Hunspell assets — public and immutable; see routes::dictionaries.
+        .route(
+            "/api/dictionaries/en_US.aff",
+            get(routes::dictionaries::en_us_aff),
+        )
+        .route(
+            "/api/dictionaries/en_US.dic",
+            get(routes::dictionaries::en_us_dic),
+        )
+        // The signed-in account's custom spellcheck words. The body limit is a
+        // route-level layer (not a router-level one) so it clamps this PUT alone and
+        // leaves the sync endpoints' much larger limit intact.
+        .route(
+            "/api/me/dictionary",
+            get(routes::user_dictionary::get)
+                .put(routes::user_dictionary::update)
+                .layer(DefaultBodyLimit::max(
+                    routes::user_dictionary::MAX_DICTIONARY_BODY,
+                )),
+        )
         .route("/api/books", get(routes::books::list))
         .route("/api/books", post(routes::books::create))
         .route("/api/books/{id}", get(routes::books::get))

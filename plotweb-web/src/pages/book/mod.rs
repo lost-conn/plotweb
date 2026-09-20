@@ -57,6 +57,27 @@ enum BookPane {
     Calendar,
 }
 
+/// Whether the caret is in one of the find panel's own fields.
+///
+/// The panel's query and replace boxes are raw `<input>`s — rsx gives a raw
+/// element no `onkeydown` prop (see `panes::chapters::focus_inline_input` for
+/// the full list of what it does give one) — so Enter and Shift+Enter are read
+/// off the window listener instead. This is what stops that read taking Enter
+/// away from the prose editor: the panel only gets the key when it is the thing
+/// being typed into.
+///
+/// Always `false` on native, where there is no document to ask. That is the same
+/// documented gap the inline chapter-title input has, and it fails safe — Enter
+/// goes to the editor, and the Prev/Next buttons still work.
+fn find_field_focused() -> bool {
+    crate::platform::document()
+        .and_then(|d| d.active_element())
+        .and_then(|el| el.get_attribute("id"))
+        .is_some_and(|id| {
+            id == panes::find::QUERY_INPUT_ID || id == panes::find::REPLACE_INPUT_ID
+        })
+}
+
 #[component]
 pub fn book_page(book_id: String) -> NodeHandle {
     let store = use_store::<AppStore>();
@@ -102,7 +123,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
         note_dirty,
         auto_save_timer_id,
         editor_writing,
-        editor_writing_idle_timer_id,
         chapter_handle,
         note_handle,
         bid_signal,
@@ -150,6 +170,37 @@ pub fn book_page(book_id: String) -> NodeHandle {
         let dark = store.dark_mode.get();
         chapter_handle.get().set_dark_mode(dark);
         note_handle.get().set_dark_mode(dark);
+    });
+
+    // ── Keep the spellchecker's word lists current ───────────────
+    // The book's entity notes are its proper nouns; feeding their titles to the
+    // speller is what stops a character's name being underlined on every page.
+    // Re-run whenever the notes change (a note created, renamed, or given the
+    // entity facet), because each of those changes the set of names.
+    //
+    // All three effects repaint both prose surfaces: one speller serves them, a
+    // note's body is prose too, and a word added from the chapter editor should
+    // stop being underlined in the note editor as well.
+    __scope.create_effect(move || {
+        let words = crate::spell::entity_words_from_notes(&store.notes.get());
+        crate::spell::plugin::set_entity_words(&chapter_handle.get(), words);
+        crate::spell::plugin::force_redraw(&note_handle.get());
+    });
+
+    // The account's own words. `local_dictionary` hands them to the plugin as they
+    // arrive (from local storage, then the server, then an "Add to dictionary")
+    // and then sets this signal; this is the half that makes the editor redraw.
+    __scope.create_effect(move || {
+        let _ = store.user_dictionary.get();
+        crate::spell::plugin::user_words_changed(&chapter_handle.get());
+        crate::spell::plugin::force_redraw(&note_handle.get());
+    });
+
+    // The switch. Held in the store so the Typography pane can flip it from a
+    // pane that knows nothing about editors.
+    __scope.create_effect(move || {
+        crate::spell::plugin::set_enabled(&chapter_handle.get(), store.spellcheck_enabled.get());
+        crate::spell::plugin::force_redraw(&note_handle.get());
     });
 
     // Whether the chapter currently open in the editor has any feedback — the
@@ -367,35 +418,27 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     // ── Chrome collapse while typing ─────────────────────────────
-    // Sidebar, editor header, footer and feedback rail fade (CSS opacity +
-    // `pointer-events: none` on `editor_writing` — see EDITOR_CSS) while the
-    // author is actively typing, and return on pointer move, Escape, or a short
-    // idle pause. Driven off real edits (`EditorHandle::on_change`), not DOM
-    // `keydown`: `#editor-main` is rinch's own editor-view, not a
-    // `contenteditable`, so there is no native `input`/`keydown` to hang this on
-    // at the DOM level the way the reference mockup does.
+    // Sidebar, editor header/toolbar and feedback rail fade (and on desktop
+    // the sidebar and feedback rail also collapse to zero width — CSS on
+    // `editor_writing`, see EDITOR_CSS / book/css.rs) while the author is
+    // actively typing, and return ONLY on pointer move or Escape — no idle
+    // timer brings it back on its own, so the chrome stays out of the way for
+    // as long as the author keeps their eyes on the page. Driven off real
+    // edits (`EditorHandle::on_change`), not DOM `keydown`: `#editor-main` is
+    // rinch's own editor-view, not a `contenteditable`, so there is no native
+    // `input`/`keydown` to hang this on at the DOM level the way the
+    // reference mockup does.
     let stop_writing = move || {
         editor_writing.set(false);
-        if let Some(h) = editor_writing_idle_timer_id.get() {
-            rinch_core::clear_timeout(h);
-            editor_writing_idle_timer_id.set(None);
-        }
     };
     let start_writing = move || {
         editor_writing.set(true);
-        if let Some(h) = editor_writing_idle_timer_id.get() {
-            rinch_core::clear_timeout(h);
-        }
-        editor_writing_idle_timer_id.set(Some(rinch_core::reactive::unowned(move || rinch_core::set_timeout(2500, move || {
-            bail_if_stale!();
-            editor_writing.set(false);
-        }))));
     };
 
     // ── Set up Ctrl+S, Escape-to-return, and auto-save (once, on mount) ──
     if let Some(window) = crate::platform::window() {
         // Ctrl+S — immediate save of the current chapter. Escape — bring the
-        // collapsed chrome back immediately rather than waiting for the idle timer.
+        // collapsed chrome back immediately.
         // Both listeners below are `forget()`-ed, so they stay bound to `window`
         // for the life of the tab — including after this page's scope is gone.
         // Every signal they touch is freed at that point and `Signal::get()`
@@ -405,12 +448,39 @@ pub fn book_page(book_id: String) -> NodeHandle {
         // the reader moves their mouse on the next page.
         let keydown = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
             bail_if_stale!();
-            if (event.ctrl_key() || event.meta_key()) && event.key() == "s" {
+            let accel = event.ctrl_key() || event.meta_key();
+            if accel && event.key() == "s" {
                 event.prevent_default();
                 if let BookPane::Editor(ref cid) = active_pane.get() {
                     save_content(cid.clone());
                 }
+            } else if accel && event.key().eq_ignore_ascii_case("f") {
+                // Ctrl+F searches the open chapter, Ctrl+Shift+F the whole book
+                // — the same panel either way, with its scope switch preset.
+                // `eq_ignore_ascii_case` because Shift makes `key()` report "F".
+                // `prevent_default` is what keeps the browser's own find bar
+                // out of the way; without it two find UIs open at once and only
+                // one of them knows what a chapter is.
+                event.prevent_default();
+                panes::find::open(state, store, event.shift_key());
+            } else if panes::find::is_open(state)
+                && event.key() == "Enter"
+                && find_field_focused()
+            {
+                // Enter / Shift+Enter cycle the hits, but only from inside the
+                // panel's own fields: a raw `input` gets no `onkeydown` prop
+                // from rsx (see `panes::chapters::focus_inline_input` on why),
+                // and an unscoped Enter here would fire while the author is
+                // typing a paragraph.
+                event.prevent_default();
+                panes::find::step(state, store, if event.shift_key() { -1 } else { 1 });
             } else if event.key() == "Escape" {
+                // Escape belongs to the find panel while it is open — closing it
+                // clears the highlights, which is the thing the author wants
+                // back first. The chrome-collapse escape still runs underneath.
+                if panes::find::is_open(state) {
+                    panes::find::close(state);
+                }
                 stop_writing();
             }
         }) as Box<dyn FnMut(_)>);
@@ -418,8 +488,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
         keydown.forget();
 
         // Pointer move — also brings the chrome back (mirrors the reference
-        // mockup: move the mouse, chrome returns). Only acts while collapsed, so
-        // this doesn't fight the idle timer on every idle mousemove.
+        // mockup: move the mouse, chrome returns). Only acts while collapsed
+        // (the `editor_writing.get()` check), so a mousemove while the chrome
+        // is already showing is a no-op rather than a signal write on every
+        // pixel of cursor travel. A layout shift from the collapse itself
+        // never fires this — `mousemove` only follows real pointer motion.
         let mousemove = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
             bail_if_stale!();
             if editor_writing.get() {
@@ -442,6 +515,18 @@ pub fn book_page(book_id: String) -> NodeHandle {
         if matches!(active_pane.get(), BookPane::Editor(_)) {
             schedule_chapter_autosave();
             start_writing();
+        }
+        // An open find panel is a question about the document, so an edit is a
+        // new answer: typing (or undoing a replace) has to move the counts.
+        // Debounced, like the autosave beside it.
+        //
+        // Not while a whole-book replace is walking, though — it is switching
+        // chapters underneath this, and its own final re-search is the one that
+        // should have the last word. The empty transaction the highlighter uses
+        // to repaint changes no document, so it never reaches here and there is
+        // no loop to break.
+        if panes::find::is_open(state) && state.find_busy.get().is_none() {
+            panes::find::schedule_search(state, store);
         }
     });
 
@@ -1143,6 +1228,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
             style { {crate::components::dialog::DIALOG_CSS} }
             style { {crate::components::sheet::SHEET_CSS} }
             style { {editor_utils::EDITOR_CSS} }
+            style { {css::FIND_CSS} }
             // Editor font styles
             style {
                 {move || {
@@ -1465,6 +1551,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
                 add_beta_link,
                 update_beta_link,
             )}
+
+            // Find and replace — a floating overlay, not a pane: it stays open
+            // over whichever pane is showing, which is the whole point of a
+            // book-wide search.
+            {panes::find::render(__scope, state, store)}
         }
     }
 }

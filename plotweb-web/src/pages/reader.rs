@@ -154,6 +154,19 @@ const READER_CSS: &str = r#"
 }
 
 .reader-content p { margin: 0 0 16px 0; }
+
+/* Centred and right-aligned paragraphs drop the first-line indent the
+   Typography pane's `paragraph_indent` otherwise puts on every `.reader-content p`
+   — an indent would push the first line off the axis the alignment established.
+   Justified keeps it: a justified paragraph is an ordinary indented paragraph
+   whose lines are stretched. Mirrors the editor rule in EDITOR_CSS; see the long
+   note there for why both spellings of the declaration are matched. */
+.reader-content p[style*="text-align: center"],
+.reader-content p[style*="text-align:center"],
+.reader-content p[style*="text-align: right"],
+.reader-content p[style*="text-align:right"] {
+    text-indent: 0;
+}
 .reader-content h1, .reader-content h2, .reader-content h3 {
     font-family: var(--pw-font-display);
     font-weight: 400;
@@ -174,6 +187,12 @@ const READER_CSS: &str = r#"
     border-radius: var(--pw-radius-sm);
     margin: 16px 0;
     display: block;
+}
+.reader-content hr {
+    border: none;
+    border-top: 1px solid var(--rinch-color-border);
+    width: 30%;
+    margin: 32px auto;
 }
 .reader-content strong { font-weight: 700; }
 .reader-content em { font-style: italic; }

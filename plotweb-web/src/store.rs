@@ -32,6 +32,20 @@ pub struct AppStore {
     /// carries order and titles but no body text. The editor's own content is the only
     /// thing on this device that knows what the chapter currently says.
     pub open_body: Signal<Option<(String, String)>>,
+    /// The signed-in account's custom spellcheck words — the ones they told the
+    /// editor were not mistakes.
+    ///
+    /// Mirrored local-first (see [`crate::local_dictionary`]): this signal is the
+    /// render-side copy, local storage is the durable one, and the server holds the
+    /// union across devices.
+    pub user_dictionary: Signal<Vec<String>>,
+    /// Whether the chapter editor underlines misspellings, on **this device**.
+    ///
+    /// Held here so the Typography pane's switch and the editor's plugin read one
+    /// value; the durable copy is in local storage (see [`crate::spell::settings`]),
+    /// not on the account. Defaults on, and stays on until this device says
+    /// otherwise.
+    pub spellcheck_enabled: Signal<bool>,
 }
 
 impl AppStore {
@@ -53,6 +67,8 @@ impl AppStore {
             rescue_open: Signal::new(None),
             rescue_text: Signal::new(None),
             open_body: Signal::new(None),
+            user_dictionary: Signal::new(Vec::new()),
+            spellcheck_enabled: Signal::new(true),
         }
     }
 }

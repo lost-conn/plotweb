@@ -2,6 +2,7 @@ pub mod auth;
 pub mod beta;
 pub mod books;
 pub mod chapters;
+pub mod dictionaries;
 pub mod export;
 pub mod fonts;
 pub mod history;
@@ -9,6 +10,7 @@ pub mod images;
 pub mod import;
 pub mod notes;
 pub mod sync;
+pub mod user_dictionary;
 
 use crate::rhype::quote;
 use crate::AppState;

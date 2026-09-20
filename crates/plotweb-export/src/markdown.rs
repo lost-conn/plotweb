@@ -98,4 +98,19 @@ mod tests {
         assert!(md.contains("Centered line"));
         assert!(md.contains("Right line"));
     }
+
+    #[test]
+    fn a_docnode_aligned_paragraph_leaks_no_marker_into_the_markdown() {
+        // The markers above are an *internal* bridge: `content_to_markdown` mints
+        // one for every aligned DocNode paragraph so the DOCX exporter can turn it
+        // into `w:jc`. The Markdown export is the one consumer with nothing to
+        // turn it into, so it has to be the one that throws it away — a leak here
+        // puts literal `{align:center}` in a manuscript the author opens.
+        let md = render(&input(vec![(
+            "One",
+            &crate::test_support::aligned_paragraph_json("center", "Centered"),
+        )]));
+        assert!(!md.contains("{align:"), "markdown was: {md}");
+        assert!(md.contains("Centered"), "markdown was: {md}");
+    }
 }

@@ -20,6 +20,51 @@ use crate::rinch_backend::EditorHandle;
 
 use super::BookPane;
 
+/// The open spellcheck suggestion menu: what was right-clicked, what to offer, and
+/// where to draw it.
+///
+/// `None` is the resting state, and every way out of the menu (a suggestion, a
+/// dictionary add, an ignore, a click on the backdrop) sets it back. Held as one
+/// value rather than a handful of parallel signals because the parts are only ever
+/// meaningful together — a position with no word is a menu that cannot act.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SpellMenu {
+    /// Viewport coordinates of the press that opened it.
+    pub x: f64,
+    pub y: f64,
+    /// Viewport size at that moment, so the menu can be kept on screen without
+    /// re-reading it (and without a browser-only API on the native build).
+    pub viewport_w: f64,
+    pub viewport_h: f64,
+    /// The misspelled word's range in the document.
+    pub from: usize,
+    pub to: usize,
+    /// The word itself — what "Add to dictionary" and "Ignore" act on.
+    pub word: String,
+    /// Up to five repairs, best first.
+    pub suggestions: Vec<String>,
+}
+
+/// A fresh prose editor with the spellchecker registered.
+///
+/// Registration has to happen *here* rather than after the editor is mounted:
+/// adding a plugin rebuilds the editor state, which discards the undo history,
+/// and this is the one moment there is none to lose. The plugin stays registered
+/// whether or not spellcheck is switched on — the switch lives in the plugin's
+/// shared state (see `crate::spell::plugin`), so flipping it costs a repaint
+/// rather than the author's undo stack.
+fn spellchecked_editor() -> EditorHandle {
+    let handle = crate::rinch_backend::create_editor();
+    crate::spell::plugin::register(&handle);
+    // The find panel's highlighter, registered here for exactly the same reason
+    // and at exactly the same moment: `add_plugin` rebuilds the editor state and
+    // discards the undo history, so both plugins go on before there is any.
+    // Distinct `PluginKey`s, so neither displaces the other, and a decoration
+    // from each over the same word lands as one span carrying both classes.
+    crate::find::plugin::register(&handle);
+    handle
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct BookState {
     // ── Book / chapter editor state ─────────────────────────────
@@ -62,20 +107,49 @@ pub(super) struct BookState {
     pub auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
 
     /// True while the author is actively typing in the chapter editor — sidebar,
-    /// editor header, footer and feedback rail fade (opacity + `pointer-events:
-    /// none`, never width/margin, so the prose column never shifts) while this is
-    /// set. Set on `EditorHandle::on_change` (a real content edit — cross-platform,
-    /// unlike guessing at DOM `keydown` on a surface that isn't `contenteditable`);
-    /// cleared on pointer move, Escape, or a short idle timeout.
+    /// editor header/toolbar and feedback rail fade (and on desktop, the sidebar
+    /// and feedback rail also collapse to zero width) while this is set. Set on
+    /// `EditorHandle::on_change` (a real content edit — cross-platform, unlike
+    /// guessing at DOM `keydown` on a surface that isn't `contenteditable`);
+    /// cleared only on pointer move or Escape — no idle timeout, so the chrome
+    /// stays collapsed for as long as the author keeps looking at the prose.
     pub editor_writing: Signal<bool>,
-    /// Idle-return timer for `editor_writing` — reset on every edit, fires to
-    /// bring the chrome back after a pause in typing.
-    pub editor_writing_idle_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
 
     /// Model-first prose editors (rinch-editor-view), one per prose surface. Stored in
     /// Signals so the (Copy) save/switch closures can grab a clone via `.get()`.
     pub chapter_handle: Signal<EditorHandle>,
     pub note_handle: Signal<EditorHandle>,
+
+    /// The spellcheck suggestion menu, when one is open. See [`SpellMenu`].
+    pub spell_menu: Signal<Option<SpellMenu>>,
+
+    // ── Find and replace (see `panes::find`) ─────────────────────
+    /// Whether the find panel is on screen. It is a floating overlay rather than
+    /// a pane, so this — not `active_pane` — is what mounts it.
+    pub find_open: Signal<bool>,
+    pub find_query: Signal<String>,
+    pub find_replace: Signal<String>,
+    pub find_match_case: Signal<bool>,
+    pub find_whole_word: Signal<bool>,
+    /// `true` searches every chapter, `false` only the one in the editor. Set by
+    /// which shortcut opened the panel (Ctrl+Shift+F / Ctrl+F) and by the scope
+    /// switch inside it, so neither is a mode the author is stuck in.
+    pub find_book_scope: Signal<bool>,
+    /// The results, grouped by chapter, in book order.
+    pub find_results: Signal<Vec<super::panes::find::ChapterHits>>,
+    /// Which hit Prev/Next is standing on, as `(chapter_id, index within that
+    /// chapter)`. An **index**, never a document position: a hit in an unopened
+    /// chapter was found in a stored copy, and the position it had there is not
+    /// a promise about the document that chapter will load as.
+    pub find_current: Signal<Option<(String, usize)>>,
+    pub find_debounce_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
+    /// Progress while "Replace all in book" walks the chapters, or `None` when
+    /// it is not running. Doubles as the disable flag for every button in the
+    /// panel — the walk switches chapters underneath the author, and a second
+    /// one started midway would be replacing in a chapter the first had left.
+    pub find_busy: Signal<Option<String>>,
+    /// Whether the whole-book replace confirm is open.
+    pub find_confirm: Signal<bool>,
 
     pub bid_signal: Signal<String>,
 
@@ -279,10 +353,23 @@ impl BookState {
             auto_save_timer_id: Signal::new(None),
 
             editor_writing: Signal::new(false),
-            editor_writing_idle_timer_id: Signal::new(None),
 
-            chapter_handle: Signal::new(crate::rinch_backend::create_editor()),
-            note_handle: Signal::new(crate::rinch_backend::create_editor()),
+            chapter_handle: Signal::new(spellchecked_editor()),
+            note_handle: Signal::new(spellchecked_editor()),
+
+            spell_menu: Signal::new(None),
+
+            find_open: Signal::new(false),
+            find_query: Signal::new(String::new()),
+            find_replace: Signal::new(String::new()),
+            find_match_case: Signal::new(false),
+            find_whole_word: Signal::new(false),
+            find_book_scope: Signal::new(true),
+            find_results: Signal::new(Vec::new()),
+            find_current: Signal::new(None),
+            find_debounce_timer_id: Signal::new(None),
+            find_busy: Signal::new(None),
+            find_confirm: Signal::new(false),
 
             bid_signal: Signal::new(book_id.to_string()),
 
