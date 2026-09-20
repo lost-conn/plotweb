@@ -1112,6 +1112,17 @@ pub fn book_page(book_id: String) -> NodeHandle {
         );
     };
 
+    // The sidebar's "Manuscript" header opens the chapters pane — the manuscript
+    // page (chapter list, counts, import/export) — the same way the "Notes" header
+    // opens the notes surface. It used to be a bare label: the caret beside it
+    // collapsed the list and the "+" added a chapter, but the word itself did
+    // nothing, and there was no other way back to that pane from an open chapter.
+    let open_chapters_pane = move || {
+        flush_pending_edits();
+        active_pane.set(BookPane::Chapters);
+        store.sidebar_open.set(false);
+    };
+
     let open_notes_pane = move || {
         flush_pending_edits();
         active_pane.set(BookPane::Notes);
@@ -1368,6 +1379,7 @@ pub fn book_page(book_id: String) -> NodeHandle {
                             label: "Manuscript",
                             count: {move || Some(store.chapters.get().len() as i64)},
                             active: {move || matches!(active_pane.get(), BookPane::Chapters)},
+                            onclick: open_chapters_pane,
                             span {
                                 style: "display: inline-flex; align-items: center; margin-right: 2px;",
                                 onclick: move || chapters_collapsed.update(|c| *c = !*c),

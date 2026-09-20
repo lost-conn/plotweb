@@ -8,9 +8,10 @@ use rinch::prelude::*;
 ///
 /// `active` mirrors the existing `.sidebar-section-header.active` treatment
 /// (teal text) for whichever section currently owns the main pane.
-/// `onclick` is optional — the notes/typography/beta/history headers all
-/// navigate on click, but a bare "Manuscript" label over the chapter list
-/// does not need to be clickable itself (the collapse caret already is).
+/// `onclick` is optional. Every sidebar section header navigates on click —
+/// "Manuscript" to the chapters pane, "Notes" to the notes surface — and rinch
+/// dispatches a click to the nearest handler only, so a caret or "+" rendered
+/// as a child keeps its own click without also triggering the header's.
 #[component]
 pub fn SectionHeader(
     label: String,
