@@ -188,6 +188,12 @@ const READER_CSS: &str = r#"
     margin: 16px 0;
     display: block;
 }
+.reader-content hr {
+    border: none;
+    border-top: 1px solid var(--rinch-color-border);
+    width: 30%;
+    margin: 32px auto;
+}
 .reader-content strong { font-weight: 700; }
 .reader-content em { font-style: italic; }
 

@@ -58,3 +58,24 @@ pub fn coerce_void_elements_xhtml(html: &str) -> String {
         .replace("<br />", "<br/>")
         .replace("<hr />", "<hr/>")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_break_renders_as_hr_in_html_fragment() {
+        let html = markdown_to_html_fragment("Para one.\n\n---\n\nPara two.");
+        assert!(html.contains("<hr"), "html was: {html}");
+    }
+
+    #[test]
+    fn scene_break_hr_is_self_closing_in_xhtml_fragment() {
+        let html = coerce_void_elements_xhtml(&markdown_to_html_fragment(
+            "Para one.\n\n---\n\nPara two.",
+        ));
+        assert!(html.contains("<hr/>"), "xhtml was: {html}");
+        assert!(!html.contains("<hr>"), "xhtml was: {html}");
+        assert!(!html.contains("<hr />"), "xhtml was: {html}");
+    }
+}

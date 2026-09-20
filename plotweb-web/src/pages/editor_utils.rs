@@ -649,7 +649,8 @@ pub const EDITOR_CSS: &str = r#"
 #note-editor-main [data-pm-editor] hr {
     border: none;
     border-top: 1px solid var(--rinch-color-border);
-    margin: 24px 0;
+    width: 30%;
+    margin: 32px auto;
 }
 
 #editor-main [data-pm-editor] strong,
@@ -974,6 +975,7 @@ pub fn editor_toolbar(
             {fmt_button(__scope, TablerIcon::Blockquote, cmd_click!("wrapInBlockquote"), s_bquote)}
             {fmt_button(__scope, TablerIcon::List, cmd_click!("toggleBulletList"), s_ul)}
             {fmt_button(__scope, TablerIcon::ListNumbers, cmd_click!("toggleOrderedList"), s_ol)}
+            {toolbar_button(__scope, TablerIcon::SeparatorHorizontal, "Scene break", cmd_click!("insertHorizontalRule"))}
 
             {separator(__scope)}
 

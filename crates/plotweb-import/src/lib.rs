@@ -232,6 +232,30 @@ mod tests {
     }
 
     #[test]
+    fn markdown_file_scene_break_between_paragraphs_becomes_horizontal_rule_not_heading() {
+        // A real CommonMark hazard: `text\n---` (no blank line) parses as a
+        // setext H2, so a scene break must stay blank-line separated from the
+        // paragraph before it all the way through the manuscript-level
+        // `parse_manuscript` -> `markdown_to_docnode_json` pipeline, and must
+        // not be swallowed as a chapter boundary along the way either.
+        let data = b"# Chapter One\n\nPara one.\n\n---\n\nPara two.";
+        let chapters =
+            parse_manuscript(data, ImportFormat::Markdown).expect("markdown file parses");
+        assert_eq!(chapters.len(), 1, "the --- must not split chapters: {chapters:?}");
+
+        let json = markdown_to_docnode_json(&chapters[0].content);
+        let doc: DocNode = serde_json::from_str(&json).expect("valid DocNode JSON");
+        assert!(
+            doc.content.iter().any(|n| n.node_type == "horizontal_rule"),
+            "expected a horizontal_rule, got: {json}"
+        );
+        assert!(
+            !doc.content.iter().any(|n| n.node_type == "heading"),
+            "a blank-line-separated `---` must not become a setext heading: {json}"
+        );
+    }
+
+    #[test]
     fn markdown_to_docnode_json_plain_markdown_has_no_text_align() {
         // No markers at all: a plain markdown/text import must be unaffected —
         // no `text_align` attr appears anywhere.
@@ -328,6 +352,80 @@ mod tests {
         assert!(
             !json.contains("text_align"),
             "an unaligned paragraph must not gain a text_align attr: {json}"
+        );
+    }
+
+    #[test]
+    fn docx_import_converts_scene_break_glyphs_to_horizontal_rule() {
+        let body = format!(
+            "{}{}{}{}{}",
+            heading_paragraph_xml("Chapter One"),
+            paragraph_xml(None, "Before the break."),
+            paragraph_xml(None, "* * *"),
+            paragraph_xml(Some("center"), "#"),
+            paragraph_xml(None, "After the break."),
+        );
+        let data = build_docx(&body);
+
+        let chapters = crate::docx::split_chapters(&data).expect("docx parses");
+        assert_eq!(chapters.len(), 1);
+
+        // Emitted as its own blank-line-separated block so it can never be
+        // read as a setext heading underline for the preceding paragraph.
+        assert!(
+            chapters[0].content.contains("\n\n---\n\n"),
+            "content was: {:?}",
+            chapters[0].content
+        );
+        assert!(
+            !chapters[0].content.contains('*') && !chapters[0].content.contains('#'),
+            "literal scene-break glyph leaked into stored markdown: {:?}",
+            chapters[0].content
+        );
+
+        let json = markdown_to_docnode_json(&chapters[0].content);
+        let doc: DocNode = serde_json::from_str(&json).expect("valid DocNode JSON");
+
+        assert!(
+            !json.contains("{align:"),
+            "align marker leaked into stored content: {json}"
+        );
+
+        let types: Vec<&str> = doc.content.iter().map(|n| n.node_type.as_str()).collect();
+        assert_eq!(
+            types,
+            vec!["paragraph", "horizontal_rule", "horizontal_rule", "paragraph"],
+            "expected two horizontal_rule nodes, got: {json}"
+        );
+
+        // The centered `#` paragraph's alignment must not leak onto the rule
+        // that replaces it, nor onto the paragraph that follows.
+        for node in &doc.content {
+            assert_eq!(
+                node_text_align(node),
+                None,
+                "no node here should carry text_align: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn docx_import_does_not_convert_text_wrapped_in_asterisks() {
+        let body = format!(
+            "{}{}",
+            heading_paragraph_xml("Chapter One"),
+            paragraph_xml(None, "*** important ***"),
+        );
+        let data = build_docx(&body);
+
+        let chapters = crate::docx::split_chapters(&data).expect("docx parses");
+        assert_eq!(chapters[0].content, "*** important ***");
+
+        let json = markdown_to_docnode_json(&chapters[0].content);
+        let doc: DocNode = serde_json::from_str(&json).expect("valid DocNode JSON");
+        assert!(
+            !doc.content.iter().any(|n| n.node_type == "horizontal_rule"),
+            "a line with real text must not become a horizontal_rule: {json}"
         );
     }
 }

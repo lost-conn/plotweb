@@ -194,4 +194,16 @@ mod tests {
         let chapters = split_chapters("");
         assert!(chapters.is_empty());
     }
+
+    #[test]
+    fn test_scene_break_is_not_a_chapter_boundary() {
+        // `---` has no alphabetic characters, so it never matches the
+        // ALL-CAPS-title heuristic (or any other heading pattern here) — a
+        // scene break must stay inside its chapter's content, not split it.
+        let text = "# Chapter One\n\nSome text.\n\n---\n\nMore text.";
+        let chapters = split_chapters(text);
+        assert_eq!(chapters.len(), 1, "a scene break must not split chapters: {chapters:?}");
+        assert_eq!(chapters[0].title, "Chapter One");
+        assert!(chapters[0].content.contains("---"));
+    }
 }

@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use crate::{ExportError, ExportInput, content_to_markdown, decode_entities};
-use docx_rs::{AlignmentType, BreakType, Docx, Paragraph, Run};
+use docx_rs::{AlignmentType, BreakType, Docx, LineSpacing, Paragraph, Run};
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// Render the manuscript as a DOCX. Each chapter starts with a `Heading1`
@@ -153,6 +153,16 @@ fn render_chapter_body(mut docx: Docx, markdown: &str) -> Docx {
             Event::HardBreak => {
                 cur = cur.add_run(Run::new().add_break(BreakType::TextWrapping));
             }
+            Event::Rule => {
+                // Scene break: a standalone centered `* * *` paragraph with a
+                // little breathing room above/below, rather than the dropped-
+                // on-the-floor behavior of leaving `Event::Rule` unhandled.
+                let rule = Paragraph::new()
+                    .align(AlignmentType::Center)
+                    .line_spacing(LineSpacing::new().before(240).after(240))
+                    .add_run(Run::new().add_text("* * *"));
+                docx = docx.add_paragraph(rule);
+            }
             _ => {}
         }
     }
@@ -253,6 +263,21 @@ mod tests {
             xml.contains(r#"<w:jc w:val="both"/>"#) || xml.contains(r#"<w:jc w:val="both" />"#),
             "document.xml was: {xml}"
         );
+    }
+
+    #[test]
+    fn scene_break_becomes_centered_asterisks_paragraph() {
+        // `---` reaches the DOCX walker as `Event::Rule` (legacy Markdown passes
+        // through `content_to_markdown` untouched); it must become its own
+        // centered `* * *` paragraph rather than being silently dropped.
+        let xml = document_xml("Para one.\n\n---\n\nPara two.");
+        assert!(xml.contains("* * *"), "document.xml was: {xml}");
+        assert!(
+            xml.contains(r#"<w:jc w:val="center"/>"#) || xml.contains(r#"<w:jc w:val="center" />"#),
+            "document.xml was: {xml}"
+        );
+        assert!(xml.contains("Para one."), "document.xml was: {xml}");
+        assert!(xml.contains("Para two."), "document.xml was: {xml}");
     }
 
     #[test]

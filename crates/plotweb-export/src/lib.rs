@@ -309,6 +309,24 @@ mod docnode_tests {
     }
 
     #[test]
+    fn docnode_with_horizontal_rule_renders_to_markdown_thematic_break() {
+        // A DocNode `paragraph` / `horizontal_rule` / `paragraph` sequence (the
+        // shape the editor stores for a scene break) must come back out as a
+        // `---` line, not be dropped by the block-by-block renderer.
+        let json = docnode_json("Para one.\n\n---\n\nPara two.");
+        let doc: rinch_editor_core::serialize::DocNode =
+            serde_json::from_str(&json).expect("valid DocNode JSON");
+        assert!(
+            doc.content.iter().any(|n| n.node_type == "horizontal_rule"),
+            "expected a horizontal_rule node, got: {json}"
+        );
+        let md = content_to_markdown(&json);
+        assert!(md.contains("---"), "markdown was: {md}");
+        assert!(md.contains("Para one."), "markdown was: {md}");
+        assert!(md.contains("Para two."), "markdown was: {md}");
+    }
+
+    #[test]
     fn legacy_markdown_passes_through_unchanged() {
         // Legacy content is not a JSON object, so it must pass through verbatim.
         let legacy = "# Heading\n\nsome **bold** text";
