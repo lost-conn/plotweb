@@ -26,8 +26,22 @@ const DASHBOARD_CSS: &str = r#"
     gap: var(--pw-space-xs);
 }
 
+/* The page owns its full-height root, like `.book-workspace` does. The route
+   wrapper in app_shell.rs is a 100dvh flex column, but the component mounts
+   inside an unstyled block container between that wrapper and this markup, so
+   nothing below it inherited a constrained height: `.dash-body` was
+   content-tall, its `overflow-y: auto` never had anything to scroll, and the
+   wrapper's `overflow: hidden` clipped the shelf instead. */
+.dash-page {
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
 .dash-body {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: var(--pw-space-xl) var(--pw-space-2xl);
 }
@@ -343,7 +357,7 @@ pub fn dashboard_page() -> NodeHandle {
     };
 
     rsx! {
-        Fragment {
+        div { class: "dash-page",
             style { {DASHBOARD_CSS} }
             style { {BOOK_JACKET_CSS} }
             style { {card_styles()} }
