@@ -155,11 +155,15 @@ source.
   which our `default-features = false` build requires; rhypedb `master` may not
   have it yet). Once that merges to `master`, repin all three `rhypedb-*` deps in
   the root `Cargo.toml` (and the matching note in `Cargo.toml` / `Dockerfile`).
-- **rinch** is pinned to `rev = 62cbda6…` in `plotweb-web/Cargo.toml`, kept in
+- **rinch** is pinned to `rev = a1ab0d3…` in `plotweb-web/Cargo.toml`, kept in
   sync with the `Dockerfile`'s `RINCH_COMMIT` (and the `rinch-*` git deps in the
   root `Cargo.toml`, `plotweb-crdt` and `plotweb-server` — they must all name the
-  same rev). Repin them together as rinch's `main` advances. `62cbda6` is a
-  commit on rinch `main`.
+  same rev). Repin them together as rinch's `main` advances. **`a1ab0d3` is the
+  tip of rinch PR #836 (`feat/editor-inline-decorations`), not yet on `main`** —
+  it carries the inline decorations / wavy underline / `add_plugin` seam that
+  spellcheck, find-and-replace and scene breaks need. Once Joe merges it (rinch
+  squash-merges, so the branch commits become unreachable if the branch is
+  deleted), repin every site above to the squash commit on `main`.
 
 ## Verification status
 
