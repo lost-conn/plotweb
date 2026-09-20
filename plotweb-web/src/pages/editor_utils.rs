@@ -4,6 +4,7 @@ use rinch::prelude::*;
 use rinch_core::Signal;
 use rinch_tabler_icons::{TablerIcon, TablerIconStyle, render_tabler_icon};
 use crate::rinch_backend::EditorHandle;
+use rinch_editor_core::EditorState;
 use rinch_editor_core::serialize::DocNode;
 
 use wasm_bindgen::prelude::*;
@@ -147,6 +148,36 @@ fn current_heading_level(handle: &EditorHandle) -> Option<i64> {
     let state = handle.state();
     let resolved = state.doc.resolve(state.selection.head()).ok()?;
     resolved.parent().attrs().get_int("level")
+}
+
+/// The horizontal alignment of the textblock holding `state`'s selection head —
+/// `"left"`, `"center"`, `"right"` or `"justify"`.
+///
+/// `"left"` is the default and rinch stores it as the *absence* of the
+/// `text_align` attribute (see `commands::TEXT_ALIGN_VALUES`), so a missing attr
+/// reads back as `"left"`. Anything outside the three non-default values reads as
+/// `"left"` too: rinch's HTML serializer and its DOM projection whitelist exactly
+/// those three, so a stray value is invisible on screen and the toolbar should
+/// agree with the screen rather than with the model.
+///
+/// Split out of [`current_text_align`] so the part worth testing is a pure
+/// function of an `EditorState` and needs no live editor (hence no DOM).
+fn text_align_of(state: &EditorState) -> &'static str {
+    let Ok(resolved) = state.doc.resolve(state.selection.head()) else {
+        return "left";
+    };
+    match resolved.parent().attrs().get_str("text_align") {
+        Some("center") => "center",
+        Some("right") => "right",
+        Some("justify") => "justify",
+        _ => "left",
+    }
+}
+
+/// The alignment the cursor is in — drives the four alignment buttons' active
+/// states, the way [`current_heading_level`] drives H1/H2/H3.
+fn current_text_align(handle: &EditorHandle) -> &'static str {
+    text_align_of(&handle.state())
 }
 
 /// Where the caret is on screen, as far as it can be known without a layout pass.
@@ -415,6 +446,39 @@ pub const EDITOR_CSS: &str = r#"
     background: var(--rinch-color-border);
     margin: 0 6px;
     flex-shrink: 0;
+}
+
+/* Wrapper around each alignment ActionIcon — it exists to carry `data-align`
+   and `title`, which the component itself has no prop for. Purely a pass-through
+   box: it must not add its own metrics to the toolbar's flex row. */
+.toolbar-align {
+    display: inline-flex;
+    flex-shrink: 0;
+}
+
+/* ── Alignment vs. the first-line indent ───────────────────────────────
+   `paragraph_indent` (Typography pane) puts a `text-indent` on every editor
+   paragraph, which is right for a left-aligned or justified block — a justified
+   paragraph is still a normal indented paragraph, it just stretches its lines —
+   and wrong for a centred or right-aligned one, where the indent shoves the
+   first line off the axis the alignment just established.
+
+   These have to out-specify the runtime rule that sets the indent
+   (`#editor-main [data-pm-editor] p`, book/mod.rs), which the attribute selector
+   does. Both spellings of the declaration are matched because the two producers
+   disagree: the live editor projects the attribute through `set_style`, so the
+   CSSOM serializes it as `text-align: center;` (space, semicolon), while rinch's
+   HTML serializer writes the compact `text-align:center` — and history views
+   render serializer output into this same editor chrome. */
+#editor-main [data-pm-editor] p[style*="text-align: center"],
+#editor-main [data-pm-editor] p[style*="text-align:center"],
+#editor-main [data-pm-editor] p[style*="text-align: right"],
+#editor-main [data-pm-editor] p[style*="text-align:right"],
+#note-editor-main [data-pm-editor] p[style*="text-align: center"],
+#note-editor-main [data-pm-editor] p[style*="text-align:center"],
+#note-editor-main [data-pm-editor] p[style*="text-align: right"],
+#note-editor-main [data-pm-editor] p[style*="text-align:right"] {
+    text-indent: 0;
 }
 
 .editor-scroll {
@@ -738,8 +802,7 @@ fn fmt_button(
 /// The editor toolbar, driving `handle` (a `rinch-editor-view` [`EditorHandle`])
 /// through `handle.command(...)` — the same model-first API desktop uses. `on_edit`
 /// is called after any content-mutating action so the caller can schedule an
-/// autosave. Text alignment is intentionally omitted (no editor command yet — a
-/// separate upstream card adds it).
+/// autosave.
 ///
 /// A plain function (not `#[component]`) so it can take the non-`Copy` `EditorHandle`
 /// and the `on_edit` closure directly.
@@ -779,6 +842,13 @@ pub fn editor_toolbar(
     let s_bquote: Signal<bool> = Signal::new(false);
     let s_ul: Signal<bool> = Signal::new(false);
     let s_ol: Signal<bool> = Signal::new(false);
+    // Alignment is a four-way choice, not four toggles, so exactly one of these is
+    // ever true — and "left" starts true because it is the default every fresh
+    // paragraph has (stored as no `text_align` attribute at all).
+    let s_align_left: Signal<bool> = Signal::new(true);
+    let s_align_center: Signal<bool> = Signal::new(false);
+    let s_align_right: Signal<bool> = Signal::new(false);
+    let s_align_justify: Signal<bool> = Signal::new(false);
 
     // Recompute active states from the editor model. Shared (Rc) so every button
     // closure and the document listeners can call it.
@@ -797,6 +867,11 @@ pub fn editor_toolbar(
             s_bquote.set(h.in_node_type("blockquote"));
             s_ul.set(h.in_node_type("bullet_list"));
             s_ol.set(h.in_node_type("ordered_list"));
+            let align = current_text_align(&h);
+            s_align_left.set(align == "left");
+            s_align_center.set(align == "center");
+            s_align_right.set(align == "right");
+            s_align_justify.set(align == "justify");
         })
     };
 
@@ -864,6 +939,31 @@ pub fn editor_toolbar(
             // Indent / Outdent (no active state)
             {toolbar_button(__scope, TablerIcon::IndentIncrease, "Indent", cmd_click!("indent"))}
             {toolbar_button(__scope, TablerIcon::IndentDecrease, "Outdent", cmd_click!("outdent"))}
+
+            {separator(__scope)}
+
+            // Text alignment — a four-way choice over the textblock(s) under the
+            // selection, not four independent toggles.
+            //
+            // Each button is wrapped rather than carrying its own attributes because
+            // `ActionIcon` has no class/attribute prop, and setting one on the node
+            // `fmt_button` returns would not survive: a component with a reactive
+            // prop (the `variant` closure that draws the active state) re-renders
+            // into a *fresh* element on every change, dropping anything set on the
+            // old one. The wrapper is also where the native `title` tooltip lives,
+            // for the same reason — the keystrokes come from rinch's default keymap.
+            span { class: "toolbar-align", data-align: "left", title: "Align left (Ctrl+Shift+L)",
+                {fmt_button(__scope, TablerIcon::AlignLeft, cmd_click!("setTextAlignLeft"), s_align_left)}
+            }
+            span { class: "toolbar-align", data-align: "center", title: "Align center (Ctrl+Shift+E)",
+                {fmt_button(__scope, TablerIcon::AlignCenter, cmd_click!("setTextAlignCenter"), s_align_center)}
+            }
+            span { class: "toolbar-align", data-align: "right", title: "Align right (Ctrl+Shift+R)",
+                {fmt_button(__scope, TablerIcon::AlignRight, cmd_click!("setTextAlignRight"), s_align_right)}
+            }
+            span { class: "toolbar-align", data-align: "justify", title: "Justify (Ctrl+Shift+J)",
+                {fmt_button(__scope, TablerIcon::AlignJustified, cmd_click!("setTextAlignJustify"), s_align_justify)}
+            }
 
             {separator(__scope)}
 
@@ -1061,4 +1161,64 @@ fn sanitize_node(el: &web_sys::Element) {
     }
 }
 
+#[cfg(test)]
+mod text_align_tests {
+    use super::text_align_of;
+    use rinch_editor_core::{AttrValue, Attrs, EditorState, Fragment, Schema};
+    use std::rc::Rc;
 
+    /// A one-paragraph document whose paragraph carries `attrs`, with the caret
+    /// left where `EditorState::create` puts it — inside that paragraph — so
+    /// `text_align_of` resolves the paragraph as the selection's parent.
+    fn state_with_paragraph_attrs(attrs: Attrs) -> EditorState {
+        let schema = Schema::starter_kit();
+        let para = schema
+            .create_node(
+                "paragraph",
+                attrs,
+                Fragment::from_node(schema.text("Prose").unwrap()),
+            )
+            .unwrap();
+        let doc = schema.branch("doc", Fragment::from_node(para)).unwrap();
+        EditorState::create(Rc::new(schema), doc, vec![])
+    }
+
+    fn align_with(attr: Option<&str>) -> &'static str {
+        let attrs = match attr {
+            Some(v) => Attrs::from_iter([("text_align", AttrValue::from(v))]),
+            None => Attrs::new(),
+        };
+        text_align_of(&state_with_paragraph_attrs(attrs))
+    }
+
+    #[test]
+    fn the_three_non_default_alignments_are_reported() {
+        assert_eq!(align_with(Some("center")), "center");
+        assert_eq!(align_with(Some("right")), "right");
+        assert_eq!(align_with(Some("justify")), "justify");
+    }
+
+    #[test]
+    fn a_missing_attribute_reads_as_left() {
+        // The default is stored as the *absence* of `text_align`, so this is the
+        // case every freshly typed paragraph hits — and the Left button has to
+        // light up for it.
+        assert_eq!(align_with(None), "left");
+    }
+
+    #[test]
+    fn an_explicit_left_reads_as_left() {
+        // `setTextAlignLeft` writes the attribute rather than removing it, so
+        // "left" arrives spelled out as well as absent.
+        assert_eq!(align_with(Some("left")), "left");
+    }
+
+    #[test]
+    fn an_unrecognized_alignment_reads_as_left() {
+        // rinch's serializer and its DOM projection both whitelist the three
+        // non-default values, so anything else renders left-aligned. The toolbar
+        // has to agree with the screen rather than with the model.
+        assert_eq!(align_with(Some("end")), "left");
+        assert_eq!(align_with(Some("center; color:red")), "left");
+    }
+}

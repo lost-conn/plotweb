@@ -53,10 +53,16 @@ pub fn split_chapters(data: &[u8]) -> Result<Vec<DetectedChapter>, ImportError> 
             current_title = Some(para.text.clone());
         } else if !para.text.is_empty() {
             if let Some(ref align) = para.alignment {
-                current_lines.push(format!("{{align:{}}}\n{}", align, para.text));
-            } else {
-                current_lines.push(para.text.clone());
+                // Emitted as its own markdown block (blank-line separated from
+                // the paragraph it describes) so it always parses as a distinct
+                // sibling node — `markdown_to_docnode_json`'s post-pass looks
+                // for exactly that shape to fold the alignment into the
+                // following block's `text_align` attr and drop the marker.
+                // A single "\n" would let CommonMark merge the two lines into
+                // one paragraph via a soft break instead.
+                current_lines.push(format!("{{align:{}}}", align));
             }
+            current_lines.push(para.text.clone());
         }
     }
 

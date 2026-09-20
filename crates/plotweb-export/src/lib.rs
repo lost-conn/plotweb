@@ -117,11 +117,57 @@ fn parse_docnode(content: &str) -> Option<rinch_editor_core::Node> {
 ///
 /// DocNode JSON is rendered via the editor's `doc_to_markdown`; legacy Markdown
 /// passes through byte-for-byte unchanged.
+///
+/// Plain Markdown has no syntax for paragraph alignment, so a DocNode
+/// paragraph's `text_align` is intentionally **not** preserved in this output
+/// — there is nothing for it to become. It is bridged through as the internal
+/// `{align:X}` marker convention already used by the legacy DOCX importer
+/// (`plotweb-import/src/docx.rs`) so the DOCX exporter's existing
+/// marker-consuming walk (`docx::render_chapter_body`) can recover it; every
+/// other consumer of this string (`markdown::render` via
+/// `strip_align_markers`) strips those markers back out before they reach a
+/// human.
 pub(crate) fn content_to_markdown(content: &str) -> String {
     match parse_docnode(content) {
-        Some(node) => rinch_editor_core::serialize::doc_to_markdown(&node),
+        Some(node) => docnode_to_markdown_with_align_markers(&node),
         None => content.to_string(),
     }
+}
+
+/// Render a DocNode `doc` to Markdown one top-level block at a time, so a
+/// `paragraph` carrying `text_align: center|right|justify` can be prefixed
+/// with an `{align:X}` marker line — see [`content_to_markdown`].
+///
+/// Rendering block-by-block (via a synthetic single-child `doc`) and joining
+/// with the same `"\n\n"` separator `doc_to_markdown` uses internally produces
+/// byte-identical output to calling `doc_to_markdown` on the whole tree when no
+/// block needs a marker, since each block's own rendering already ends in
+/// exactly `"\n\n"` before the (per-block) `trim_end`.
+///
+/// Only `paragraph` carries the marker: `docx::render_chapter_body`'s marker
+/// check only fires at the start of a *paragraph* event, not a heading, so
+/// marking a heading here would leak the literal `{align:X}` text into the
+/// DOCX output instead of being consumed. Heading alignment remains a known
+/// gap for DOCX, same as before this change.
+fn docnode_to_markdown_with_align_markers(doc: &rinch_editor_core::Node) -> String {
+    doc.content()
+        .children()
+        .iter()
+        .map(|child| {
+            let single =
+                doc.copy_with_content(rinch_editor_core::Fragment::from_node(child.clone()));
+            let md = rinch_editor_core::serialize::doc_to_markdown(&single);
+            if child.type_name() == "paragraph"
+                && let Some(a @ ("center" | "right" | "justify")) =
+                    child.attrs().get_str("text_align")
+            {
+                format!("{{align:{a}}}\n{md}")
+            } else {
+                md
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Render stored content to an HTML body fragment (no `<html>`/`<body>` wrapper).
@@ -145,8 +191,24 @@ pub(crate) fn content_to_xhtml_fragment(content: &str) -> String {
     html::coerce_void_elements_xhtml(&content_to_html_fragment(content))
 }
 
+/// Hand-built DocNode-JSON fixtures shared by this module's tests and by the
+/// `docx`/`epub` test modules, for cases `doc_from_markdown` can't produce
+/// (there is no Markdown syntax for `text_align`).
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// A one-paragraph doc whose paragraph carries `text_align: <align>`.
+    /// Matches the `DocNode` wire shape (`serialize::doc_json::DocNode`):
+    /// `{"type": ..., "attrs": {...}, "content": [...], "text": ..., "marks": [...]}`.
+    pub(crate) fn aligned_paragraph_json(align: &str, text: &str) -> String {
+        format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","attrs":{{"text_align":"{align}"}},"content":[{{"type":"text","text":"{text}"}}]}}]}}"#
+        )
+    }
+}
+
 #[cfg(test)]
 mod docnode_tests {
+    use super::test_support::aligned_paragraph_json;
     use super::*;
 
     /// Build a DocNode-JSON string (as the editor would store) from Markdown.
@@ -171,6 +233,79 @@ mod docnode_tests {
         let html = content_to_html_fragment(&json);
         assert!(html.contains("<h1>"), "html was: {html}");
         assert!(html.contains("<strong>"), "html was: {html}");
+    }
+
+    #[test]
+    fn centered_paragraph_html_fragment_carries_inline_style() {
+        // HTML/EPUB path: rinch's `node_to_html` (called directly, unmodified by
+        // us) already turns a `text_align` attr into an inline style — this just
+        // guards that our glue doesn't lose or sanitize it away.
+        let json = aligned_paragraph_json("center", "Centered");
+        let html = content_to_html_fragment(&json);
+        assert_eq!(html, r#"<p style="text-align:center">Centered</p>"#);
+    }
+
+    #[test]
+    fn centered_paragraph_xhtml_fragment_keeps_inline_style() {
+        let json = aligned_paragraph_json("right", "Righty");
+        let xhtml = content_to_xhtml_fragment(&json);
+        assert_eq!(xhtml, r#"<p style="text-align:right">Righty</p>"#);
+    }
+
+    #[test]
+    fn centered_paragraph_markdown_carries_align_marker_for_docx() {
+        // Plain Markdown can't express alignment, but `content_to_markdown` must
+        // still bridge it through as the `{align:X}` marker the DOCX exporter's
+        // `render_chapter_body` already knows how to consume (see the doc
+        // comment on `content_to_markdown`).
+        let json = aligned_paragraph_json("center", "Centered");
+        let md = content_to_markdown(&json);
+        assert_eq!(md, "{align:center}\nCentered");
+    }
+
+    #[test]
+    fn unaligned_paragraph_markdown_has_no_marker() {
+        // A left/default-aligned paragraph must render exactly as before this
+        // change — no marker leaks in for the common case.
+        let json = docnode_json("just some text");
+        let md = content_to_markdown(&json);
+        assert_eq!(md, "just some text");
+        assert!(!md.contains("{align:"));
+    }
+
+    #[test]
+    fn multi_block_markdown_with_one_aligned_paragraph_matches_unmarked_blocks() {
+        // The marker is inserted per-block without disturbing the surrounding
+        // document's structure or spacing (heading, then the centered
+        // paragraph, then a plain paragraph — each separated by exactly one
+        // blank line, same as `doc_to_markdown` on the whole tree would do).
+        let full_json = r#"{"type":"doc","content":[
+            {"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Title"}]},
+            {"type":"paragraph","attrs":{"text_align":"center"},"content":[{"type":"text","text":"Centered"}]},
+            {"type":"paragraph","content":[{"type":"text","text":"plain paragraph"}]}
+        ]}"#;
+        let md = content_to_markdown(full_json);
+        assert_eq!(md, "# Title\n\n{align:center}\nCentered\n\nplain paragraph");
+    }
+
+    #[test]
+    fn a_rich_unaligned_document_renders_exactly_as_the_whole_tree_would() {
+        // `content_to_markdown` now renders top-level blocks one at a time so it
+        // can slip an `{align:X}` marker in front of an aligned paragraph. That
+        // rewrite is only safe if it is a no-op for every document that needs no
+        // marker — which is nearly all of them, and all of the legacy ones. This
+        // pins that against the unsplit renderer rather than against a literal,
+        // so it keeps holding if rinch's Markdown output ever changes shape.
+        let source = "# Title\n\nA paragraph with **bold** and *italic*.\n\n                      - first item\n- second item\n\n                      > a quotation\n\n## Subheading\n\nClosing words.";
+        let json = docnode_json(source);
+        let schema = rinch_editor_core::Schema::starter_kit();
+        let node = schema
+            .node_from_doc(&serde_json::from_str(&json).expect("json parses"))
+            .expect("validates");
+        assert_eq!(
+            content_to_markdown(&json),
+            rinch_editor_core::serialize::doc_to_markdown(&node),
+        );
     }
 
     #[test]

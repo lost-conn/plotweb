@@ -44,3 +44,36 @@ fn wrap_xhtml(title: &str, body: &str) -> String {
 <body>\n<h1>{t}</h1>\n{body}\n</body>\n</html>\n"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ExportChapter;
+    use crate::test_support::aligned_paragraph_json;
+    use std::io::Read;
+
+    #[test]
+    fn centered_paragraph_survives_into_the_epub_chapter_xhtml() {
+        let input = ExportInput {
+            title: "Book".into(),
+            description: String::new(),
+            chapters: vec![ExportChapter {
+                title: "One".into(),
+                content: aligned_paragraph_json("center", "Centered"),
+            }],
+        };
+        let bytes = render(&input).expect("epub renders");
+
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip");
+        let mut xhtml = String::new();
+        zip.by_name("OEBPS/chapter_1.xhtml")
+            .expect("chapter_1.xhtml present")
+            .read_to_string(&mut xhtml)
+            .expect("readable xhtml");
+
+        assert!(
+            xhtml.contains(r#"<p style="text-align:center">Centered</p>"#),
+            "chapter xhtml was: {xhtml}"
+        );
+    }
+}

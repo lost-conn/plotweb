@@ -198,3 +198,70 @@ fn heading_style(level: HeadingLevel) -> &'static str {
         HeadingLevel::H6 => "Heading6",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ExportChapter;
+    use crate::test_support::aligned_paragraph_json;
+    use std::io::Read;
+
+    /// Render a one-chapter DOCX from `content` and return `word/document.xml`.
+    fn document_xml(content: &str) -> String {
+        let input = ExportInput {
+            title: "Book".into(),
+            description: String::new(),
+            chapters: vec![ExportChapter {
+                title: "One".into(),
+                content: content.into(),
+            }],
+        };
+        let bytes = render(&input).expect("docx renders");
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("valid zip");
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")
+            .expect("word/document.xml present")
+            .read_to_string(&mut xml)
+            .expect("readable xml");
+        xml
+    }
+
+    #[test]
+    fn centered_paragraph_sets_w_jc_center() {
+        let xml = document_xml(&aligned_paragraph_json("center", "Centered"));
+        assert!(
+            xml.contains(r#"<w:jc w:val="center"/>"#) || xml.contains(r#"<w:jc w:val="center" />"#),
+            "document.xml was: {xml}"
+        );
+        assert!(xml.contains("Centered"), "document.xml was: {xml}");
+    }
+
+    #[test]
+    fn right_aligned_paragraph_sets_w_jc_right() {
+        let xml = document_xml(&aligned_paragraph_json("right", "Righty"));
+        assert!(
+            xml.contains(r#"<w:jc w:val="right"/>"#) || xml.contains(r#"<w:jc w:val="right" />"#),
+            "document.xml was: {xml}"
+        );
+    }
+
+    #[test]
+    fn justified_paragraph_sets_w_jc_both() {
+        // docx's justification value for "justify" is "both", not "justify".
+        let xml = document_xml(&aligned_paragraph_json("justify", "Justified"));
+        assert!(
+            xml.contains(r#"<w:jc w:val="both"/>"#) || xml.contains(r#"<w:jc w:val="both" />"#),
+            "document.xml was: {xml}"
+        );
+    }
+
+    #[test]
+    fn default_aligned_paragraph_sets_no_w_jc() {
+        // Left/default alignment must not appear as an explicit `w:jc` at all —
+        // matches `parse_align_marker` returning `None` for anything else.
+        let json = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Plain"}]}]}"#;
+        let xml = document_xml(json);
+        assert!(!xml.contains("w:jc"), "document.xml was: {xml}");
+        assert!(xml.contains("Plain"), "document.xml was: {xml}");
+    }
+}

@@ -1937,6 +1937,7 @@ dependencies = [
  "rinch-editor-core",
  "serde_json",
  "thiserror 2.0.18",
+ "zip 2.4.2",
 ]
 
 [[package]]

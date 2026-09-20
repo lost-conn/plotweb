@@ -11,3 +11,8 @@ docx-rs = "0.4.20"
 epub-builder = "0.8.3"
 rinch-editor-core.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Only for tests, to unzip DOCX/EPUB output and inspect the XML directly.
+# Version matches plotweb-import's existing choice.
+zip = { version = "2", default-features = false, features = ["deflate"] }
