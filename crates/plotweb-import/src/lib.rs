@@ -4,6 +4,8 @@ mod docx;
 use rinch_editor_core::serialize::{DocNode, JsonAttr};
 use thiserror::Error;
 
+pub use markdown::normalize_manuscript_paragraphs;
+
 #[derive(Debug, Error)]
 pub enum ImportError {
     #[error("unsupported file format: {0}")]
@@ -52,7 +54,10 @@ pub fn parse_manuscript(
     let chapters = match format {
         ImportFormat::Markdown => {
             let text = String::from_utf8_lossy(data);
-            markdown::split_chapters(&text)
+            // Decided once, over the whole manuscript, before chapters are
+            // split out — see `normalize_manuscript_paragraphs` for why.
+            let normalized = normalize_manuscript_paragraphs(&text);
+            markdown::split_chapters(&normalized)
         }
         ImportFormat::Docx => docx::split_chapters(data)?,
     };
@@ -263,6 +268,217 @@ mod tests {
         assert!(
             !json.contains("text_align"),
             "unmarked markdown must not gain a text_align attr: {json}"
+        );
+    }
+
+    /// Count nodes of `node_type` anywhere in `node`'s subtree (inclusive).
+    fn count_node_type(node: &DocNode, node_type: &str) -> usize {
+        let here = usize::from(node.node_type == node_type);
+        here + node
+            .content
+            .iter()
+            .map(|child| count_node_type(child, node_type))
+            .sum::<usize>()
+    }
+
+    /// A sentence padded well past `LONG_LINE_MIN_CHARS` (100 chars), unique
+    /// per call via `n`, so lines don't accidentally collide.
+    fn long_line(n: usize) -> String {
+        format!(
+            "This is prose line number {n} and it just keeps going so that it comfortably clears the long-line character threshold used by the heuristic, yes indeed."
+        )
+    }
+
+    #[test]
+    fn normalize_line_per_paragraph_document_yields_one_paragraph_per_line() {
+        let lines: Vec<String> = (0..6).map(long_line).collect();
+        let md = lines.join("\n");
+
+        let normalized = normalize_manuscript_paragraphs(&md);
+        assert_ne!(normalized, md, "line-per-paragraph style should be detected and rewritten");
+
+        let json = markdown_to_docnode_json(&normalized);
+        let doc: DocNode = serde_json::from_str(&json).expect("valid DocNode JSON");
+        assert_eq!(
+            count_node_type(&doc, "paragraph"),
+            lines.len(),
+            "expected one paragraph node per prose line, got: {json}"
+        );
+    }
+
+    #[test]
+    fn normalize_hard_wrapped_document_is_unchanged() {
+        // Three paragraphs, each hard-wrapped at well under 90 columns,
+        // blank-line separated — exactly what a conventionally-wrapped
+        // manuscript looks like. Note lines *within* a paragraph do touch
+        // (single newline, no blank), which is what makes the long-line
+        // share the discriminator here, not the pair share.
+        let md = "\
+The first paragraph wraps across a\n\
+few short lines like this one right\n\
+here, none of them especially long.\n\
+\n\
+The second paragraph does the same\n\
+thing, staying well under ninety\n\
+characters on every single line.\n\
+\n\
+The third and final paragraph also\n\
+wraps this way, blank line before\n\
+it and nothing longer than this.";
+
+        let normalized = normalize_manuscript_paragraphs(md);
+        assert_eq!(normalized, md, "hard-wrapped prose must pass through unchanged");
+
+        let json = markdown_to_docnode_json(&normalized);
+        let doc: DocNode = serde_json::from_str(&json).expect("valid DocNode JSON");
+        assert_eq!(count_node_type(&doc, "paragraph"), 3);
+    }
+
+    #[test]
+    fn normalize_blank_line_separated_long_lines_is_unchanged() {
+        // Long lines, but already one paragraph per line separated by blank
+        // lines — there are no *consecutive* prose line pairs, so this must
+        // not be touched (or the touch must be a no-op).
+        let lines: Vec<String> = (0..5).map(long_line).collect();
+        let md = lines.join("\n\n");
+
+        let normalized = normalize_manuscript_paragraphs(&md);
+        assert_eq!(normalized, md, "already blank-line-separated prose must be unchanged");
+    }
+
+    #[test]
+    fn normalize_line_per_paragraph_document_preserves_other_block_constructs() {
+        // Each special construct is set off by blank lines on both sides —
+        // realistic even in an otherwise blank-line-free manuscript, and it
+        // sidesteps CommonMark lazy-continuation quirks (e.g. a block quote
+        // or list absorbing the very next line as a "lazy continuation" of
+        // its last paragraph when nothing separates them) that are
+        // orthogonal to this heuristic: those lines are never touched by it
+        // either way, since they're all classified `Other`. The
+        // line-per-paragraph pairs that drive detection live in the
+        // untouched prose around them.
+        let md = format!(
+            "{a}\n{b}\n\n```\ncode line one\ncode line two\n```\n\n{c}\n\n| a | b |\n| - | - |\n| c | d |\n\n{d}\n\n> quote line one\n> quote line two\n> quote line three\n\n{e}\n\n- item one\n- item two\n- item three\n\n{f}\n\nSetext Title\n====\n\n{g}\n{h}  \n{i}\n{j}\n{k}",
+            a = long_line(1),
+            b = long_line(2),
+            c = long_line(3),
+            d = long_line(4),
+            e = long_line(5),
+            f = long_line(6),
+            g = long_line(7),
+            h = "Short line with a trailing hard break",
+            i = long_line(8),
+            j = long_line(9),
+            k = long_line(10),
+        );
+
+        let normalized = normalize_manuscript_paragraphs(&md);
+        assert_ne!(normalized, md, "expected this mixed document to be detected as line-per-paragraph");
+
+        // Fenced code block: its lines stay joined, untouched.
+        assert!(
+            normalized.contains("```\ncode line one\ncode line two\n```"),
+            "fenced code block must stay intact: {normalized}"
+        );
+        // Table: rows stay adjacent. (Full GFM table recognition depends on
+        // rinch's markdown importer, not on this pre-pass — it deliberately
+        // never touches these lines either way — so this only requires the
+        // weaker guarantee the card calls for: the rows are not pulled
+        // apart from each other.)
+        assert!(
+            normalized.contains("| a | b |\n| - | - |\n| c | d |"),
+            "table rows must stay adjacent: {normalized}"
+        );
+        // Blockquote: its 3 lines stay one block.
+        assert!(
+            normalized.contains("> quote line one\n> quote line two\n> quote line three"),
+            "blockquote lines must stay adjacent: {normalized}"
+        );
+        // List: its 3 items stay adjacent.
+        assert!(
+            normalized.contains("- item one\n- item two\n- item three"),
+            "list items must stay adjacent: {normalized}"
+        );
+        // Setext heading: title and underline stay adjacent.
+        assert!(
+            normalized.contains("Setext Title\n===="),
+            "setext heading title and underline must stay adjacent: {normalized}"
+        );
+        // Hard break: the two spaces keep the next line in the same paragraph.
+        assert!(
+            normalized.contains("Short line with a trailing hard break  \n"),
+            "hard break line must keep its trailing spaces: {normalized}"
+        );
+
+        let json = markdown_to_docnode_json(&normalized);
+        let doc: DocNode = serde_json::from_str(&json).expect("valid DocNode JSON");
+
+        assert_eq!(count_node_type(&doc, "code_block"), 1, "expected the fence to survive as one code_block: {json}");
+        assert_eq!(count_node_type(&doc, "blockquote"), 1, "expected one blockquote: {json}");
+        assert_eq!(count_node_type(&doc, "bullet_list"), 1, "expected one bullet_list: {json}");
+        assert_eq!(count_node_type(&doc, "list_item"), 3, "expected 3 list_items: {json}");
+        assert_eq!(count_node_type(&doc, "heading"), 1, "expected the setext line to become one heading: {json}");
+        assert!(
+            doc.content.iter().any(|n| n.node_type == "heading"
+                && n.content.iter().any(|t| t.text.as_deref() == Some("Setext Title"))),
+            "expected a heading titled 'Setext Title': {json}"
+        );
+        assert_eq!(
+            count_node_type(&doc, "hard_break"),
+            1,
+            "expected exactly one hard_break node, from the two-space line: {json}"
+        );
+    }
+
+    #[test]
+    fn normalize_manuscript_paragraphs_existing_behaviour_still_holds() {
+        // Regression guard for the pre-existing scene-break/heading tests
+        // above: normalization must not disturb already-correct,
+        // blank-line-separated markdown at all.
+        let md = "# Chapter One\n\nPara one.\n\n---\n\nPara two.";
+        assert_eq!(normalize_manuscript_paragraphs(md), md);
+    }
+
+    #[test]
+    fn normalize_manuscript_paragraphs_real_sample_chapter_ix() {
+        // Runs only if the real sample manuscript is present locally.
+        let path = "/home/notyou/Downloads/self-less-legacy.md";
+        let Ok(data) = std::fs::read(path) else {
+            return;
+        };
+
+        let chapters = parse_manuscript(&data, ImportFormat::Markdown).expect("manuscript parses");
+        let chapter = chapters
+            .iter()
+            .find(|c| c.title.contains("Pierce"))
+            .expect("chapter IX ~ Pierce present in the sample");
+
+        let json = markdown_to_docnode_json(&chapter.content);
+        let doc: DocNode = serde_json::from_str(&json).expect("valid DocNode JSON");
+
+        let paragraph_count = count_node_type(&doc, "paragraph");
+        println!("chapter IX ~ Pierce paragraph count: {paragraph_count}");
+        assert!(
+            paragraph_count > 40,
+            "expected more than 40 paragraphs in chapter IX ~ Pierce, got {paragraph_count}"
+        );
+
+        let all_text: String = {
+            fn collect_text(node: &DocNode, out: &mut String) {
+                if let Some(t) = &node.text {
+                    out.push_str(t);
+                }
+                for child in &node.content {
+                    collect_text(child, out);
+                }
+            }
+            let mut out = String::new();
+            collect_text(&doc, &mut out);
+            out
+        };
+        assert!(
+            all_text.contains("I would've come anyway"),
+            "expected chapter text to still contain the opening line"
         );
     }
 
