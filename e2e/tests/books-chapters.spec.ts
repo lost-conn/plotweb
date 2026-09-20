@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } from "./helpers";
+import { addChapter, createBook, openChapter, registerNewUser, returnChrome, typeInEditor } from "./helpers";
 
 test("create a book and see it on the dashboard", async ({ page }) => {
   await registerNewUser(page);
@@ -43,6 +43,11 @@ test("leaving the editor immediately after typing does not lose the edit", async
   // which must flush the pending save. Typography demoted from a sidebar
   // section header to an icon in the `.ws-tools` footer strip; `open_typography_pane`
   // still calls `flush_editor_if_active()` before switching panes (book/mod.rs).
+  //
+  // `.ws-tools` lives inside `.book-sidebar`, which the chrome-collapse
+  // (Stage: chrome fade-away) hides at zero width while `is-writing` — bring
+  // it back first, exactly as an author moving the mouse to the sidebar would.
+  await returnChrome(page);
   await page.locator('.ws-tools .tool[data-tip="Typography"]').click();
   // Come back to the chapter.
   await openChapter(page, "Chapter One");

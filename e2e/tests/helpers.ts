@@ -271,3 +271,26 @@ export async function typeInEditor(page: Page, text: string) {
   await surface.click();
   await page.keyboard.type(text);
 }
+
+/**
+ * Explicitly return the collapsed writing-mode chrome (sidebar, topbar,
+ * toolbar) before interacting with it.
+ *
+ * `.book-workspace.is-writing` / `.editor-layout.is-writing` collapse the
+ * sidebar to zero width and fade the topbar/toolbar while typing, and — since
+ * the idle-return timer was removed — nothing brings them back on its own; the
+ * app returns them only on a real pointer move or Escape (see
+ * `start_writing`/`stop_writing` in `pages/book/mod.rs`). A real author
+ * reaches for the sidebar by moving the mouse toward it, which fires the
+ * window `mousemove` listener and restores the chrome before the click ever
+ * lands. Playwright's synthetic `.click()` can't do that implicitly: its
+ * actionability check refuses to move the pointer at all once it sees the
+ * target sits under a `pointer-events: none` ancestor, so clicking a
+ * still-collapsed sidebar/toolbar control right after `typeInEditor` would
+ * retry until the test times out. Call this first — it is the same
+ * "bring it back" affordance the app offers the author directly.
+ */
+export async function returnChrome(page: Page) {
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".book-workspace")).not.toHaveClass(/is-writing/);
+}

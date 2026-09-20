@@ -735,32 +735,50 @@ pub const EDITOR_CSS: &str = r#"
     font-weight: 400;
 }
 
-/* ── Chrome collapse while typing (task 4) ─────────────────────────────
+/* ── Chrome collapse while typing ────────────────────────────────────
    `.editor-layout.is-writing` is set for as long as the author is actively
    typing (see `editor_writing` in book/mod.rs — driven by `EditorHandle::
    on_change`, the only cross-platform "an edit happened" signal available;
    there is no DOM `keydown` to hang this on since `#editor-main` isn't
-   `contenteditable`). Every rule here is opacity + `pointer-events: none` —
-   deliberately never `display`, `width`, or `margin` — so the prose column's
-   x position cannot shift mid-sentence. The feedback rail keeps its `width:
-   300px` (or is simply absent — task 3) the entire time; only its ink fades.
+   `contenteditable`). The topbar and toolbar fade with opacity +
+   `pointer-events: none`. The footer is deliberately left out of that list —
+   word count and save state are exactly what you still want visible
+   mid-sentence, so it stays fully opaque and clickable the whole time.
+   On desktop the feedback rail collapses to zero width (in step with the
+   `.book-sidebar` collapse over in book/css.rs) rather than just fading in
+   place, so the prose column re-centers into the freed space; its inner
+   content gets a min-width floor below so it can't reflow mid-collapse, with
+   `overflow: hidden` on the rail clipping the now-too-wide children. Mobile's
+   bottom-sheet rail keeps the older opacity-only treatment (see the
+   ≤768px block below) since it's summoned deliberately rather than being
+   ambient chrome.
    `prefers-reduced-motion` (see app_shell.rs) already zeroes every transition
    duration site-wide, so collapse/return is instant rather than animated for
    users who asked for that. */
 .editor-layout.is-writing .editor-topbar,
-.editor-layout.is-writing .toolbar,
-.editor-layout.is-writing .editor-footer {
+.editor-layout.is-writing .toolbar {
     opacity: 0;
     pointer-events: none;
 }
 
-.editor-feedback-sidebar {
-    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
-}
-
-.editor-layout.is-writing .editor-feedback-sidebar {
-    opacity: 0;
-    pointer-events: none;
+@media (min-width: 769px) {
+    .editor-feedback-sidebar {
+        transition: width var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+            min-width var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+            border-left-width var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+            opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
+    }
+    .editor-feedback-sidebar > div {
+        min-width: 300px;
+        flex-shrink: 0;
+    }
+    .editor-layout.is-writing .editor-feedback-sidebar {
+        width: 0;
+        min-width: 0;
+        border-left-width: 0;
+        opacity: 0;
+        pointer-events: none;
+    }
 }
 
 @media (max-width: 768px) {

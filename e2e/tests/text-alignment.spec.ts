@@ -4,6 +4,7 @@ import {
   createBook,
   openChapter,
   registerNewUser,
+  returnChrome,
   typeInEditor,
 } from "./helpers";
 
@@ -94,6 +95,12 @@ test("centering a paragraph holds in the editor, across a reload, and in the rea
   expect(await isActive(page, "left")).toBe(true);
   expect(await isActive(page, "center")).toBe(false);
 
+  // The toolbar faded and is pointer-events:none while `is-writing` (chrome
+  // fade-away), which now persists until asked back — bring it back before
+  // clicking it, same as an author reaching for the mouse would. Escape
+  // doesn't touch the editor's selection, so the caret stays put for the
+  // alignment command below.
+  await returnChrome(page);
   await alignButton(page, "center").click();
 
   // The editor repaints the paragraph...
@@ -146,17 +153,29 @@ test("Left restores the default, and centring drops the first-line indent", asyn
   const para = editorParagraph(page);
   await expect(para).toContainText("across the axis");
 
+  // The toolbar is still collapsed from typing above (chrome fade-away, no
+  // idle return) — ask for it back before the first click reaches it.
+  await returnChrome(page);
+
   // Right, then justify, then back to left: each is exclusive, and left has to
   // be reachable again rather than being a one-way door.
+  //
+  // Each alignment command is itself a document edit, so it re-triggers
+  // `on_change` → `start_writing()` and re-collapses the toolbar the moment
+  // the click lands — same as any other keystroke. A real author's next click
+  // is preceded by a fresh mouse move that clears it again; Playwright has to
+  // ask explicitly (`returnChrome`) before every one of these chained clicks.
   await alignButton(page, "right").click();
   await expect.poll(async () => computedAlign(para)).toBe("right");
   await expect.poll(async () => isActive(page, "right")).toBe(true);
 
+  await returnChrome(page);
   await alignButton(page, "justify").click();
   await expect.poll(async () => computedAlign(para)).toBe("justify");
   await expect.poll(async () => isActive(page, "justify")).toBe(true);
   expect(await isActive(page, "right")).toBe(false);
 
+  await returnChrome(page);
   await alignButton(page, "left").click();
   await expect.poll(async () => computedAlign(para)).toBe("left");
   await expect.poll(async () => isActive(page, "left")).toBe(true);
@@ -188,7 +207,9 @@ test("Left restores the default, and centring drops the first-line indent", asyn
   await expect.poll(async () => computedIndent(indented)).toBe("0px");
 
   // Justified: a justified paragraph is an ordinary indented paragraph whose
-  // lines are stretched, so the indent comes back.
+  // lines are stretched, so the indent comes back. The centre click just above
+  // was itself an edit, so the toolbar is collapsed again — ask it back.
+  await returnChrome(page);
   await alignButton(page, "justify").click();
   await expect.poll(async () => computedAlign(indented)).toBe("justify");
   await expect.poll(async () => computedIndent(indented)).toBe("32px");

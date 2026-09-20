@@ -1776,19 +1776,39 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
     padding: var(--pw-space-xl) var(--pw-space-2xl);
 }
 
-/* ── Chrome collapse while typing (editor pane, Stage 5) ──────────────
+/* ── Chrome collapse while typing (editor pane) ────────────────────────
    `.book-workspace.is-writing` is set for as long as the author is actively
-   typing in the chapter editor (see `editor_writing` in book/mod.rs). Fades
-   the sidebar with opacity + pointer-events, never width/margin/display —
-   the prose column's x position must not move when this triggers, since the
-   cursor is mid-line when it does. The editor's own header/footer/rail fade
-   the same way; see EDITOR_CSS for those rules. */
-.book-sidebar {
-    transition: opacity var(--pw-dur-slow) var(--pw-ease);
-}
-.book-workspace.is-writing .book-sidebar {
-    opacity: 0;
-    pointer-events: none;
+   typing in the chapter editor (see `editor_writing` in book/mod.rs). On
+   desktop the sidebar now collapses all the way to zero width instead of
+   just dimming in place — width/min-width/border-right animate together
+   with opacity so the prose column visibly slides over to the viewport
+   center as the chrome clears. Scoped to `@media (min-width: 769px)`: the
+   ≤768px sidebar is an off-canvas overlay (see the mobile block below) that
+   this collapse must not touch. `.book-sidebar > div` gets a min-width floor
+   matching the resting sidebar width so its content can't reflow or wrap
+   mid-collapse — `overflow: hidden` on the sidebar itself just clips the
+   now-too-wide children as the box shrinks around them. The editor's own
+   header/toolbar/footer/rail fade the same way; see EDITOR_CSS for those
+   rules (the footer stays visible throughout — word count and save state are
+   exactly what you still want mid-sentence). */
+@media (min-width: 769px) {
+    .book-sidebar {
+        transition: width var(--pw-dur-slow) var(--pw-ease),
+            min-width var(--pw-dur-slow) var(--pw-ease),
+            border-right-width var(--pw-dur-slow) var(--pw-ease),
+            opacity var(--pw-dur-slow) var(--pw-ease);
+    }
+    .book-sidebar > div {
+        min-width: 250px;
+        flex-shrink: 0;
+    }
+    .book-workspace.is-writing .book-sidebar {
+        width: 0;
+        min-width: 0;
+        border-right-width: 0;
+        opacity: 0;
+        pointer-events: none;
+    }
 }
 
 /* ── Chapters pane: hairline rows, not cards ─────────── */

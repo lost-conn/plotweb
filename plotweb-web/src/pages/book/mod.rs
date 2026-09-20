@@ -123,7 +123,6 @@ pub fn book_page(book_id: String) -> NodeHandle {
         note_dirty,
         auto_save_timer_id,
         editor_writing,
-        editor_writing_idle_timer_id,
         chapter_handle,
         note_handle,
         bid_signal,
@@ -419,35 +418,27 @@ pub fn book_page(book_id: String) -> NodeHandle {
     };
 
     // ── Chrome collapse while typing ─────────────────────────────
-    // Sidebar, editor header, footer and feedback rail fade (CSS opacity +
-    // `pointer-events: none` on `editor_writing` — see EDITOR_CSS) while the
-    // author is actively typing, and return on pointer move, Escape, or a short
-    // idle pause. Driven off real edits (`EditorHandle::on_change`), not DOM
-    // `keydown`: `#editor-main` is rinch's own editor-view, not a
-    // `contenteditable`, so there is no native `input`/`keydown` to hang this on
-    // at the DOM level the way the reference mockup does.
+    // Sidebar, editor header/toolbar and feedback rail fade (and on desktop
+    // the sidebar and feedback rail also collapse to zero width — CSS on
+    // `editor_writing`, see EDITOR_CSS / book/css.rs) while the author is
+    // actively typing, and return ONLY on pointer move or Escape — no idle
+    // timer brings it back on its own, so the chrome stays out of the way for
+    // as long as the author keeps their eyes on the page. Driven off real
+    // edits (`EditorHandle::on_change`), not DOM `keydown`: `#editor-main` is
+    // rinch's own editor-view, not a `contenteditable`, so there is no native
+    // `input`/`keydown` to hang this on at the DOM level the way the
+    // reference mockup does.
     let stop_writing = move || {
         editor_writing.set(false);
-        if let Some(h) = editor_writing_idle_timer_id.get() {
-            rinch_core::clear_timeout(h);
-            editor_writing_idle_timer_id.set(None);
-        }
     };
     let start_writing = move || {
         editor_writing.set(true);
-        if let Some(h) = editor_writing_idle_timer_id.get() {
-            rinch_core::clear_timeout(h);
-        }
-        editor_writing_idle_timer_id.set(Some(rinch_core::reactive::unowned(move || rinch_core::set_timeout(2500, move || {
-            bail_if_stale!();
-            editor_writing.set(false);
-        }))));
     };
 
     // ── Set up Ctrl+S, Escape-to-return, and auto-save (once, on mount) ──
     if let Some(window) = crate::platform::window() {
         // Ctrl+S — immediate save of the current chapter. Escape — bring the
-        // collapsed chrome back immediately rather than waiting for the idle timer.
+        // collapsed chrome back immediately.
         // Both listeners below are `forget()`-ed, so they stay bound to `window`
         // for the life of the tab — including after this page's scope is gone.
         // Every signal they touch is freed at that point and `Signal::get()`
@@ -497,8 +488,11 @@ pub fn book_page(book_id: String) -> NodeHandle {
         keydown.forget();
 
         // Pointer move — also brings the chrome back (mirrors the reference
-        // mockup: move the mouse, chrome returns). Only acts while collapsed, so
-        // this doesn't fight the idle timer on every idle mousemove.
+        // mockup: move the mouse, chrome returns). Only acts while collapsed
+        // (the `editor_writing.get()` check), so a mousemove while the chrome
+        // is already showing is a no-op rather than a signal write on every
+        // pixel of cursor travel. A layout shift from the collapse itself
+        // never fires this — `mousemove` only follows real pointer motion.
         let mousemove = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
             bail_if_stale!();
             if editor_writing.get() {

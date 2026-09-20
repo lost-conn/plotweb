@@ -1,5 +1,5 @@
 import { test, expect, Page } from "@playwright/test";
-import { addChapter, createBook, openChapter, registerNewUser, typeInEditor } from "./helpers";
+import { addChapter, createBook, openChapter, registerNewUser, returnChrome, typeInEditor } from "./helpers";
 
 /**
  * The squiggle is a decoration, not document content: rinch's editor view wraps
@@ -130,7 +130,10 @@ test("the Typography switch turns the squiggles off on this device", async ({ pa
   await typeInEditor(page, "A recieved letter ");
   await expect(squiggle(page, "recieved")).toBeVisible({ timeout: FIRST_SQUIGGLE_TIMEOUT });
 
-  // Typography lives in the footer tools strip, not the sidebar.
+  // Typography lives in the footer tools strip, not the sidebar — which is
+  // collapsed to zero width right now (`is-writing`, no idle timer to bring it
+  // back on its own), so ask for the chrome back first.
+  await returnChrome(page);
   await page.locator('.ws-tools .tool[data-tip="Typography"]').click();
   await page.locator("#pw-spellcheck .rinch-switch").click();
 
