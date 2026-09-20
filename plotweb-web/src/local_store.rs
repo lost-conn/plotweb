@@ -405,6 +405,10 @@ fn claim_surface(kind: BodyKind, doc_id: &str) {
         BodyKind::Note => &ACTIVE_NOTE_BODY,
     };
     slot.with(|a| *a.borrow_mut() = Some(doc_id.to_string()));
+    // A new document on this surface is a new question: whatever the last one's seed
+    // did, this one has not been refused yet. Cleared here — synchronously, with the
+    // claim — so the indicator can never carry the previous chapter's verdict.
+    seed_stall_slot(kind).with(|s| *s.borrow_mut() = None);
 }
 
 /// Whether `doc_id` is still what `kind`'s surface is bound to.
@@ -414,6 +418,45 @@ fn surface_holds(kind: BodyKind, doc_id: &str) -> bool {
         BodyKind::Note => &ACTIVE_NOTE_BODY,
     };
     slot.with(|a| a.borrow().as_deref() == Some(doc_id))
+}
+
+// ── Seed-time refusal, per surface ───────────────────────────────────────────
+//
+// `seed_and_host_kind` falls back to REST-only when the editor's content cannot be
+// projected onto a CRDT at all. That fallback is harmless where git is authoritative
+// — the REST PUT still carries the body. In a **cut-over** book it is not: the REST
+// write deliberately withholds `content` (see `book_page::sends_body_content`), so
+// with no collab session the body is persisted nowhere but this tab, while the PUT
+// still returns a durable receipt and the footer still says "Saved". That is the
+// invisible-write bug class, and the page has to be able to see it.
+//
+// Recorded per surface rather than returned, because the attach is spawned: the
+// caller that would read a return value has long since finished rendering. The page
+// reads it after each edit, the same moment it consults `collab_outbound_stall`.
+
+thread_local! {
+    /// Why the seed-time host start refused the chapter surface's document, if it did.
+    static CHAPTER_SEED_STALL: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The note surface's copy of the same fact.
+    static NOTE_SEED_STALL: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn seed_stall_slot(kind: BodyKind) -> &'static std::thread::LocalKey<RefCell<Option<String>>> {
+    match kind {
+        BodyKind::Chapter => &CHAPTER_SEED_STALL,
+        BodyKind::Note => &NOTE_SEED_STALL,
+    }
+}
+
+/// Why this surface's body reaches no CRDT at all — the seed-time collaboration
+/// start refused the document. `None` once another document is opened on that
+/// surface (every attach clears it before it begins).
+///
+/// Only meaningful for a cut-over book with sync on; elsewhere REST carries the body
+/// and the fallback is exactly what it has always been. The caller makes that
+/// judgement — see `pages::book::stall`.
+pub fn seed_stall(kind: BodyKind) -> Option<String> {
+    seed_stall_slot(kind).with(|s| s.borrow().clone())
 }
 
 // ── One-time recovery sweep ──────────────────────────────────────────────────
@@ -1145,7 +1188,7 @@ pub fn attach_note(
 /// in the legacy-content fallback (`load_chapter_content` / `load_note_content`); the
 /// CRDT collab seam and dual-write are identical.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum BodyKind {
+pub enum BodyKind {
     Chapter,
     Note,
 }
@@ -1175,10 +1218,20 @@ async fn seed_and_host_kind(
     let out = sink.clone();
     let snapshot = match handle.start_collaboration_host(move |delta| out.record(delta)) {
         Ok(snapshot) => snapshot,
-        Err(_) => {
-            // Content outside the staged flat-text collab scope (e.g. lists/tables,
-            // a follow-up deliverable). Leave the editor in normal REST-only mode —
-            // no local doc this deliverable, no regression to editing/autosave.
+        Err(e) => {
+            // Content outside the staged flat-text collab scope (a table, a
+            // blockquote). Leave the editor in normal REST-only mode — no local doc,
+            // no regression to editing/autosave where REST carries the body.
+            //
+            // Where it does not (a cut-over book with sync on) this is the silent
+            // half of the invisible-write bug: nothing downstream fails, so nothing
+            // downstream says anything. Record it so the page can. See `seed_stall`.
+            log::warn!(
+                "local-first: {}: no body sync — the editor's content could not start a \
+                 collaboration session: {e}",
+                store.doc_id()
+            );
+            seed_stall_slot(kind).with(|s| *s.borrow_mut() = Some(e.to_string()));
             handle.stop_collaboration();
             return Ok(None);
         }

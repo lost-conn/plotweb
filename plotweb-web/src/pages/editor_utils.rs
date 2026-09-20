@@ -729,6 +729,14 @@ pub const EDITOR_CSS: &str = r#"
     font-weight: 600;
 }
 
+/* Sync stalled on unsupported content: not a failed request, but the body is
+   reaching nothing. Reads like `error` on purpose — the author has to act (remove
+   the block) before anything they type leaves this tab. */
+.save-indicator.unsupported {
+    color: var(--rinch-color-red-6, #e03131);
+    font-weight: 600;
+}
+
 .editor-feedback-count {
     margin-left: auto;
     font-size: 11px;

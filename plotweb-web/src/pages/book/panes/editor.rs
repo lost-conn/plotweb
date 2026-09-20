@@ -782,6 +782,13 @@ where
                         }
                         "saved" => "Saved".to_string(),
                         "error" => "Save failed — retry".to_string(),
+                        // Sync is stalled: rinch cannot project this document onto
+                        // the CRDT (a blockquote, a table), and in a cut-over book
+                        // sync is the only thing that carries the body. Saying
+                        // "Saved" here is the lie — the text is in this tab and
+                        // nowhere else until the content comes out. See
+                        // `pages::book::stall`.
+                        "unsupported" => "Unsaved — unsupported content".to_string(),
                         _ => "Unsaved".to_string(),
                     }}
                 }

@@ -39,6 +39,7 @@ use rinch_core::Signal;
 use crate::store::AppStore;
 
 use super::panes;
+use super::stall;
 use super::state::BookState;
 use super::BookPane;
 
@@ -98,6 +99,19 @@ fn flush_chapter(state: BookState, store: AppStore, chapter_id: String) {
         rinch_core::clear_timeout(h);
         state.auto_save_timer_id.set(None);
     }
+    // Step 2.5, between "may this be written" and "write it": *can* it be written?
+    // In a cut-over book the PUT below carries no body, so with sync stalled this
+    // would report a save that persisted nothing. Asked before `claim_write` so the
+    // surface stays dirty — this is exactly the "a refused write never marks the
+    // surface clean" rule the module header is about, applied to a new refusal.
+    if stall::veto_if_stalled(
+        crate::local_store::BodyKind::Chapter,
+        &state.chapter_handle.get(),
+        &state.bid_signal.get(),
+        state.save_status,
+    ) {
+        return;
+    }
     if !claim_write(state.loaded_chapter_id, state.chapter_dirty, &chapter_id) {
         return;
     }
@@ -130,6 +144,15 @@ fn flush_note(state: BookState, store: AppStore, note_id: String) {
     if let Some(h) = state.note_save_timer_id.get() {
         rinch_core::clear_timeout(h);
         state.note_save_timer_id.set(None);
+    }
+    // The note half of the same veto — see `flush_chapter`.
+    if stall::veto_if_stalled(
+        crate::local_store::BodyKind::Note,
+        &state.note_handle.get(),
+        &state.bid_signal.get(),
+        state.note_save_status,
+    ) {
+        return;
     }
     if !claim_write(state.loaded_note_id, state.note_dirty, &note_id) {
         return;

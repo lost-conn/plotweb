@@ -695,6 +695,11 @@ pub(super) const NOTES_CSS: &str = r#"
     font-size: 12px;
     color: var(--rinch-color-dimmed);
 }
+/* Mirrors `.save-indicator.unsupported` in editor_utils.rs. */
+.note-save-indicator.unsupported {
+    color: var(--rinch-color-red-6, #e03131);
+    font-weight: 600;
+}
 .note-drag-ghost {
     display: none;
     position: fixed;
