@@ -168,7 +168,9 @@ mostly a naming and retention decision rather than new machinery.
   of resetting.
 - It stops running unattended from a boot hook. `PLOTWEB_RECONCILE_ON_BOOT` mutates
   documents while clients are connected; the `*_ON_BOOT` ergonomics were built for
-  read-only audits and reconcile is not read-only.
+  read-only audits and reconcile is not read-only. **Done (`3504bb4`):** the flag is
+  refused with a `[boot]` log line, `reconcile` is subcommand-only, and the copy a
+  rebuild replaces is reachable through `quarantine list` / `quarantine show`.
 
 ---
 

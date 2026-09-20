@@ -123,11 +123,16 @@ burns metered build minutes for nothing.
 - All three are lock-free (no rhypedb lock) so they run alongside the live server. Turn
   them off when not in use (they re-run every restart otherwise).
 
-**Reconciling on the deployment** (`PLOTWEB_RECONCILE_ON_BOOT=dry-run|git|crdt` + restart):
-the subcommand cannot be run on jkbase — the platform gives logs, secrets, restart and
-deploy, no shell — so the boot hook is the only way to resolve a divergence where the
-divergences actually are. Runs between the backfill and the shadow pass. Anything
-unrecognised is treated as a dry run; a typo must not rewrite prose. Turn it off after.
+**Reconciling on the deployment.** `PLOTWEB_RECONCILE_ON_BOOT` is **no longer honoured**
+(since `3504bb4`): a reconcile rebuilds documents while clients are connected, and the
+`*_ON_BOOT` hooks were built for read-only passes. Setting it now only logs a `[boot]`
+refusal. A reconcile is an explicit, non-boot invocation of
+`plotweb-server reconcile --prefer git|crdt [--dry-run]` (see "Resolving a divergence"
+below), run against a copy of the deployment's data taken with the server stopped, or in
+a one-off job on the platform if it grows one — jkbase itself gives logs, secrets, restart
+and deploy, no shell. Every rebuild sets the copy it replaces aside at
+`_quarantine/{doc_id}/e{n}/snapshot`; `plotweb-server quarantine list` / `quarantine show
+<doc_id> <epoch>` read those back.
 
 **The boot flags after full cutover.** `PLOTWEB_AUDIT_ON_BOOT` and
 `PLOTWEB_BACKFILL_ON_BOOT` have done their job and should be off. The backfill projects
