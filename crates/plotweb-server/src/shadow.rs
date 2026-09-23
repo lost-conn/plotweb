@@ -270,12 +270,23 @@ fn report_against_cutover(summary: &ShadowSummary, cutover: &crate::cutover::Cut
         summary.unreadable.len(),
         summary.diverged.len()
     );
-    println!(
-        "[boot-shadow] Those documents are being read from git, and writes to them are \
-         redirected there rather than being dropped — degraded, not lost."
-    );
-    println!(
-        "[boot-shadow] Rebuild them with `plotweb-server reconcile --prefer git` (or set \
-         PLOTWEB_RECONCILE_ON_BOOT=git and restart)."
-    );
+    // The two cases are served differently (`routes::cutover_body` /
+    // `canonical_is_authoritative`), so they need different advice. Telling an operator
+    // to `--prefer git` on a *diverged* document overwrites the copy authors are being
+    // served — usually the newer one — with git's.
+    if !summary.unreadable.is_empty() {
+        println!(
+            "[boot-shadow] UNREADABLE ones are read from git, and writes to them are \
+             redirected there rather than being dropped — degraded, not lost. Rebuild them \
+             with `plotweb-server reconcile --prefer git`."
+        );
+    }
+    if !summary.diverged.is_empty() {
+        println!(
+            "[boot-shadow] DIVERGED ones are still served from the canonical copy, which is \
+             usually the newer one (git is the mirror). Do NOT `--prefer git` them blind: \
+             compare both copies first. If the canonical copy is right, \
+             `reconcile --prefer crdt` re-mirrors git from it."
+        );
+    }
 }
