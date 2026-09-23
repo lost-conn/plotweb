@@ -445,8 +445,15 @@ pub(super) const NOTES_CSS: &str = r#"
     gap: 8px;
 }
 /* "Notes here" — the `@` edges pointing at the open chapter, read from the
-   manuscript side. Fades with the rest of the chrome while typing, so it is
-   reference material between sessions rather than something beside the prose. */
+   manuscript side. Shrinks to zero height (like the topbar/toolbar in
+   EDITOR_CSS) and fades with the rest of the chrome while typing, so it is
+   reference material between sessions rather than something beside the prose.
+   `overflow: hidden` + a fixed `max-height` (comfortably above a few wrapped
+   rows of chips — the row's *width* never changes during the collapse, so
+   whatever wrap arrangement the chips already settled into at rest is stable
+   through the whole animation, only clipped) give `max-height` something
+   numeric to animate to/from 0; see EDITOR_CSS's "Chrome collapse while
+   typing" note for why `none` doesn't work for this. */
 .chapter-backlinks {
     display: flex;
     align-items: center;
@@ -454,11 +461,22 @@ pub(super) const NOTES_CSS: &str = r#"
     gap: 6px;
     padding: 4px 20px 8px;
     flex-shrink: 0;
-    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
+    overflow: hidden;
+    max-height: 120px;
+    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+        max-height var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+        padding var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
 }
 .editor-layout.is-writing .chapter-backlinks {
     opacity: 0;
     pointer-events: none;
+}
+@media (min-width: 769px) {
+    .editor-layout.is-writing .chapter-backlinks {
+        max-height: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+    }
 }
 .chapter-backlinks-label {
     font-size: 11px;

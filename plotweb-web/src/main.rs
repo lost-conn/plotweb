@@ -4,6 +4,7 @@
 #![recursion_limit = "512"]
 
 pub mod api;
+pub mod chrome_settings;
 pub mod find;
 pub mod local_book;
 pub mod local_dictionary;
@@ -69,6 +70,11 @@ fn app() -> NodeHandle {
     // exists, so the first chapter opened is already right (the default is on, so
     // a slow read only ever turns it off a moment later — never on).
     spell::settings::hydrate(store);
+
+    // Does this device want the sidebar/toolbar/topbar to get out of the way while
+    // typing? Same "read before any editor exists" reasoning as spellcheck, just
+    // above.
+    chrome_settings::hydrate(store);
 
     // Which books are cut over, as far as this device was last told. Read before the
     // session check, because it decides whether writing on this device can reach the

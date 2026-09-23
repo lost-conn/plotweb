@@ -107,12 +107,16 @@ pub(super) struct BookState {
     pub auto_save_timer_id: Signal<Option<rinch_core::TimeoutHandle>>,
 
     /// True while the author is actively typing in the chapter editor — sidebar,
-    /// editor header/toolbar and feedback rail fade (and on desktop, the sidebar
-    /// and feedback rail also collapse to zero width) while this is set. Set on
-    /// `EditorHandle::on_change` (a real content edit — cross-platform, unlike
-    /// guessing at DOM `keydown` on a surface that isn't `contenteditable`);
-    /// cleared only on pointer move or Escape — no idle timeout, so the chrome
-    /// stays collapsed for as long as the author keeps looking at the prose.
+    /// editor header/toolbar/"Notes here" row and feedback rail fade (and on
+    /// desktop, the sidebar, chrome rows and feedback rail also collapse to zero
+    /// width/height) while this is set. Set on `EditorHandle::on_change` (a real
+    /// content edit — cross-platform, unlike guessing at DOM `keydown` on a
+    /// surface that isn't `contenteditable`), but only when
+    /// `store.chrome_fade_enabled` is on (the per-device off switch — see
+    /// `crate::chrome_settings` — makes this a no-op); cleared on Escape or a
+    /// pointer move into a reveal zone (`chrome_zone::in_reveal_zone`) — no idle
+    /// timeout, and a move over the prose itself does not count, so the chrome
+    /// stays collapsed for as long as the author keeps looking at the page.
     pub editor_writing: Signal<bool>,
 
     /// Model-first prose editors (rinch-editor-view), one per prose surface. Stored in
