@@ -311,6 +311,25 @@ pub(in crate::pages::book) fn render(
                             },
                         }
                     }
+                    // Per *device*, not per account — see `crate::chrome_settings`.
+                    // Switching this off while the chrome is mid-collapse reveals it
+                    // immediately (`editor_writing.set(false)`) rather than leaving it
+                    // collapsed with no way back short of Escape or a reveal-zone move.
+                    div { class: "typo-switch-row", id: "pw-chrome-fade",
+                        Switch {
+                            label: "Fade chrome while writing",
+                            description: "Hide the sidebar and toolbar while you type. Remembered on this device.",
+                            checked_fn: move || store.chrome_fade_enabled.get(),
+                            onchange: move || {
+                                let next = !store.chrome_fade_enabled.get();
+                                store.chrome_fade_enabled.set(next);
+                                crate::chrome_settings::persist(next);
+                                if !next {
+                                    state.editor_writing.set(false);
+                                }
+                            },
+                        }
+                    }
                     Space { h: "lg" }
                     Text { size: "sm", color: "dimmed", "Preview:" }
                     div { class: "font-preview-box", id: "font-preview",

@@ -40,7 +40,10 @@ pub struct ChapterData {
 /// HTML. If the content parses as a JSON object, walk it and count words in every
 /// `"text"` string field (the DocNode text-node shape); otherwise fall back to the
 /// legacy tag-strip logic.
-fn count_words(content: &str) -> u64 {
+///
+/// Public so every word count the product shows agrees (the MCP tools count a
+/// cut-over chapter's canonical body with it).
+pub fn count_words(content: &str) -> u64 {
     let trimmed = content.trim_start();
     if trimmed.starts_with('{') {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {

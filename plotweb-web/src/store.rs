@@ -46,6 +46,15 @@ pub struct AppStore {
     /// not on the account. Defaults on, and stays on until this device says
     /// otherwise.
     pub spellcheck_enabled: Signal<bool>,
+    /// Whether the chapter editor collapses the sidebar/toolbar/topbar while the
+    /// author is actively typing, on **this device**.
+    ///
+    /// Same per-device reasoning as [`Self::spellcheck_enabled`]: whether the
+    /// chrome fade is wanted is a property of the machine (a cramped laptop screen
+    /// wants the extra room; a desktop with room to spare may not), not of the
+    /// account. The durable copy is in local storage (see
+    /// [`crate::chrome_settings`]). Defaults on.
+    pub chrome_fade_enabled: Signal<bool>,
 }
 
 impl AppStore {
@@ -69,6 +78,7 @@ impl AppStore {
             open_body: Signal::new(None),
             user_dictionary: Signal::new(Vec::new()),
             spellcheck_enabled: Signal::new(true),
+            chrome_fade_enabled: Signal::new(true),
         }
     }
 }
@@ -82,6 +92,8 @@ pub enum Route {
     /// Redeem a reset token from an emailed link (`/reset-password/{token}`).
     ResetPassword(String),
     Dashboard,
+    /// Account settings (`/settings`) — currently agent access tokens.
+    Settings,
     Book(String),
     Reader(String),
     /// Author "preview as reader" for a book (by book_id), using the improved
@@ -98,6 +110,7 @@ impl Route {
     pub fn to_path(&self) -> String {
         match self {
             Route::Dashboard => "/".into(),
+            Route::Settings => "/settings".into(),
             Route::Login => "/login".into(),
             Route::Register => "/register".into(),
             Route::ForgotPassword => "/forgot-password".into(),
@@ -117,6 +130,7 @@ impl Route {
             "" | "/" => Route::Dashboard,
             "/login" => Route::Login,
             "/register" => Route::Register,
+            "/settings" => Route::Settings,
             "/forgot-password" => Route::ForgotPassword,
             "/theme" => Route::ThemePreview,
             "/editor-spike" => Route::EditorSpike,

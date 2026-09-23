@@ -13,6 +13,7 @@ mod docx;
 mod epub;
 mod html;
 mod markdown;
+pub mod text;
 
 use thiserror::Error;
 

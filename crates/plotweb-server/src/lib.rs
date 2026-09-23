@@ -10,6 +10,7 @@ pub mod backfill;
 pub mod cutover;
 pub mod db;
 pub mod email;
+pub mod mcp;
 pub mod mirror;
 pub mod quarantine;
 pub mod rhype;
@@ -19,6 +20,7 @@ pub mod routes;
 pub mod shadow;
 pub mod structure;
 pub mod sync;
+pub mod token_auth;
 pub mod ws;
 
 use std::path::{Path, PathBuf};
@@ -197,6 +199,14 @@ pub fn api_router(state: AppState) -> Router {
                     routes::user_dictionary::MAX_DICTIONARY_BODY,
                 )),
         )
+        // Personal access tokens. Management is session-only (a token can never
+        // mint, list or revoke tokens); `whoami` is bearer-only. See routes::tokens.
+        .route(
+            "/api/tokens",
+            get(routes::tokens::list).post(routes::tokens::create),
+        )
+        .route("/api/tokens/whoami", get(routes::tokens::whoami))
+        .route("/api/tokens/{id}", delete(routes::tokens::revoke))
         .route("/api/books", get(routes::books::list))
         .route("/api/books", post(routes::books::create))
         .route("/api/books/{id}", get(routes::books::get))
@@ -326,6 +336,9 @@ pub fn api_router(state: AppState) -> Router {
         )
         .route("/api/books/{book_id}/feedback/ws", get(ws_author_feedback))
         .route("/api/beta/{token}/feedback/ws", get(ws_reader_feedback))
+        // The MCP endpoint for the author's AI agent: bearer-token only, its own
+        // auth layer (see mcp.rs). A separate router so that layer covers it alone.
+        .merge(mcp::router(state.clone()))
         .with_state(state)
 }
 
@@ -351,7 +364,9 @@ pub async fn ws_author_feedback(
     if !crate::routes::verify_book_ownership(&state, &book_id, &user_id).await {
         return StatusCode::NOT_FOUND.into_response();
     }
-    ws.on_upgrade(move |socket| handle_feedback_ws(socket, state, book_id))
+    // The author hears the book's shared channel and their own: agent comments are
+    // broadcast only on the latter (see `ws::author_channel`).
+    ws.on_upgrade(move |socket| handle_feedback_ws(socket, state, book_id, true))
         .into_response()
 }
 
@@ -374,15 +389,24 @@ pub async fn ws_reader_feedback(
         .and_then(|o| o.string("book_id"))
         .unwrap_or_default();
 
-    ws.on_upgrade(move |socket| handle_feedback_ws(socket, state, book_id))
+    ws.on_upgrade(move |socket| handle_feedback_ws(socket, state, book_id, false))
 }
 
-async fn handle_feedback_ws(mut socket: WebSocket, state: AppState, book_id: String) {
+async fn handle_feedback_ws(mut socket: WebSocket, state: AppState, book_id: String, author: bool) {
     if book_id.is_empty() {
         return;
     }
 
     let mut rx = state.broadcaster.subscribe(&book_id);
+    // Readers get a receiver that never yields: holding the sender half keeps it open
+    // without registering any channel for them.
+    let author_key = ws::author_channel(&book_id);
+    let (_never_tx, never_rx) = tokio::sync::broadcast::channel::<String>(1);
+    let mut author_rx = if author {
+        state.broadcaster.subscribe(&author_key)
+    } else {
+        never_rx
+    };
 
     // Keepalive ping so dead half-open connections are detected.
     let mut ping = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -391,6 +415,17 @@ async fn handle_feedback_ws(mut socket: WebSocket, state: AppState, book_id: Str
     loop {
         tokio::select! {
             msg = rx.recv() => {
+                match msg {
+                    Ok(text) => {
+                        if socket.send(Message::Text(text.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(_) => break,
+                }
+            }
+            msg = author_rx.recv() => {
                 match msg {
                     Ok(text) => {
                         if socket.send(Message::Text(text.into())).await.is_err() {
@@ -417,5 +452,9 @@ async fn handle_feedback_ws(mut socket: WebSocket, state: AppState, book_id: Str
 
     // Drop our subscription and prune the channel if no readers remain.
     drop(rx);
+    drop(author_rx);
     state.broadcaster.cleanup(&book_id);
+    if author {
+        state.broadcaster.cleanup(&author_key);
+    }
 }

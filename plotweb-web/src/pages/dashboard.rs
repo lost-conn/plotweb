@@ -209,7 +209,7 @@ fn parse_timestamp_secs(s: &str) -> Option<i64> {
 /// (should not happen — the server always writes this format — but a
 /// malformed timestamp should degrade quietly rather than panic or show
 /// nonsense like "-4000000000 minutes ago").
-fn relative_time(updated_at: &str, now_secs: i64) -> String {
+pub(crate) fn relative_time(updated_at: &str, now_secs: i64) -> String {
     let Some(then) = parse_timestamp_secs(updated_at) else {
         return "a while ago".to_string();
     };
@@ -402,6 +402,14 @@ pub fn dashboard_page() -> NodeHandle {
                     ActionIcon {
                         variant: "subtle",
                         size: "sm",
+                        class: "dash-settings",
+                        onclick: move || router::navigate(Route::Settings),
+                        {render_tabler_icon(__scope, TablerIcon::Settings, TablerIconStyle::Outline)}
+                    }
+                    ActionIcon {
+                        variant: "subtle",
+                        size: "sm",
+                        class: "dash-logout",
                         onclick: logout,
                         {render_tabler_icon(__scope, TablerIcon::Logout, TablerIconStyle::Outline)}
                     }

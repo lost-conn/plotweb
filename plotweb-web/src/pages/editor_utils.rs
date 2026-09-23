@@ -441,7 +441,15 @@ pub const EDITOR_CSS: &str = r#"
     border-bottom: 1px solid var(--rinch-color-border);
     background: var(--pw-color-deep);
     flex-shrink: 0;
-    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
+    overflow: hidden;
+    /* `max-height` is a fixed value (not `none`), comfortably above the row's
+       resting content height, purely so it has something numeric to animate
+       from/to — see the "Chrome collapse while typing" block below for why. */
+    max-height: 64px;
+    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+        max-height var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+        padding var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+        border-bottom-width var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
 }
 
 .editor-topbar-left {
@@ -460,7 +468,13 @@ pub const EDITOR_CSS: &str = r#"
     background: var(--pw-color-deep);
     flex-shrink: 0;
     overflow-x: auto;
-    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
+    overflow-y: hidden;
+    /* Fixed, not `none` — same reasoning as `.editor-topbar` above. */
+    max-height: 52px;
+    transition: opacity var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+        max-height var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+        padding var(--pw-dur-slow, 320ms) var(--pw-ease, ease),
+        border-bottom-width var(--pw-dur-slow, 320ms) var(--pw-ease, ease);
 }
 
 .toolbar-separator {
@@ -749,18 +763,29 @@ pub const EDITOR_CSS: &str = r#"
    typing (see `editor_writing` in book/mod.rs — driven by `EditorHandle::
    on_change`, the only cross-platform "an edit happened" signal available;
    there is no DOM `keydown` to hang this on since `#editor-main` isn't
-   `contenteditable`). The topbar and toolbar fade with opacity +
-   `pointer-events: none`. The footer is deliberately left out of that list —
-   word count and save state are exactly what you still want visible
-   mid-sentence, so it stays fully opaque and clickable the whole time.
-   On desktop the feedback rail collapses to zero width (in step with the
-   `.book-sidebar` collapse over in book/css.rs) rather than just fading in
-   place, so the prose column re-centers into the freed space; its inner
-   content gets a min-width floor below so it can't reflow mid-collapse, with
-   `overflow: hidden` on the rail clipping the now-too-wide children. Mobile's
-   bottom-sheet rail keeps the older opacity-only treatment (see the
-   ≤768px block below) since it's summoned deliberately rather than being
-   ambient chrome.
+   `contenteditable`) *and* the per-device "Fade chrome while writing" switch
+   (Typography pane, `crate::chrome_settings`) is on — off, and this class
+   never gets set in the first place.
+   On desktop the topbar and toolbar shrink to zero height (`max-height`, padding and
+   border-bottom-width all animate to 0 together, mirroring how the sidebar
+   collapses width over in book/css.rs) rather than just fading in place, so
+   the prose reclaims the vertical space instead of leaving a blank strip.
+   `overflow: hidden` (set on the resting rule, above) clips each row as it
+   shrinks; their content doesn't reflow during the animation because nothing
+   about their *width* changes, only height, so the fixed `max-height` chosen
+   above is just a number to animate against, not a real constraint on
+   resting content. Both also fade with opacity + `pointer-events: none`, so a
+   row that hasn't finished collapsing yet is inert immediately rather than
+   for the extra instant color/border corners need. The footer is deliberately
+   left out of this — word count and save state are exactly what you still
+   want visible mid-sentence, so it stays fully opaque and clickable the whole
+   time. On desktop the feedback rail collapses to zero width (in step with
+   the `.book-sidebar` collapse over in book/css.rs) for the same "reclaim the
+   space" reason; its inner content gets a min-width floor below so it can't
+   reflow mid-collapse, with `overflow: hidden` on the rail clipping the
+   now-too-wide children. Mobile's bottom-sheet rail keeps the older
+   opacity-only treatment (see the ≤768px block below) since it's summoned
+   deliberately rather than being ambient chrome.
    `prefers-reduced-motion` (see app_shell.rs) already zeroes every transition
    duration site-wide, so collapse/return is instant rather than animated for
    users who asked for that. */
@@ -768,6 +793,17 @@ pub const EDITOR_CSS: &str = r#"
 .editor-layout.is-writing .toolbar {
     opacity: 0;
     pointer-events: none;
+}
+/* Height collapse is desktop-only: on a phone the prose jumping up under the
+   on-screen keyboard is worse than a faded strip, so ≤768px keeps fade-only. */
+@media (min-width: 769px) {
+    .editor-layout.is-writing .editor-topbar,
+    .editor-layout.is-writing .toolbar {
+        max-height: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        border-bottom-width: 0;
+    }
 }
 
 @media (min-width: 769px) {

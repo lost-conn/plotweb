@@ -32,9 +32,9 @@ export async function registerNewUser(
 /** Log out via the dashboard topbar icon and land back on /login. */
 export async function logout(page: Page) {
   await page.goto("/");
-  // The second action-icon in the topbar is the logout control (the first is
-  // the dark-mode toggle).
-  await page.locator(".dash-topbar-right .rinch-action-icon").nth(1).click();
+  // The topbar's icons are dark-mode toggle, settings, logout — addressed by
+  // class rather than position so adding an icon doesn't silently retarget this.
+  await page.locator(".dash-topbar-right .dash-logout").click();
   await expect(page).toHaveURL(/\/login/);
 }
 
@@ -293,4 +293,11 @@ export async function typeInEditor(page: Page, text: string) {
 export async function returnChrome(page: Page) {
   await page.keyboard.press("Escape");
   await expect(page.locator(".book-workspace")).not.toHaveClass(/is-writing/);
+}
+
+/** Open Settings from the dashboard topbar's gear icon. */
+export async function openSettings(page: Page) {
+  await page.locator(".dash-topbar-right .dash-settings").click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole("heading", { name: "Agent access" })).toBeVisible();
 }

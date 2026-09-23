@@ -759,6 +759,10 @@ pub fn app_shell() -> NodeHandle {
                     style: "height: 100dvh; display: flex; flex-direction: column; overflow: hidden;",
                     {crate::pages::dashboard::dashboard_page(__scope)}
                 },
+                Route::Settings => div {
+                    style: "height: 100dvh; display: flex; flex-direction: column; overflow: hidden;",
+                    {crate::pages::settings::settings_page(__scope)}
+                },
                 Route::Book(_id) => div {
                     style: "height: 100dvh; overflow: hidden;",
                     {crate::pages::book::book_page(__scope, _id)}

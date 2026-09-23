@@ -284,6 +284,57 @@ impl TestApp {
         self.send(req).await
     }
 
+    /// Send a request with an explicit `Authorization` header (or none) and
+    /// **without** the session cookie — how an agent holding a personal access
+    /// token talks to the server. The stored cookie is left untouched, so the
+    /// test's session carries on afterwards.
+    pub async fn bearer(
+        &mut self,
+        method: &str,
+        uri: &str,
+        authorization: Option<&str>,
+        body: Option<&Value>,
+    ) -> Resp {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(auth) = authorization {
+            builder = builder.header("authorization", auth);
+        }
+        let req = match body {
+            Some(b) => builder
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(b).unwrap()))
+                .unwrap(),
+            None => builder.body(Body::empty()).unwrap(),
+        };
+        let resp = self.router.clone().oneshot(req).await.expect("response");
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        Resp { status, json }
+    }
+
+    /// Send a fully built request as-is — no session cookie, no added headers — and
+    /// return the raw response. For transports whose headers matter (the MCP endpoint
+    /// negotiates on `Accept` and answers JSON or SSE).
+    pub async fn send_raw(
+        &mut self,
+        req: Request<Body>,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let resp = self.router.clone().oneshot(req).await.expect("response");
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, headers, bytes.to_vec())
+    }
+
     /// Drop any stored session cookie (simulate a fresh, unauthenticated client).
     pub fn logout_local(&mut self) {
         self.cookie = None;

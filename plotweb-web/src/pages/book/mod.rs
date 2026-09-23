@@ -19,6 +19,7 @@ use crate::router;
 use crate::store::{AppStore, Route};
 
 mod calendar_form;
+mod chrome_zone;
 mod css;
 mod feedback;
 mod flush;
@@ -449,18 +450,26 @@ pub fn book_page(book_id: String) -> NodeHandle {
     // Sidebar, editor header/toolbar and feedback rail fade (and on desktop
     // the sidebar and feedback rail also collapse to zero width — CSS on
     // `editor_writing`, see EDITOR_CSS / book/css.rs) while the author is
-    // actively typing, and return ONLY on pointer move or Escape — no idle
-    // timer brings it back on its own, so the chrome stays out of the way for
-    // as long as the author keeps their eyes on the page. Driven off real
-    // edits (`EditorHandle::on_change`), not DOM `keydown`: `#editor-main` is
-    // rinch's own editor-view, not a `contenteditable`, so there is no native
+    // actively typing, and return only on Escape or a pointer move into a
+    // reveal zone (`chrome_zone::in_reveal_zone` — a mousemove over the prose
+    // itself is a no-op, see that module) — no idle timer brings it back on
+    // its own, so the chrome stays out of the way for as long as the author
+    // keeps their eyes on the page. Driven off real edits (`EditorHandle::
+    // on_change`), not DOM `keydown`: `#editor-main` is rinch's own
+    // editor-view, not a `contenteditable`, so there is no native
     // `input`/`keydown` to hang this on at the DOM level the way the
     // reference mockup does.
     let stop_writing = move || {
         editor_writing.set(false);
     };
     let start_writing = move || {
-        editor_writing.set(true);
+        // `store.chrome_fade_enabled` is the per-device off switch (Typography
+        // pane, "Fade chrome while writing") — off means typing never collapses
+        // the chrome in the first place, so there's nothing for a reveal zone or
+        // Escape to bring back.
+        if store.chrome_fade_enabled.get() {
+            editor_writing.set(true);
+        }
     };
 
     // ── Set up Ctrl+S, Escape-to-return, and auto-save (once, on mount) ──
@@ -515,15 +524,32 @@ pub fn book_page(book_id: String) -> NodeHandle {
         window.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref()).ok();
         keydown.forget();
 
-        // Pointer move — also brings the chrome back (mirrors the reference
-        // mockup: move the mouse, chrome returns). Only acts while collapsed
-        // (the `editor_writing.get()` check), so a mousemove while the chrome
-        // is already showing is a no-op rather than a signal write on every
-        // pixel of cursor travel. A layout shift from the collapse itself
-        // never fires this — `mousemove` only follows real pointer motion.
-        let mousemove = wasm_bindgen::closure::Closure::wrap(Box::new(move |_: web_sys::MouseEvent| {
+        // Pointer move — brings the chrome back, but only when it's a reach for
+        // the chrome itself (see `chrome_zone::in_reveal_zone`): a strip down the
+        // left edge (the sidebar), a band across the top (topbar/toolbar/"Notes
+        // here"), a strip down the right edge (the feedback rail). A move that
+        // stays over the prose in the middle of the screen — which is most of
+        // them, while reading back what was just typed — is a no-op. Only acts
+        // while collapsed (the `editor_writing.get()` check), so a mousemove
+        // while the chrome is already showing is a no-op rather than a signal
+        // write on every pixel of cursor travel. A layout shift from the
+        // collapse itself never fires this — `mousemove` only follows real
+        // pointer motion.
+        let mousemove = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::MouseEvent| {
             bail_if_stale!();
-            if editor_writing.get() {
+            if !editor_writing.get() {
+                return;
+            }
+            // `inner_width` is read fresh on every move rather than cached: a
+            // window resize/rotate between two moves must not leave the zone
+            // computed against a stale width.
+            let Some(viewport_w) = crate::platform::window()
+                .and_then(|w| w.inner_width().ok())
+                .and_then(|v| v.as_f64())
+            else {
+                return;
+            };
+            if chrome_zone::in_reveal_zone(event.client_x() as f64, event.client_y() as f64, viewport_w) {
                 stop_writing();
             }
         }) as Box<dyn FnMut(_)>);

@@ -9,8 +9,8 @@ import { registerNewUser } from "./helpers";
  * every `store.dark_mode` change (rinch-web's `set_on_signal_change` ->
  * `setup_theme_css` -> web_document path). The default is dark.
  *
- * On the dashboard, `.dash-topbar-right` holds two ActionIcons: the FIRST is the
- * dark-mode toggle (`toggle_dark`), the second is logout. Clicking the first
+ * On the dashboard, `.dash-topbar-right` holds three ActionIcons: the FIRST is the
+ * dark-mode toggle (`toggle_dark`), then settings, then logout. Clicking the first
  * flips the theme, which must rewrite the theme `<style>` CSS (dark -> light
  * produces different CSS-variable values) and repaint the body background.
  */
