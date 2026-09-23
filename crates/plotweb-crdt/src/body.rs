@@ -64,8 +64,9 @@ pub enum BodyKind {
 /// Flags (with a specific, origin-tagged reason) on:
 /// - malformed `DocNode` JSON that starts like JSON but fails schema validation,
 /// - legacy HTML that `slice_from_html` cannot parse,
-/// - `CollabSession::new` returning `Unsupported` (blockquote / table / image /
-///   task-list / hard_break …) — the specific block type is captured in the reason.
+/// - `CollabSession::new` returning `Unsupported` (blockquote / table / task-list …)
+///   — the specific block type is captured in the reason. Inline `hard_break` and
+///   `image` atoms are in scope since rinch PR #838 and round-trip Clean.
 ///   A legacy chapter with a `> blockquote` converts fine but the collab projection
 ///   rejects `blockquote`, so it is correctly `Flagged` here,
 /// - a materialized-≠-canonical mismatch (a high-level description of what differs).
@@ -79,7 +80,7 @@ pub fn roundtrip_body(content: &str, kind: BodyKind) -> RoundTrip {
     }
 
     // Share the ONE projection front-end with the backfill: obtain the exact same
-    // hard-break-split model Node, then round-trip/compare on top of it. A flag from
+    // model Node, then round-trip/compare on top of it. A flag from
     // the shared front-end becomes a `Flagged` here (unchanged behavior).
     let (schema, node, origin) = match prepare_body_node(content, kind) {
         Ok(prepared) => prepared,
@@ -108,10 +109,18 @@ pub fn project_body(content: &str, kind: BodyKind) -> Result<Vec<u8>, String> {
 }
 
 /// The single projection front-end shared by validate ([`roundtrip_body`]) and emit
-/// ([`project_body`]): obtain the model [`Node`] (new DocNode JSON, or legacy
-/// Markdown/HTML converted the editor's way), then apply the `hard_break` block-split
-/// (Option 3). Returns the schema, the split node, and a human origin label for flag
-/// reasons — or `Err(reason)` if the body cannot project faithfully.
+/// ([`project_body`], [`apply_content`]): obtain the model [`Node`] (new DocNode JSON,
+/// or legacy Markdown/HTML converted the editor's way). Returns the schema, the node,
+/// and a human origin label for flag reasons — or `Err(reason)` if the body cannot
+/// project faithfully.
+///
+/// Inline atoms (`hard_break`, `image`) are passed through as they are. This used to
+/// split text-blocks at every `hard_break` ("Option 3"), from when the collab
+/// projection could not carry inline atoms. Since rinch PR #838 (pinned in 7020eec) it
+/// can, and the split had become a lossy rewrite: every git→canonical write turned a
+/// Shift+Enter line break into a paragraph break (or deleted a trailing one) and
+/// recorded that as an edit every synced device merged. Only [`compare_body`] still
+/// splits, on both sides, as a comparison tolerance.
 ///
 /// Empty/whitespace content is a valid, migratable doc here: a single empty paragraph.
 /// (`roundtrip_body` short-circuits empty to `Clean` before calling this; `project_body`
@@ -175,22 +184,6 @@ fn prepare_body_node(content: &str, kind: BodyKind) -> Result<(Rc<Schema>, Node,
         }
     };
 
-    // Option 3 (interim): the collab projection can't represent inline atoms yet
-    // (`hard_break` / `image` / `horizontal_rule`). Split text-blocks at `hard_break`
-    // into consecutive blocks — a legacy note's `<br>` becomes a paragraph break — so
-    // those notes migrate instead of flagging. No inline content is dropped; only the
-    // break atom becomes a block boundary. It is a no-op for content without breaks,
-    // and it is part of the canonical migration form, so the backfill stores exactly
-    // what the audit validates here. (`image`/`horizontal_rule` atoms still flag —
-    // dropping them would be lossy — until the projection supports them.)
-    let doc = node
-        .to_doc()
-        .map_err(|e| format!("could not read body to split breaks ({origin}): {e}"))?;
-    let split = split_hard_breaks_doc(&doc);
-    let node = schema
-        .node_from_doc(&split)
-        .map_err(|e| format!("hard_break split produced an invalid doc ({origin}): {e}"))?;
-
     Ok((schema, node, origin))
 }
 
@@ -217,9 +210,13 @@ fn is_container_type(t: &str) -> bool {
 
 /// Split every text-block that contains inline `hard_break` nodes into consecutive
 /// blocks of the same type, dropping the breaks; recurse into container blocks. No
-/// inline content is dropped — only `hard_break` atoms become block boundaries — so
-/// a legacy `<br>` reads as a paragraph break after migration (Option 3). A no-op for
+/// text is dropped — only `hard_break` atoms become block boundaries. A no-op for
 /// content with no breaks.
+///
+/// Used only by [`compare_body`], on both sides, so "line break vs paragraph break" is
+/// not reported as divergence: documents backfilled before 7020eec were stored split
+/// while their untouched git copy still holds the `<br>`. It must never shape what is
+/// written — see [`prepare_body_node`].
 fn split_hard_breaks_doc(node: &DocNode) -> DocNode {
     let mut out: Vec<DocNode> = Vec::with_capacity(node.content.len());
     for child in &node.content {
@@ -541,9 +538,10 @@ mod tests {
         );
     }
 
-    /// An inline image atom is unsupported → Flagged.
+    /// An inline image atom is in the collab scope since rinch PR #838: it round-trips
+    /// Clean and survives project → materialize with its attrs.
     #[test]
-    fn image_is_flagged() {
+    fn inline_image_round_trips() {
         let json = r#"{"type":"doc","content":[
             {"type":"paragraph","content":[
                 {"type":"text","text":"before "},
@@ -551,12 +549,81 @@ mod tests {
                 {"type":"text","text":" after"}
             ]}
         ]}"#;
-        let rt = roundtrip_body(json, BodyKind::Chapter);
-        let reason = rt.reason().expect("image must flag");
-        assert!(
-            reason.contains("image") || reason.contains("inline"),
-            "reason should mention the unsupported atom, got: {reason}"
-        );
+        assert_eq!(roundtrip_body(json, BodyKind::Chapter), RoundTrip::Clean);
+        let bytes = project_body(json, BodyKind::Chapter).unwrap();
+        let back = materialize_body(&bytes).unwrap();
+        assert!(back.contains(r#""type":"image""#), "image atom kept: {back}");
+        assert!(back.contains("hash://abc"), "image src kept: {back}");
+    }
+
+    // ── Inline hard_break (Shift+Enter) ─────────────────────────────────────
+    //
+    // Regressions for the stale "Option 3" split: a paragraph ending in a line break
+    // read as diverged at boot (git side split, canonical not), and every
+    // git→canonical write rewrote line breaks as paragraph breaks.
+
+    const TRAILING_BREAK: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"line one"},{"type":"hard_break"}]}]}"#;
+    const MID_BREAK: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"a"},{"type":"hard_break"},{"type":"text","text":"b"}]}]}"#;
+
+    /// What a syncing client's document holds: the node projected as-is.
+    fn client_snapshot(json: &str) -> Vec<u8> {
+        let schema = Rc::new(Schema::starter_kit());
+        let doc: DocNode = serde_json::from_str(json).unwrap();
+        let node = schema.node_from_doc(&doc).unwrap();
+        project_node_to_snapshot(&schema, node, "client").unwrap()
+    }
+
+    #[test]
+    fn hard_break_survives_project_and_materialize() {
+        for json in [TRAILING_BREAK, MID_BREAK] {
+            let back = materialize_body(&project_body(json, BodyKind::Chapter).unwrap()).unwrap();
+            let want: DocNode = serde_json::from_str(json).unwrap();
+            let got: DocNode = serde_json::from_str(&back).unwrap();
+            assert_eq!(got, want, "hard_break must survive the round trip");
+        }
+    }
+
+    /// The boot-shadow false positive: git holds exactly what the mirror wrote from
+    /// the canonical copy, so the two must compare equal.
+    #[test]
+    fn mirrored_hard_break_compares_equal() {
+        for json in [TRAILING_BREAK, MID_BREAK] {
+            let bytes = client_snapshot(json);
+            let mirrored = materialize_body(&bytes).unwrap();
+            assert_eq!(compare_body(&mirrored, &bytes, BodyKind::Chapter), Shadow::Match);
+        }
+    }
+
+    /// A document backfilled before the fix was stored split, while its untouched git
+    /// copy still has the break. That is not content loss, so it is not divergence.
+    #[test]
+    fn line_break_vs_paragraph_break_is_not_divergence() {
+        let split = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"a"}]},{"type":"paragraph","content":[{"type":"text","text":"b"}]}]}"#;
+        assert_eq!(compare_body(MID_BREAK, &client_snapshot(split), BodyKind::Chapter), Shadow::Match);
+        // A real text change is still reported.
+        let other = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"a"},{"type":"hard_break"},{"type":"text","text":"c"}]}]}"#;
+        assert!(matches!(
+            compare_body(other, &client_snapshot(MID_BREAK), BodyKind::Chapter),
+            Shadow::Diverged { .. }
+        ));
+    }
+
+    /// Writing a document's own content back into it records nothing, and a real edit
+    /// through `apply_content` keeps the line breaks.
+    #[test]
+    fn apply_content_keeps_hard_breaks() {
+        for json in [TRAILING_BREAK, MID_BREAK] {
+            let bytes = client_snapshot(json);
+            let same = materialize_body(&bytes).unwrap();
+            let after = apply_content(&bytes, &same, BodyKind::Chapter).unwrap();
+            assert_eq!(materialize_body(&after).unwrap(), same, "unchanged content must not rewrite breaks");
+        }
+        let bytes = client_snapshot(MID_BREAK);
+        let edited = MID_BREAK.replace(r#""text":"b""#, r#""text":"b, edited""#);
+        let after = apply_content(&bytes, &edited, BodyKind::Chapter).unwrap();
+        let got: DocNode = serde_json::from_str(&materialize_body(&after).unwrap()).unwrap();
+        let want: DocNode = serde_json::from_str(&edited).unwrap();
+        assert_eq!(got, want);
     }
 
     // ── Legacy (pre-DocNode) content ────────────────────────────────────────
@@ -649,9 +716,9 @@ mod tests {
         );
     }
 
-    /// Option 3 (interim): a legacy HTML note with `<br>` (which becomes a
-    /// `hard_break` inline atom the collab projection can't represent yet) is split at
-    /// the break into paragraphs and migrates Clean, dropping no text.
+    /// A legacy HTML note with `<br>` converts to one paragraph holding `hard_break`
+    /// atoms. It migrates Clean with the breaks kept. The structural half checks the
+    /// split [`compare_body`] still uses as a tolerance.
     #[test]
     fn legacy_html_note_with_hard_break_is_clean() {
         let html = "<p>First line.<br>Second line.<br>Third line.</p>";
@@ -678,12 +745,16 @@ mod tests {
         }
         assert!(!has_hb(&after), "no hard_break remains after the split");
 
-        // …and end-to-end it round-trips Clean (was flagged before Option 3).
+        // …and end-to-end it round-trips Clean, keeping the breaks as breaks.
         assert_eq!(
             roundtrip_body(html, BodyKind::Note),
             RoundTrip::Clean,
-            "a note with <br> must split and be Clean"
+            "a note with <br> must be Clean"
         );
+        let back = materialize_body(&project_body(html, BodyKind::Note).unwrap()).unwrap();
+        let back: DocNode = serde_json::from_str(&back).unwrap();
+        assert_eq!(back.content.len(), 1, "still one paragraph");
+        assert!(has_hb(&back), "the <br> survives as a hard_break");
     }
 
     /// A legacy chapter containing a `> blockquote` converts fine (markdown_to_html
@@ -812,7 +883,7 @@ pub fn compare_body(content: &str, canonical: &[u8], kind: BodyKind) -> Shadow {
         }
     };
     let git_side = match node.to_doc() {
-        Ok(d) => coalesce(&d),
+        Ok(d) => coalesce(&split_hard_breaks_doc(&d)),
         Err(e) => {
             return Shadow::Unreadable {
                 reason: format!("could not canonicalize git content: {e}"),
@@ -832,7 +903,7 @@ pub fn compare_body(content: &str, canonical: &[u8], kind: BodyKind) -> Shadow {
         .projected_doc(&schema)
         .and_then(|n| n.to_doc().map_err(Into::into))
     {
-        Ok(d) => coalesce(&d),
+        Ok(d) => coalesce(&split_hard_breaks_doc(&d)),
         Err(e) => {
             return Shadow::Unreadable {
                 reason: format!("could not materialize the stored document: {e}"),
