@@ -10,6 +10,7 @@ pub mod images;
 pub mod import;
 pub mod notes;
 pub mod sync;
+pub mod tokens;
 pub mod user_dictionary;
 
 use crate::rhype::quote;

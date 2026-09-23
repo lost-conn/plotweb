@@ -1976,6 +1976,7 @@ dependencies = [
  "automerge",
  "axum",
  "axum-extra",
+ "base64",
  "chrono",
  "hex",
  "password-hash",

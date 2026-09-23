@@ -92,6 +92,8 @@ pub enum Route {
     /// Redeem a reset token from an emailed link (`/reset-password/{token}`).
     ResetPassword(String),
     Dashboard,
+    /// Account settings (`/settings`) — currently agent access tokens.
+    Settings,
     Book(String),
     Reader(String),
     /// Author "preview as reader" for a book (by book_id), using the improved
@@ -108,6 +110,7 @@ impl Route {
     pub fn to_path(&self) -> String {
         match self {
             Route::Dashboard => "/".into(),
+            Route::Settings => "/settings".into(),
             Route::Login => "/login".into(),
             Route::Register => "/register".into(),
             Route::ForgotPassword => "/forgot-password".into(),
@@ -127,6 +130,7 @@ impl Route {
             "" | "/" => Route::Dashboard,
             "/login" => Route::Login,
             "/register" => Route::Register,
+            "/settings" => Route::Settings,
             "/forgot-password" => Route::ForgotPassword,
             "/theme" => Route::ThemePreview,
             "/editor-spike" => Route::EditorSpike,

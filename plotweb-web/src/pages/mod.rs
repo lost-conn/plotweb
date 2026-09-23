@@ -3,6 +3,7 @@ pub mod register;
 pub mod forgot_password;
 pub mod reset_password;
 pub mod dashboard;
+pub mod settings;
 pub mod book;
 pub mod editor_utils;
 pub mod reader;

@@ -118,3 +118,23 @@ type UserDictionary {
     words_json: String
     updated_at: String
 }
+
+// api_tokens — personal access tokens an account's AI agent authenticates with
+// (`Authorization: Bearer pw_…`).
+//
+// Like PasswordReset, stores ONLY the SHA-256 hash of the raw token, which is
+// shown to the owner once at creation and never stored or logged. `prefix` is a
+// short, non-secret slice of the token for display. `book_ids_json` is a JSON
+// array of book UUIDs the token is limited to; absent means every book the
+// account owns. `last_used_at` is absent until first use, and is written at most
+// about once a minute (see token_auth.rs). Revoking a token deletes its row.
+type ApiToken {
+    uuid: String @unique
+    user_id: String @indexed
+    label: String
+    token_hash: String @unique
+    prefix: String
+    book_ids_json: String
+    created_at: String
+    last_used_at: String
+}

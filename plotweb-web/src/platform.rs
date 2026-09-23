@@ -176,3 +176,32 @@ fn native_asset_dir() -> Option<std::path::PathBuf> {
     }
     None
 }
+
+// ── Clipboard ────────────────────────────────────────────────────────────────
+
+/// Put `text` on the system clipboard. Returns whether a copy was *attempted*
+/// (the browser's `navigator.clipboard.writeText` is asynchronous and may still
+/// be refused, e.g. on an insecure origin), so a caller can fall back to asking
+/// the user to copy by hand when this is `false`.
+#[cfg(target_arch = "wasm32")]
+pub fn copy_text(text: &str) -> bool {
+    use wasm_bindgen::JsCast;
+    let Some(window) = window() else {
+        return false;
+    };
+    match js_sys::Reflect::get(&window.navigator(), &"clipboard".into()) {
+        Ok(clipboard) if !clipboard.is_undefined() && !clipboard.is_null() => {
+            let clipboard: web_sys::Clipboard = clipboard.unchecked_into();
+            let _ = clipboard.write_text(text);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Native: no clipboard wired up yet (rinch's `clipboard` feature is off for the
+/// desktop build), so report that nothing was copied.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn copy_text(_text: &str) -> bool {
+    false
+}

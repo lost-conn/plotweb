@@ -19,6 +19,7 @@ pub mod routes;
 pub mod shadow;
 pub mod structure;
 pub mod sync;
+pub mod token_auth;
 pub mod ws;
 
 use std::path::{Path, PathBuf};
@@ -197,6 +198,14 @@ pub fn api_router(state: AppState) -> Router {
                     routes::user_dictionary::MAX_DICTIONARY_BODY,
                 )),
         )
+        // Personal access tokens. Management is session-only (a token can never
+        // mint, list or revoke tokens); `whoami` is bearer-only. See routes::tokens.
+        .route(
+            "/api/tokens",
+            get(routes::tokens::list).post(routes::tokens::create),
+        )
+        .route("/api/tokens/whoami", get(routes::tokens::whoami))
+        .route("/api/tokens/{id}", delete(routes::tokens::revoke))
         .route("/api/books", get(routes::books::list))
         .route("/api/books", post(routes::books::create))
         .route("/api/books/{id}", get(routes::books::get))

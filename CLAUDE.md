@@ -36,6 +36,8 @@ All under `/api/`:
 - **Notes**: `/books/{book_id}/notes` (CRUD + `/move` + `/tree`)
 - **Import**: `/books/{book_id}/import/preview`, `/books/{book_id}/import/confirm`
 - **Fonts**: `/fonts` (list Google Fonts, cached)
+- **Access tokens** (session auth only): `/tokens` (list/create — the raw `pw_…` token is returned once, only its SHA-256 is stored), `/tokens/{id}` (DELETE = revoke)
+- **Token whoami** (bearer auth, `Authorization: Bearer pw_…`): `/tokens/whoami`. Bearer tokens are accepted *only* by routes that take the `TokenAuth` extractor (`crates/plotweb-server/src/token_auth.rs`); every `AuthSession` route ignores them. Per-book access goes through `TokenAuth::can_access_book` (ownership **and** token scope).
 - **Beta Links** (auth'd): `/books/{book_id}/beta-links` (CRUD)
 - **Author Feedback** (auth'd): `/books/{book_id}/feedback` (list/resolve/delete/reply)
 - **Public Beta** (token-based, no auth): `/beta/{token}`, `/beta/{token}/chapters/{id}`, `/beta/{token}/feedback`

@@ -642,6 +642,60 @@ pub const MAX_USER_DICTIONARY_WORDS: usize = 10_000;
 /// The longest a single custom word may be. Anything longer is not a word.
 pub const MAX_USER_DICTIONARY_WORD_LEN: usize = 64;
 
+// ── Personal access tokens (agent access) ──
+
+/// Every raw personal access token starts with this marker, so a leaked one is
+/// recognisable (and greppable) as a PlotWeb credential.
+pub const API_TOKEN_MARKER: &str = "pw_";
+
+/// The longest a token's label may be, in characters (after trimming).
+pub const MAX_API_TOKEN_LABEL_LEN: usize = 64;
+
+/// A personal access token as the account's owner sees it: metadata only. The
+/// raw token is shown once, in [`CreateApiTokenResponse`]; its hash never leaves
+/// the server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ApiTokenInfo {
+    pub id: String,
+    pub label: String,
+    /// A short, non-secret slice of the token (the characters just after
+    /// [`API_TOKEN_MARKER`]), shown as `pw_<prefix>…` so the owner can tell their
+    /// tokens apart.
+    pub prefix: String,
+    /// `None` = every book the account owns (including ones created later);
+    /// `Some(ids)` = only these books.
+    pub book_ids: Option<Vec<String>>,
+    pub created_at: String,
+    pub last_used_at: Option<String>,
+}
+
+/// Body for `POST /api/tokens`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CreateApiTokenRequest {
+    pub label: String,
+    /// `null`/absent = all books; a list = only those (every one must be the
+    /// caller's, and the list must not be empty).
+    #[serde(default)]
+    pub book_ids: Option<Vec<String>>,
+}
+
+/// Response to `POST /api/tokens` — the only time the raw token is ever sent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CreateApiTokenResponse {
+    pub token: String,
+    pub info: ApiTokenInfo,
+}
+
+/// Response to `GET /api/tokens/whoami` (bearer auth): who a token acts as and
+/// what it can reach. For debugging an agent's setup.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TokenWhoAmI {
+    pub user_id: String,
+    pub username: String,
+    pub token_label: String,
+    pub book_ids: Option<Vec<String>>,
+}
+
 // ── Error ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
