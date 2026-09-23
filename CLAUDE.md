@@ -41,7 +41,19 @@ All under `/api/`:
 - **Beta Links** (auth'd): `/books/{book_id}/beta-links` (CRUD)
 - **Author Feedback** (auth'd): `/books/{book_id}/feedback` (list/resolve/delete/reply)
 - **Public Beta** (token-based, no auth): `/beta/{token}`, `/beta/{token}/chapters/{id}`, `/beta/{token}/feedback`
-- **WebSockets**: `/books/{book_id}/feedback/ws`, `/beta/{token}/feedback/ws`
+- **WebSockets**: `/books/{book_id}/feedback/ws`, `/beta/{token}/feedback/ws`. The author's socket also hears a private `author:{book_id}` channel, which carries everything involving agent feedback; readers only hear the book's shared channel.
+- **MCP** (bearer auth only): `/mcp` — the Model Context Protocol endpoint for the author's AI agent (`crates/plotweb-server/src/mcp.rs`, rmcp streamable HTTP, stateless, JSON responses). Tools: `list_books`, `book_outline`, `read_chapter`, `search_manuscript`, `manuscript_stats`, `list_notes`, `read_note`, `create_note`, `update_note`, `add_review_comment`, `list_feedback`, `reply_to_feedback`. **No tool may write chapter content or titles, reorder chapters, delete anything, or touch tokens**; `tests/mcp.rs` asserts the exact list. Agent review comments are `BetaFeedback` rows with `source = "agent"`, an empty `link_id` and their own `book_id`; the author sees them in the feedback rail with an "AI" marker, beta readers never see them (or agent replies).
+
+## Connecting an AI agent
+
+Create a token in Settings (gear on the dashboard; optionally limit it to some books), then point any MCP client at `/api/mcp` with it:
+
+```bash
+claude mcp add --transport http plotweb https://<host>/api/mcp \
+  --header "Authorization: Bearer pw_..."
+```
+
+The agent can read, search and count the manuscript, leave review comments on exact quotes, reply to feedback, and create and organise notes. It cannot write prose. Note bodies can be set only when a note is created (a later REST body write on a cut-over book is dropped because sync owns bodies). Revoking the token in Settings cuts the agent off immediately.
 
 ## Build & Run Commands
 

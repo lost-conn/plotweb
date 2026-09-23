@@ -82,19 +82,33 @@ type BetaBookmark {
     created_at: String
 }
 
-// beta_reader_feedback (migration 004)
+// beta_reader_feedback (migration 004), extended for AI-agent review comments.
+//
+// A reader's feedback is keyed by `link_id` (its BetaLink carries the book and the
+// reader's name). An agent's review comment, left over the MCP endpoint, arrives
+// through no link: `link_id` is empty and `book_id` says which book it is on,
+// `source` is "agent", `agent_token_id` is the ApiToken it used and `author_name`
+// is that token's label at the time. New reader rows also carry `book_id` and
+// `source` = "reader"; rows written before this change have none of the four and
+// are read as readers'. Readers only ever query by their own link_id, which is how
+// agent comments stay invisible to them.
 type BetaFeedback {
     uuid: String @unique
     link_id: String @indexed
+    book_id: String @indexed
     chapter_id: String @indexed
     selected_text: String
     context_block: String
     comment: String
     resolved: Bool
+    source: String
+    agent_token_id: String
+    author_name: String
     created_at: String
 }
 
-// beta_reader_replies (migration 004)
+// beta_reader_replies (migration 004). author_type is "owner", "reader" or
+// "agent" (the author's AI agent, author_name = its token label).
 type BetaReply {
     uuid: String @unique
     feedback_id: String @indexed

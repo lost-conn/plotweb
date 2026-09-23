@@ -44,12 +44,12 @@ where
     let reply_input_id = format!("author-reply-{}", fb.id);
 
     let reader_line = fb.reader_name.clone();
+    let from_agent = fb.is_agent();
     let quote_style = if fb.selected_text.is_empty() { "display:none" } else { "" };
     // Store scroll data in a signal so the onclick closure only captures Copy types (signals)
     let scroll_data: Signal<(String, String)> = Signal::new((fb.selected_text.clone(), fb.context_block.clone()));
     let quote_line = if !fb.selected_text.is_empty() {
-        let t = if fb.selected_text.len() > 80 { format!("{}...", &fb.selected_text[..80]) } else { fb.selected_text.clone() };
-        format!("\u{201c}{}\u{201d}", t)
+        format!("\u{201c}{}\u{201d}", ellipsize(&fb.selected_text, 80))
     } else { String::new() };
     let comment_line = fb.comment.clone();
     let reply_nodes: Vec<NodeHandle> = fb.replies.iter().map(|r| {
@@ -83,7 +83,12 @@ where
         div {
             class: class,
             key: _fb_id,
-            div { class: "feedback-reader-name", {reader_line} }
+            div { class: "feedback-reader-name",
+                {reader_line}
+                if from_agent {
+                    {agent_mark(__scope)}
+                }
+            }
             div { class: "feedback-quote", style: quote_style,
                 onclick: move || {
                     let data = scroll_data.get();
@@ -156,14 +161,14 @@ where
     let fb_id_input = fb.id.clone();
     let class = if fb.resolved { "feedback-card resolved" } else { "feedback-card" };
     let fb_reader = fb.reader_name.clone();
+    let from_agent = fb.is_agent();
     let fb_comment = fb.comment.clone();
     let quote_style = if fb.selected_text.is_empty() { "display:none" } else { "" };
     let nav_chapter_id = fb.chapter_id.clone();
     let nav_selected_text = fb.selected_text.clone();
     let nav_context_block = fb.context_block.clone();
     let quote_text = if !fb.selected_text.is_empty() {
-        let t = if fb.selected_text.len() > 100 { format!("{}...", &fb.selected_text[..100]) } else { fb.selected_text.clone() };
-        format!("\u{201c}{}\u{201d}", t)
+        format!("\u{201c}{}\u{201d}", ellipsize(&fb.selected_text, 100))
     } else { String::new() };
     let reply_nodes: Vec<NodeHandle> = fb.replies.iter().map(|r| {
         book_reply_item(__scope, r.author_type.clone(), r.author_name.clone(), r.content.clone())
@@ -208,6 +213,9 @@ where
                 div {
                     style: "display: flex; align-items: center; gap: 6px;",
                     Badge { variant: "light", size: "xs", {fb_reader} }
+                    if from_agent {
+                        {agent_mark(__scope)}
+                    }
                     Text { size: "xs", color: "dimmed", {ch_title} }
                 }
                 div {
@@ -249,12 +257,43 @@ pub(super) fn book_reply_item(
     author_name: String,
     content: String,
 ) -> NodeHandle {
-    let class_str = if author_type == "owner" { "feedback-reply-author owner" } else { "feedback-reply-author" };
+    let class_str = match author_type.as_str() {
+        "owner" => "feedback-reply-author owner",
+        plotweb_common::REPLY_AUTHOR_AGENT => "feedback-reply-author agent",
+        _ => "feedback-reply-author",
+    };
+    let from_agent = author_type == plotweb_common::REPLY_AUTHOR_AGENT;
     rsx! {
         div { class: "feedback-reply",
-            span { class: class_str, {format!("{}: ", author_name)} }
+            span { class: class_str,
+                {author_name}
+                if from_agent {
+                    {agent_mark(__scope)}
+                }
+                ": "
+            }
             {content}
         }
+    }
+}
+
+/// The quiet marker beside the name on anything the author's AI agent wrote — its
+/// review comments and its replies. Deliberately small: the comment is what matters,
+/// the marker only says where it came from.
+fn agent_mark(__scope: &mut RenderScope) -> NodeHandle {
+    rsx! {
+        span { class: "feedback-agent-mark", title: "Written by an AI agent using one of your access tokens", "AI" }
+    }
+}
+
+/// At most `max` characters of `s`, with an ellipsis if it was cut. By characters,
+/// not bytes: a quote is prose, and slicing it at a byte offset panics on the first
+/// curly quote or accented letter that straddles the cut.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        format!("{}...", s.chars().take(max).collect::<String>())
+    } else {
+        s.to_string()
     }
 }
 

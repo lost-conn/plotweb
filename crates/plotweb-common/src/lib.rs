@@ -292,6 +292,14 @@ pub struct UpdateBetaLinkRequest {
     pub username: Option<Option<String>>,
 }
 
+/// A comment anchored to a passage of a chapter.
+///
+/// Most come from beta readers (through a [`BetaReaderLink`]); some come from the
+/// author's own AI agent over the MCP endpoint, as review comments. The two share one
+/// shape so the author's feedback rail treats them alike — [`BetaFeedback::source`]
+/// is what tells them apart. Agent feedback has an empty `link_id` (it arrived through
+/// no link) and `reader_name` is the agent's token label as it was when it commented.
+/// Beta readers never see agent feedback.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BetaFeedback {
     pub id: String,
@@ -304,6 +312,29 @@ pub struct BetaFeedback {
     pub resolved: bool,
     pub created_at: String,
     pub replies: Vec<BetaFeedbackReply>,
+    /// Who left it: [`FEEDBACK_SOURCE_READER`] or [`FEEDBACK_SOURCE_AGENT`]. Absent on
+    /// anything written before agents could comment, which were all readers.
+    #[serde(default = "default_feedback_source")]
+    pub source: String,
+}
+
+/// [`BetaFeedback::source`] for a beta reader's comment.
+pub const FEEDBACK_SOURCE_READER: &str = "reader";
+/// [`BetaFeedback::source`] for a review comment left by the author's AI agent.
+pub const FEEDBACK_SOURCE_AGENT: &str = "agent";
+/// [`BetaFeedbackReply::author_type`] for a reply left by the author's AI agent
+/// (alongside `"owner"` and `"reader"`).
+pub const REPLY_AUTHOR_AGENT: &str = "agent";
+
+fn default_feedback_source() -> String {
+    FEEDBACK_SOURCE_READER.to_string()
+}
+
+impl BetaFeedback {
+    /// Whether this comment came from the author's AI agent rather than a reader.
+    pub fn is_agent(&self) -> bool {
+        self.source == FEEDBACK_SOURCE_AGENT
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -701,4 +732,41 @@ pub struct TokenWhoAmI {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiError {
     pub error: String,
+}
+
+#[cfg(test)]
+mod feedback_source_tests {
+    use super::*;
+
+    #[test]
+    fn feedback_serialized_before_agents_reads_as_a_reader() {
+        // The wire shape every client and websocket message had before `source`.
+        let old = r#"{"id":"f","link_id":"l","chapter_id":"c","selected_text":"s",
+            "context_block":"b","comment":"x","reader_name":"Ann","resolved":false,
+            "created_at":"2026-01-01 00:00:00","replies":[]}"#;
+        let fb: BetaFeedback = serde_json::from_str(old).expect("old shape still parses");
+        assert_eq!(fb.source, FEEDBACK_SOURCE_READER);
+        assert!(!fb.is_agent());
+    }
+
+    #[test]
+    fn agent_feedback_round_trips() {
+        let fb = BetaFeedback {
+            id: "f".into(),
+            link_id: String::new(),
+            chapter_id: "c".into(),
+            selected_text: "s".into(),
+            context_block: "b".into(),
+            comment: "x".into(),
+            reader_name: "Claude".into(),
+            resolved: false,
+            created_at: "2026-01-01 00:00:00".into(),
+            replies: vec![],
+            source: FEEDBACK_SOURCE_AGENT.into(),
+        };
+        let back: BetaFeedback =
+            serde_json::from_str(&serde_json::to_string(&fb).unwrap()).unwrap();
+        assert!(back.is_agent());
+        assert_eq!(back, fb);
+    }
 }

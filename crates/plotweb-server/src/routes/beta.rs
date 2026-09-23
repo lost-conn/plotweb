@@ -693,6 +693,10 @@ pub async fn reader_create_feedback(
         .str("context_block", &req.context_block)
         .str("comment", req.comment.trim())
         .bool("resolved", false)
+        // Not needed to find a reader's feedback (that goes through the link), but it
+        // makes the row self-describing now that agent feedback shares the type.
+        .str("book_id", &book_id)
+        .str("source", FEEDBACK_SOURCE_READER)
         .str("created_at", &now)
         .render();
     let _ = state.rhype.create(format!("BetaFeedback.create({fields})")).await;
@@ -710,6 +714,7 @@ pub async fn reader_create_feedback(
         resolved: false,
         created_at: now,
         replies: Vec::new(),
+        source: FEEDBACK_SOURCE_READER.to_string(),
     }));
 
     // Email notification to the book author
@@ -747,7 +752,10 @@ pub async fn reader_list_feedback(
     let link_id = link.string("uuid").unwrap_or_default();
     let reader_name = link.string("reader_name").unwrap_or_default();
 
-    let feedback = fetch_feedback_for_link(&state, &link_id, &reader_name).await;
+    // Readers never see anything the author's AI agent wrote — not even a reply on
+    // their own comment. The agent assists the author; it is not part of the
+    // conversation the reader signed up for.
+    let feedback = fetch_feedback_for_link(&state, &link_id, &reader_name, false).await;
     (StatusCode::OK, Json(serde_json::to_value(feedback).unwrap()))
 }
 
@@ -830,7 +838,8 @@ pub async fn reader_reply_to_feedback(
 
 // ── Author Feedback Management (authenticated) ─────────────────────────────
 
-/// Get all feedback for a book (across all beta readers).
+/// Get all feedback for a book: every beta reader's, plus the author's AI agent's
+/// review comments, newest first.
 pub async fn list_book_feedback(
     State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
@@ -840,21 +849,7 @@ pub async fn list_book_feedback(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    // No JOIN: gather feedback per link of the book, then sort newest-first.
-    let links = state
-        .rhype
-        .find(format!("BetaLink.filter(.book_id == {})", quote(&book_id)))
-        .await
-        .unwrap_or_default();
-
-    let mut feedback: Vec<BetaFeedback> = Vec::new();
-    for link in links {
-        let link_id = link.string("uuid").unwrap_or_default();
-        let reader_name = link.string("reader_name").unwrap_or_default();
-        feedback.extend(fetch_feedback_for_link(&state, &link_id, &reader_name).await);
-    }
-    feedback.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-
+    let feedback = book_feedback(&state, &book_id).await;
     (StatusCode::OK, Json(serde_json::to_value(feedback).unwrap()))
 }
 
@@ -868,29 +863,10 @@ pub async fn resolve_feedback(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    // Load the feedback and confirm its link belongs to this book.
-    let fb = state
-        .rhype
-        .find_one(format!("BetaFeedback.filter(.uuid == {}).limit(1)", quote(&feedback_id)))
-        .await
-        .ok()
-        .flatten();
-    let Some(fb) = fb else {
+    // Load the feedback and confirm it belongs to this book.
+    let Some(fb) = feedback_in_book(&state, &book_id, &feedback_id).await else {
         return (StatusCode::OK, Json(json!({ "ok": true })));
     };
-    let link_id = fb.string("link_id").unwrap_or_default();
-    let in_book = state
-        .rhype
-        .exists(format!(
-            "BetaLink.filter(.uuid == {} && .book_id == {}).limit(1)",
-            quote(&link_id),
-            quote(&book_id)
-        ))
-        .await
-        .unwrap_or(false);
-    if !in_book {
-        return (StatusCode::OK, Json(json!({ "ok": true })));
-    }
 
     let resolved = !fb.bool("resolved").unwrap_or(false);
     let _ = state
@@ -902,7 +878,7 @@ pub async fn resolve_feedback(
         ))
         .await;
 
-    state.broadcaster.broadcast(&book_id, &WsMessage::FeedbackResolved {
+    broadcast_for(&state, &book_id, row_is_agent(&fb), &WsMessage::FeedbackResolved {
         feedback_id: feedback_id.clone(),
         resolved,
     });
@@ -920,40 +896,26 @@ pub async fn delete_feedback(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    // Confirm the feedback's link belongs to this book, then delete it + replies.
-    let fb = state
-        .rhype
-        .find_one(format!("BetaFeedback.filter(.uuid == {}).limit(1)", quote(&feedback_id)))
-        .await
-        .ok()
-        .flatten();
-    if let Some(fb) = fb {
-        let link_id = fb.string("link_id").unwrap_or_default();
-        let in_book = state
+    // Confirm the feedback belongs to this book, then delete it + replies.
+    let fb = feedback_in_book(&state, &book_id, &feedback_id).await;
+    let agent = fb.as_ref().is_some_and(row_is_agent);
+    if fb.is_some() {
+        let _ = state
             .rhype
-            .exists(format!(
-                "BetaLink.filter(.uuid == {} && .book_id == {}).limit(1)",
-                quote(&link_id),
-                quote(&book_id)
+            .exec(format!(
+                "BetaReply.filter(.feedback_id == {}).delete()",
+                quote(&feedback_id)
             ))
-            .await
-            .unwrap_or(false);
-        if in_book {
-            let _ = state
-                .rhype
-                .exec(format!(
-                    "BetaReply.filter(.feedback_id == {}).delete()",
-                    quote(&feedback_id)
-                ))
-                .await;
-            let _ = state
-                .rhype
-                .exec(format!("BetaFeedback.filter(.uuid == {}).delete()", quote(&feedback_id)))
-                .await;
-        }
+            .await;
+        let _ = state
+            .rhype
+            .exec(format!("BetaFeedback.filter(.uuid == {}).delete()", quote(&feedback_id)))
+            .await;
     }
 
-    state.broadcaster.broadcast(&book_id, &WsMessage::FeedbackDeleted {
+    // An id that was never an agent's goes out as before; an agent comment's id is
+    // news only to the author.
+    broadcast_for(&state, &book_id, agent, &WsMessage::FeedbackDeleted {
         feedback_id: feedback_id.clone(),
     });
 
@@ -971,29 +933,11 @@ pub async fn author_reply_to_feedback(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "book not found" })));
     }
 
-    // Confirm the feedback's link belongs to this book before replying.
-    let fb = state
-        .rhype
-        .find_one(format!("BetaFeedback.filter(.uuid == {}).limit(1)", quote(&feedback_id)))
-        .await
-        .ok()
-        .flatten();
-    let Some(fb) = fb else {
+    // Confirm the feedback belongs to this book before replying.
+    let Some(fb) = feedback_in_book(&state, &book_id, &feedback_id).await else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "feedback not found" })));
     };
-    let link_id = fb.string("link_id").unwrap_or_default();
-    let in_book = state
-        .rhype
-        .exists(format!(
-            "BetaLink.filter(.uuid == {} && .book_id == {}).limit(1)",
-            quote(&link_id),
-            quote(&book_id)
-        ))
-        .await
-        .unwrap_or(false);
-    if !in_book {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "feedback not found" })));
-    }
+    let agent = row_is_agent(&fb);
 
     // Get author username
     let username = state
@@ -1020,7 +964,7 @@ pub async fn author_reply_to_feedback(
 
     let reply_content = req.content.trim().to_string();
 
-    state.broadcaster.broadcast(&book_id, &WsMessage::NewReply {
+    broadcast_for(&state, &book_id, agent, &WsMessage::NewReply {
         feedback_id: feedback_id.clone(),
         reply: BetaFeedbackReply {
             id: id.clone(),
@@ -1032,8 +976,9 @@ pub async fn author_reply_to_feedback(
         },
     });
 
-    // Email notification to the beta reader (if they have an account)
-    if let Some(ref email_service) = state.email {
+    // Email notification to the beta reader (if they have an account). An agent's
+    // comment has no reader to tell.
+    if let (false, Some(email_service)) = (agent, state.email.as_ref()) {
         let email_service = email_service.clone();
         let state2 = state.clone();
         let book_id = book_id.clone();
@@ -1199,7 +1144,13 @@ pub async fn claim_link(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-async fn fetch_replies(state: &AppState, feedback_id: &str) -> Vec<BetaFeedbackReply> {
+/// A feedback item's replies, oldest first. `include_agent` is false on every path a
+/// beta reader can see, so nothing the author's AI agent wrote ever reaches one.
+async fn fetch_replies(
+    state: &AppState,
+    feedback_id: &str,
+    include_agent: bool,
+) -> Vec<BetaFeedbackReply> {
     let mut rows = state
         .rhype
         .find(format!("BetaReply.filter(.feedback_id == {})", quote(feedback_id)))
@@ -1216,6 +1167,7 @@ async fn fetch_replies(state: &AppState, feedback_id: &str) -> Vec<BetaFeedbackR
             content: r.string("content").unwrap_or_default(),
             created_at: r.string("created_at").unwrap_or_default(),
         })
+        .filter(|r| include_agent || r.author_type != REPLY_AUTHOR_AGENT)
         .collect()
 }
 
@@ -1243,6 +1195,7 @@ async fn fetch_feedback_for_link(
     state: &AppState,
     link_id: &str,
     reader_name: &str,
+    include_agent_replies: bool,
 ) -> Vec<BetaFeedback> {
     let mut rows = state
         .rhype
@@ -1253,20 +1206,219 @@ async fn fetch_feedback_for_link(
 
     let mut feedback = Vec::new();
     for row in rows {
-        let id = row.string("uuid").unwrap_or_default();
-        let replies = fetch_replies(state, &id).await;
-        feedback.push(BetaFeedback {
-            id,
-            link_id: row.string("link_id").unwrap_or_default(),
-            chapter_id: row.string("chapter_id").unwrap_or_default(),
-            selected_text: row.string("selected_text").unwrap_or_default(),
-            context_block: row.string("context_block").unwrap_or_default(),
-            comment: row.string("comment").unwrap_or_default(),
-            reader_name: reader_name.to_string(),
-            resolved: row.bool("resolved").unwrap_or(false),
-            created_at: row.string("created_at").unwrap_or_default(),
-            replies,
-        });
+        // Belt and braces: a row reached through a reader's link is a reader's.
+        if row_is_agent(&row) {
+            continue;
+        }
+        feedback.push(row_to_feedback(state, &row, reader_name, include_agent_replies).await);
     }
     feedback
+}
+
+/// Map a stored `BetaFeedback` row (with its replies) to the shared type.
+///
+/// Rows written before agent comments existed carry no `source`; they are readers'.
+async fn row_to_feedback(
+    state: &AppState,
+    row: &crate::rhype::RhypeObject,
+    reader_name: &str,
+    include_agent_replies: bool,
+) -> BetaFeedback {
+    let id = row.string("uuid").unwrap_or_default();
+    let replies = fetch_replies(state, &id, include_agent_replies).await;
+    BetaFeedback {
+        id,
+        link_id: row.string("link_id").unwrap_or_default(),
+        chapter_id: row.string("chapter_id").unwrap_or_default(),
+        selected_text: row.string("selected_text").unwrap_or_default(),
+        context_block: row.string("context_block").unwrap_or_default(),
+        comment: row.string("comment").unwrap_or_default(),
+        reader_name: reader_name.to_string(),
+        resolved: row.bool("resolved").unwrap_or(false),
+        created_at: row.string("created_at").unwrap_or_default(),
+        replies,
+        source: row
+            .string("source")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| FEEDBACK_SOURCE_READER.to_string()),
+    }
+}
+
+/// Whether a stored `BetaFeedback` row is an agent's review comment.
+pub(crate) fn row_is_agent(row: &crate::rhype::RhypeObject) -> bool {
+    row.str("source") == Some(FEEDBACK_SOURCE_AGENT)
+}
+
+/// Send a feedback event to the right audience: the book's shared channel (the
+/// author and every reader of the book) for reader feedback, or the author's
+/// channel alone for anything touching an agent's comment — readers must never
+/// learn about those, not even by id.
+pub(crate) fn broadcast_for(state: &AppState, book_id: &str, author_only: bool, msg: &WsMessage) {
+    if author_only {
+        state
+            .broadcaster
+            .broadcast(&crate::ws::author_channel(book_id), msg);
+    } else {
+        state.broadcaster.broadcast(book_id, msg);
+    }
+}
+
+/// Every piece of feedback on a book the author sees: each beta reader's, plus the
+/// author's AI agent's review comments, newest first, with all replies.
+pub(crate) async fn book_feedback(state: &AppState, book_id: &str) -> Vec<BetaFeedback> {
+    // No JOIN: gather feedback per link of the book...
+    let links = state
+        .rhype
+        .find(format!("BetaLink.filter(.book_id == {})", quote(book_id)))
+        .await
+        .unwrap_or_default();
+
+    let mut feedback: Vec<BetaFeedback> = Vec::new();
+    for link in links {
+        let link_id = link.string("uuid").unwrap_or_default();
+        let reader_name = link.string("reader_name").unwrap_or_default();
+        feedback.extend(fetch_feedback_for_link(state, &link_id, &reader_name, true).await);
+    }
+
+    // ...then the agent's, which arrive through no link and are keyed by book.
+    let agent_rows = state
+        .rhype
+        .find(format!("BetaFeedback.filter(.book_id == {})", quote(book_id)))
+        .await
+        .unwrap_or_default();
+    for row in agent_rows.iter().filter(|r| row_is_agent(r)) {
+        let name = row.string("author_name").unwrap_or_default();
+        feedback.push(row_to_feedback(state, row, &name, true).await);
+    }
+
+    feedback.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    feedback
+}
+
+/// Load a feedback row if it belongs to `book_id`: through its reader's link, or — for
+/// an agent's comment, which has no link — by its own `book_id`.
+pub(crate) async fn feedback_in_book(
+    state: &AppState,
+    book_id: &str,
+    feedback_id: &str,
+) -> Option<crate::rhype::RhypeObject> {
+    let fb = state
+        .rhype
+        .find_one(format!("BetaFeedback.filter(.uuid == {}).limit(1)", quote(feedback_id)))
+        .await
+        .ok()
+        .flatten()?;
+    let link_id = fb.string("link_id").unwrap_or_default();
+    let belongs = if link_id.is_empty() {
+        row_is_agent(&fb) && fb.str("book_id") == Some(book_id)
+    } else {
+        state
+            .rhype
+            .exists(format!(
+                "BetaLink.filter(.uuid == {} && .book_id == {}).limit(1)",
+                quote(&link_id),
+                quote(book_id)
+            ))
+            .await
+            .unwrap_or(false)
+    };
+    belongs.then_some(fb)
+}
+
+/// Store a review comment from the author's AI agent and tell the author's rail.
+///
+/// The caller has already checked the token may reach the book, that the chapter
+/// exists, and that `selected_text` really is in it. `author_name` is the token's
+/// label now — a snapshot, so renaming or revoking the token later does not rewrite
+/// who said what.
+pub(crate) async fn create_agent_feedback(
+    state: &AppState,
+    book_id: &str,
+    chapter_id: &str,
+    selected_text: &str,
+    context_block: &str,
+    comment: &str,
+    token_id: &str,
+    author_name: &str,
+) -> Result<BetaFeedback, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let fields = Fields::new()
+        .str("uuid", &id)
+        .str("link_id", "")
+        .str("book_id", book_id)
+        .str("chapter_id", chapter_id)
+        .str("selected_text", selected_text)
+        .str("context_block", context_block)
+        .str("comment", comment)
+        .bool("resolved", false)
+        .str("source", FEEDBACK_SOURCE_AGENT)
+        .str("agent_token_id", token_id)
+        .str("author_name", author_name)
+        .str("created_at", &now)
+        .render();
+    state
+        .rhype
+        .create(format!("BetaFeedback.create({fields})"))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let feedback = BetaFeedback {
+        id,
+        link_id: String::new(),
+        chapter_id: chapter_id.to_string(),
+        selected_text: selected_text.to_string(),
+        context_block: context_block.to_string(),
+        comment: comment.to_string(),
+        reader_name: author_name.to_string(),
+        resolved: false,
+        created_at: now,
+        replies: Vec::new(),
+        source: FEEDBACK_SOURCE_AGENT.to_string(),
+    };
+    broadcast_for(state, book_id, true, &WsMessage::NewFeedback(feedback.clone()));
+    Ok(feedback)
+}
+
+/// Append a reply from the author's AI agent to a feedback item of `book_id`.
+///
+/// Returns `None` when the feedback does not exist or belongs to another book. The
+/// reply goes to the author's channel only, and is filtered out of every reader view.
+pub(crate) async fn create_agent_reply(
+    state: &AppState,
+    book_id: &str,
+    feedback_id: &str,
+    author_name: &str,
+    content: &str,
+) -> Option<Result<BetaFeedbackReply, String>> {
+    feedback_in_book(state, book_id, feedback_id).await?;
+
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let fields = Fields::new()
+        .str("uuid", &id)
+        .str("feedback_id", feedback_id)
+        .str("author_type", REPLY_AUTHOR_AGENT)
+        .str("author_name", author_name)
+        .str("content", content)
+        .str("created_at", &now)
+        .render();
+    if let Err(e) = state.rhype.create(format!("BetaReply.create({fields})")).await {
+        return Some(Err(e.to_string()));
+    }
+
+    let reply = BetaFeedbackReply {
+        id,
+        feedback_id: feedback_id.to_string(),
+        author_type: REPLY_AUTHOR_AGENT.to_string(),
+        author_name: author_name.to_string(),
+        content: content.to_string(),
+        created_at: now,
+    };
+    broadcast_for(state, book_id, true, &WsMessage::NewReply {
+        feedback_id: feedback_id.to_string(),
+        reply: reply.clone(),
+    });
+    Some(Ok(reply))
 }

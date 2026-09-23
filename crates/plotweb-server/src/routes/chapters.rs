@@ -22,51 +22,8 @@ pub async fn list(
         );
     }
 
-    match state.books.list_chapters(&book_id).await {
-        Ok(chapters) => {
-            // Cut over: order and titles are the canonical document's — they are what it
-            // holds. Everything else (content, word counts, timestamps) is git's, kept
-            // current by the mirror; the CRDT structure has no record of them.
-            //
-            // A chapter the canonical copy knows and git does not is one created on a
-            // device whose mirror write has not landed yet. It is listed rather than
-            // hidden: the alternative is a chapter that vanishes from the sidebar for
-            // half a minute after someone adds it on their phone.
-            let chapters: Vec<Chapter> = match super::cutover_structure(&state, &book_id).await {
-                Some(structure) => structure
-                    .chapters
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (id, title))| {
-                        let git = chapters.iter().find(|c| &c.id == id);
-                        Chapter {
-                            id: id.clone(),
-                            book_id: book_id.clone(),
-                            title: title.clone(),
-                            content: git.map(|c| c.content.clone()).unwrap_or_default(),
-                            sort_order: i as i64,
-                            word_count: git.map(|c| c.word_count).unwrap_or(0),
-                            created_at: git.map(|c| c.created_at.clone()).unwrap_or_default(),
-                            updated_at: git.map(|c| c.updated_at.clone()).unwrap_or_default(),
-                        }
-                    })
-                    .collect(),
-                None => chapters
-                    .into_iter()
-                    .map(|ch| Chapter {
-                        id: ch.id,
-                        book_id: book_id.clone(),
-                        title: ch.title,
-                        content: ch.content,
-                        sort_order: ch.sort_order,
-                        word_count: ch.word_count,
-                        created_at: ch.created_at,
-                        updated_at: ch.updated_at,
-                    })
-                    .collect(),
-            };
-            (StatusCode::OK, Json(serde_json::to_value(chapters).unwrap()))
-        }
+    match list_chapters_inner(&state, &book_id).await {
+        Ok(chapters) => (StatusCode::OK, Json(serde_json::to_value(chapters).unwrap())),
         // Not an empty list. A failed read and a book with no chapters are different
         // answers, and collapsing them lets the client seed an authoritative local
         // document from a failure — after which the book really is empty until
@@ -81,6 +38,61 @@ pub async fn list(
     }
 }
 
+/// A book's chapters in order, as `GET /api/books/{id}/chapters` serves them (and the
+/// MCP tools read them). `content` is git's — for a cut-over book, read a body through
+/// [`get_chapter_inner`], which serves the canonical copy.
+pub(crate) async fn list_chapters_inner(
+    state: &AppState,
+    book_id: &str,
+) -> Result<Vec<Chapter>, String> {
+    let chapters = state
+        .books
+        .list_chapters(book_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Cut over: order and titles are the canonical document's — they are what it
+    // holds. Everything else (content, word counts, timestamps) is git's, kept
+    // current by the mirror; the CRDT structure has no record of them.
+    //
+    // A chapter the canonical copy knows and git does not is one created on a
+    // device whose mirror write has not landed yet. It is listed rather than
+    // hidden: the alternative is a chapter that vanishes from the sidebar for
+    // half a minute after someone adds it on their phone.
+    Ok(match super::cutover_structure(state, book_id).await {
+        Some(structure) => structure
+            .chapters
+            .iter()
+            .enumerate()
+            .map(|(i, (id, title))| {
+                let git = chapters.iter().find(|c| &c.id == id);
+                Chapter {
+                    id: id.clone(),
+                    book_id: book_id.to_string(),
+                    title: title.clone(),
+                    content: git.map(|c| c.content.clone()).unwrap_or_default(),
+                    sort_order: i as i64,
+                    word_count: git.map(|c| c.word_count).unwrap_or(0),
+                    created_at: git.map(|c| c.created_at.clone()).unwrap_or_default(),
+                    updated_at: git.map(|c| c.updated_at.clone()).unwrap_or_default(),
+                }
+            })
+            .collect(),
+        None => chapters
+            .into_iter()
+            .map(|ch| Chapter {
+                id: ch.id,
+                book_id: book_id.to_string(),
+                title: ch.title,
+                content: ch.content,
+                sort_order: ch.sort_order,
+                word_count: ch.word_count,
+                created_at: ch.created_at,
+                updated_at: ch.updated_at,
+            })
+            .collect(),
+    })
+}
+
 pub async fn get(
     State(state): State<AppState>,
     AuthSession(user_id): AuthSession,
@@ -93,39 +105,47 @@ pub async fn get(
         );
     }
 
-    match state.books.get_chapter(&book_id, &chapter_id).await {
-        Ok(ch) => {
-            // Cut-over books read their body from the canonical document; git still
-            // holds everything else about the chapter (title, order, timestamps) and
-            // remains the mirror. A missing or unreadable canonical copy degrades to
-            // git (see routes::cutover_body).
-            let content = match super::cutover_body(
-                &state,
-                &book_id,
-                &format!("chapter:{}", ch.id),
-                &ch.content,
-                plotweb_crdt::BodyKind::Chapter,
-            ) {
-                super::CutoverRead::Git => ch.content,
-                super::CutoverRead::Canonical(content) => content,
-            };
-            let chapter = Chapter {
-                id: ch.id,
-                book_id,
-                title: ch.title,
-                content,
-                sort_order: ch.sort_order,
-                word_count: ch.word_count,
-                created_at: ch.created_at,
-                updated_at: ch.updated_at,
-            };
-            (StatusCode::OK, Json(serde_json::to_value(chapter).unwrap()))
-        }
-        Err(_) => (
+    match get_chapter_inner(&state, &book_id, &chapter_id).await {
+        Some(chapter) => (StatusCode::OK, Json(serde_json::to_value(chapter).unwrap())),
+        None => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "chapter not found" })),
         ),
     }
+}
+
+/// One chapter as `GET /api/books/{id}/chapters/{cid}` serves it (and the MCP tools
+/// read it), or `None` when it does not exist.
+pub(crate) async fn get_chapter_inner(
+    state: &AppState,
+    book_id: &str,
+    chapter_id: &str,
+) -> Option<Chapter> {
+    let ch = state.books.get_chapter(book_id, chapter_id).await.ok()?;
+    // Cut-over books read their body from the canonical document; git still
+    // holds everything else about the chapter (title, order, timestamps) and
+    // remains the mirror. A missing or unreadable canonical copy degrades to
+    // git (see routes::cutover_body).
+    let content = match super::cutover_body(
+        state,
+        book_id,
+        &format!("chapter:{}", ch.id),
+        &ch.content,
+        plotweb_crdt::BodyKind::Chapter,
+    ) {
+        super::CutoverRead::Git => ch.content,
+        super::CutoverRead::Canonical(content) => content,
+    };
+    Some(Chapter {
+        id: ch.id,
+        book_id: book_id.to_string(),
+        title: ch.title,
+        content,
+        sort_order: ch.sort_order,
+        word_count: ch.word_count,
+        created_at: ch.created_at,
+        updated_at: ch.updated_at,
+    })
 }
 
 pub async fn create(

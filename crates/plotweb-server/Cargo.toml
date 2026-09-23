@@ -43,6 +43,11 @@ sha2 = "0.10"
 hex = "0.4"
 # Personal access tokens are base64url (already in the tree; see token_auth.rs).
 base64 = "0.22"
+# MCP endpoint (`/api/mcp`, see src/mcp.rs): the official Rust SDK, streamable-HTTP
+# server transport only, served statelessly behind bearer-token auth.
+rmcp = { version = "3.4.0", features = ["server", "macros", "transport-streamable-http-server"] }
+# Tool parameter schemas for rmcp (same major it uses).
+schemars = "1"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -2174,6 +2174,27 @@ pub(super) const BOOK_WORKSPACE_CSS: &str = r#"
     color: var(--rinch-color-teal-3);
 }
 
+/* Anything the author's AI agent wrote: the name reads like any reader's, with a
+   small, quiet marker beside it. */
+.feedback-reply-author.agent {
+    color: var(--rinch-color-dimmed);
+}
+
+.feedback-agent-mark {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 4px;
+    border: 1px solid var(--rinch-color-border);
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 14px;
+    vertical-align: 1px;
+    color: var(--rinch-color-dimmed);
+    font-style: normal;
+}
+
 .feedback-actions {
     margin-top: 6px;
     padding-top: 6px;

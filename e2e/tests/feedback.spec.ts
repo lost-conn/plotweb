@@ -261,3 +261,100 @@ test("author reply: Enter sends, Shift+Enter inserts a newline", async ({ page }
   // …and the textarea cleared after a successful send.
   await expect(item.locator(".feedback-reply-input textarea")).toHaveValue("");
 });
+
+/** One MCP `tools/call` from inside the page, with only the bearer token (no cookie). */
+async function mcpCall(page: Page, token: string, name: string, args: Record<string, unknown>) {
+  return page.evaluate(
+    async ({ token, name, args }) => {
+      const r = await fetch("/api/mcp", {
+        method: "POST",
+        credentials: "omit",
+        headers: {
+          Authorization: "Bearer " + token,
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name, arguments: args },
+        }),
+      });
+      return { status: r.status, body: await r.json() };
+    },
+    { token, name, args },
+  );
+}
+
+test("an AI agent's review comment shows in the author's rail, marked as the agent's", async ({
+  page,
+}) => {
+  await registerNewUser(page);
+  const bookId = await createBook(page, "Agent Review Novel");
+  await addChapter(page, "Chapter One");
+  await writeChapterProse(page, bookId, PROSE);
+  const chapters = (await (
+    await page.request.get(`/api/books/${bookId}/chapters`)
+  ).json()) as Array<{ id: string }>;
+  const chapterId = chapters[0].id;
+
+  // A token, minted over the session the way the Settings page does.
+  const minted = await page.request.post("/api/tokens", {
+    data: { label: "Claude Code", book_ids: [bookId] },
+  });
+  expect(minted.ok()).toBeTruthy();
+  const token = ((await minted.json()) as { token: string }).token;
+
+  // A made-up quote is refused and stores nothing…
+  const bad = await mcpCall(page, token, "add_review_comment", {
+    book_id: bookId,
+    chapter_id: chapterId,
+    quote: "golden lake",
+    comment: "nope",
+  });
+  expect(bad.status).toBe(200);
+  expect(bad.body.result.isError).toBe(true);
+
+  // …a real one lands.
+  const comment = "Consider a stronger verb than 'fell'.";
+  const ok = await mcpCall(page, token, "add_review_comment", {
+    book_id: bookId,
+    chapter_id: chapterId,
+    quote: TARGET_PHRASE,
+    comment,
+  });
+  expect(ok.status).toBe(200);
+  expect(ok.body.result.isError).toBe(false);
+  const feedbackId = JSON.parse(ok.body.result.content[0].text).feedback_id as string;
+  const reply = await mcpCall(page, token, "reply_to_feedback", {
+    book_id: bookId,
+    feedback_id: feedbackId,
+    comment: "Or cut the clause entirely.",
+  });
+  expect(reply.body.result.isError).toBe(false);
+
+  // Without a token the endpoint does not answer.
+  const anon = await page.evaluate(async () => {
+    const r = await fetch("/api/mcp", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    return r.status;
+  });
+  expect(anon).toBe(401);
+
+  // The author's rail shows it like a reader's comment, with the agent marker.
+  await page.goto(`/book/${bookId}`);
+  await openChapter(page, "Chapter One");
+  await openFeedbackSidebar(page);
+  const card = page.locator(".editor-feedback-sidebar .feedback-card", { hasText: comment });
+  await expect(card).toBeVisible();
+  await expect(card.locator(".feedback-reader-name")).toContainText("Claude Code");
+  await expect(card.locator(".feedback-reader-name .feedback-agent-mark")).toHaveText("AI");
+  await expect(card.locator(".feedback-quote")).toContainText(TARGET_PHRASE);
+  const agentReply = card.locator(".feedback-reply", { hasText: "Or cut the clause entirely." });
+  await expect(agentReply).toBeVisible();
+  await expect(agentReply.locator(".feedback-reply-author.agent .feedback-agent-mark")).toHaveText("AI");
+});

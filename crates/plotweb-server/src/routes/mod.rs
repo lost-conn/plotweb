@@ -468,7 +468,8 @@ pub async fn delete_link_cascade(state: &AppState, link_id: &str) {
         .await;
 }
 
-/// Delete a book's beta metadata (links → feedback → replies). The book row and
+/// Delete a book's beta metadata (links → feedback → replies, and the agent's review
+/// comments on the book with their replies). The book row and
 /// its git repo are deleted by the caller.
 pub async fn delete_book_beta_metadata(state: &AppState, book_id: &str) {
     let links = state
@@ -492,6 +493,31 @@ pub async fn delete_book_beta_metadata(state: &AppState, book_id: &str) {
         .rhype
         .exec(format!(
             "BetaLink.filter(.book_id == {}).delete()",
+            quote(book_id)
+        ))
+        .await;
+
+    // The author's AI agent's review comments hang off the book, not a link.
+    let book_feedback = state
+        .rhype
+        .find(format!("BetaFeedback.filter(.book_id == {})", quote(book_id)))
+        .await
+        .unwrap_or_default();
+    for fb in &book_feedback {
+        if let Some(fb_id) = fb.str("uuid") {
+            let _ = state
+                .rhype
+                .exec(format!(
+                    "BetaReply.filter(.feedback_id == {}).delete()",
+                    quote(fb_id)
+                ))
+                .await;
+        }
+    }
+    let _ = state
+        .rhype
+        .exec(format!(
+            "BetaFeedback.filter(.book_id == {}).delete()",
             quote(book_id)
         ))
         .await;

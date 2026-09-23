@@ -319,6 +319,22 @@ impl TestApp {
         Resp { status, json }
     }
 
+    /// Send a fully built request as-is — no session cookie, no added headers — and
+    /// return the raw response. For transports whose headers matter (the MCP endpoint
+    /// negotiates on `Accept` and answers JSON or SSE).
+    pub async fn send_raw(
+        &mut self,
+        req: Request<Body>,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let resp = self.router.clone().oneshot(req).await.expect("response");
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (status, headers, bytes.to_vec())
+    }
+
     /// Drop any stored session cookie (simulate a fresh, unauthenticated client).
     pub fn logout_local(&mut self) {
         self.cookie = None;

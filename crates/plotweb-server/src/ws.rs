@@ -22,6 +22,16 @@ pub enum WsMessage {
     },
 }
 
+/// The channel only the book's **author** listens on, beside the book's shared one.
+///
+/// The shared channel (keyed by the bare book id) reaches the author *and* every beta
+/// reader of the book. Anything involving the author's AI agent — its review comments,
+/// its replies, and replies to or changes on its comments — goes here instead, because
+/// readers must never see agent feedback, not even an id of it.
+pub fn author_channel(book_id: &str) -> String {
+    format!("author:{book_id}")
+}
+
 pub struct FeedbackBroadcaster {
     channels: Mutex<HashMap<String, broadcast::Sender<String>>>,
 }

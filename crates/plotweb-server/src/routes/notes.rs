@@ -46,12 +46,20 @@ pub async fn list(
         );
     }
 
+    let resp = list_notes_inner(&state, &book_id).await;
+    (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+}
+
+/// A book's notes and tree, as `GET /api/books/{id}/notes` serves them (and the MCP
+/// tools read them). A git read failure answers an empty list, as the route always has.
+pub(crate) async fn list_notes_inner(state: &AppState, book_id: &str) -> NotesResponse {
+    let book_id = book_id.to_string();
     match state.books.list_notes(&book_id).await {
         Ok((notes, tree)) => {
             // Cut over: titles, colours and the tree come from the canonical document;
             // bodies and timestamps stay git's. Same overlay as the chapter list, and
             // for the same reason.
-            let (notes, tree) = match super::cutover_structure(&state, &book_id).await {
+            let (notes, tree) = match super::cutover_structure(state, &book_id).await {
                 Some(structure) => {
                     let listed = structure
                         .note_titles
@@ -101,20 +109,16 @@ pub async fn list(
                 )
                 }
             };
-            let resp = NotesResponse { notes, tree };
-            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
+            NotesResponse { notes, tree }
         }
-        Err(_) => {
-            let resp = NotesResponse {
-                notes: Vec::new(),
-                tree: NoteTree {
-                    root_order: Vec::new(),
-                    children: std::collections::HashMap::new(),
-                    collapsed: Vec::new(),
-                },
-            };
-            (StatusCode::OK, Json(serde_json::to_value(resp).unwrap()))
-        }
+        Err(_) => NotesResponse {
+            notes: Vec::new(),
+            tree: NoteTree {
+                root_order: Vec::new(),
+                children: std::collections::HashMap::new(),
+                collapsed: Vec::new(),
+            },
+        },
     }
 }
 
@@ -130,42 +134,47 @@ pub async fn get(
         );
     }
 
-    match state.books.get_note(&book_id, &note_id).await {
-        Ok(n) => {
-            // Cut over: the body comes from the canonical document, with git as the
-            // fallback when there is no canonical copy (see routes::cutover_body).
-            let content = match super::cutover_body(
-                &state,
-                &book_id,
-                &format!("note:{}", n.id),
-                &n.content,
-                plotweb_crdt::BodyKind::Note,
-            ) {
-                super::CutoverRead::Git => n.content.clone(),
-                super::CutoverRead::Canonical(content) => content,
-            };
-            let index = crate::structure::read_link_index(&state.books, &book_id).await;
-            let mut note = git_note(&book_id, n, &index);
-            note.content = content;
-            // Facets are structure, so for a cut-over book they come from the canonical
-            // document — git's copy of them lags by the mirror's debounce exactly as its
-            // titles do.
-            if let Some(structure) = super::cutover_structure(&state, &book_id).await {
-                let id = &note.id;
-                note.span = structure.note_spans.get(id).cloned();
-                note.relative = structure.note_relatives.get(id).cloned();
-                note.is_entity = structure.note_entities.contains(id);
-                note.event_parent = structure.note_event_parents.get(id).cloned();
-                note.pinned = structure.note_pinned.contains(id);
-                note.links = structure.note_links.get(id).cloned().unwrap_or_default();
-            }
-            (StatusCode::OK, Json(serde_json::to_value(note).unwrap()))
-        }
-        Err(_) => (
+    match get_note_inner(&state, &book_id, &note_id).await {
+        Some(note) => (StatusCode::OK, Json(serde_json::to_value(note).unwrap())),
+        None => (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "note not found" })),
         ),
     }
+}
+
+/// One note as `GET /api/books/{id}/notes/{nid}` serves it (and the MCP tools read it),
+/// or `None` when it does not exist.
+pub(crate) async fn get_note_inner(state: &AppState, book_id: &str, note_id: &str) -> Option<Note> {
+    let n = state.books.get_note(book_id, note_id).await.ok()?;
+    // Cut over: the body comes from the canonical document, with git as the
+    // fallback when there is no canonical copy (see routes::cutover_body).
+    let content = match super::cutover_body(
+        state,
+        book_id,
+        &format!("note:{}", n.id),
+        &n.content,
+        plotweb_crdt::BodyKind::Note,
+    ) {
+        super::CutoverRead::Git => n.content.clone(),
+        super::CutoverRead::Canonical(content) => content,
+    };
+    let index = crate::structure::read_link_index(&state.books, book_id).await;
+    let mut note = git_note(book_id, n, &index);
+    note.content = content;
+    // Facets are structure, so for a cut-over book they come from the canonical
+    // document — git's copy of them lags by the mirror's debounce exactly as its
+    // titles do.
+    if let Some(structure) = super::cutover_structure(state, book_id).await {
+        let id = &note.id;
+        note.span = structure.note_spans.get(id).cloned();
+        note.relative = structure.note_relatives.get(id).cloned();
+        note.is_entity = structure.note_entities.contains(id);
+        note.event_parent = structure.note_event_parents.get(id).cloned();
+        note.pinned = structure.note_pinned.contains(id);
+        note.links = structure.note_links.get(id).cloned().unwrap_or_default();
+    }
+    Some(note)
 }
 
 pub async fn create(
@@ -188,33 +197,20 @@ pub async fn create(
         );
     }
 
-    let id = Uuid::new_v4().to_string();
-    let now = chrono::Utc::now()
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string();
-
-    match state
-        .books
-        .create_note(
-            &book_id,
-            &id,
-            &req.title,
-            req.parent_id.as_deref(),
-            req.color.as_deref(),
-            &now,
-        )
-        .await
+    match create_note_inner(
+        &state,
+        &book_id,
+        &req.title,
+        req.parent_id.as_deref(),
+        req.color.as_deref(),
+        None,
+    )
+    .await
     {
-        Ok(n) => {
-            super::apply_cutover_structure(&state, &book_id, &[]).await;
-            // A new note is lore — no span, no entity mark, no event parent, and an
-            // empty body, so no edges either. Facets only ever arrive by a later edit.
-            let note = git_note(&book_id, n, &LinkIndex::new());
-            (
-                StatusCode::CREATED,
-                Json(serde_json::to_value(note).unwrap()),
-            )
-        }
+        Ok(note) => (
+            StatusCode::CREATED,
+            Json(serde_json::to_value(note).unwrap()),
+        ),
         Err(e) => {
             eprintln!("Failed to create note: {}", e);
             (
@@ -223,6 +219,84 @@ pub async fn create(
             )
         }
     }
+}
+
+/// Create a note, optionally with an initial body — the shared half of
+/// `POST /api/books/{id}/notes` (which never sends a body) and the MCP `create_note`
+/// tool (which may).
+///
+/// # Why an initial body is safe here when a later REST body write is not
+///
+/// For a cut-over book, sync is the only writer of a body *that already has a
+/// canonical document* — `update` drops a REST body there, deliberately. A note being
+/// created has no canonical document and no client can have one either: its id does
+/// not exist anywhere until this function records it. So the body is written to git
+/// and projected as the note's first canonical document **before** the note is
+/// published into the book's structure, which is the only way a syncing client learns
+/// the id. Nothing can race it into a sync-owned state, and both stores agree from the
+/// first moment the note is visible. (A client that later claims the provisional
+/// document seeds its claim from the REST read, which serves this same body.)
+///
+/// Returns the note as the single-note read would serve it.
+pub(crate) async fn create_note_inner(
+    state: &AppState,
+    book_id: &str,
+    title: &str,
+    parent_id: Option<&str>,
+    color: Option<&str>,
+    body: Option<&str>,
+) -> Result<Note, String> {
+    let id = Uuid::new_v4().to_string();
+    let now = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let n = state
+        .books
+        .create_note(book_id, &id, title, parent_id, color, &now)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let Some(body) = body.filter(|b| !b.trim().is_empty()) else {
+        super::apply_cutover_structure(state, book_id, &[]).await;
+        // A new note is lore — no span, no entity mark, no event parent, and an
+        // empty body, so no edges either. Facets only ever arrive by a later edit.
+        return Ok(git_note(book_id, n, &LinkIndex::new()));
+    };
+
+    // Git first: it is the store every read falls back to.
+    state
+        .books
+        .update_note(
+            book_id,
+            &id,
+            None,
+            Some(body),
+            None,
+            plotweb_git::note::NoteFacetPatch::default(),
+        )
+        .await
+        .map_err(|e| format!("note created, but its body could not be saved: {e}"))?;
+    // Then the canonical document, for a cut-over book. There is none yet, so this is
+    // a fresh projection rather than an edit (see `sync::apply_body_content`). A
+    // failure is logged there and git still holds the body, which the read path falls
+    // back to — the same degradation every REST write accepts.
+    super::apply_cutover_body(
+        state,
+        book_id,
+        &format!("note:{id}"),
+        "note",
+        body,
+        plotweb_crdt::BodyKind::Note,
+    )
+    .await;
+    // Only now publish the note into the book's structure, with its link index derived
+    // from the body just written.
+    super::apply_cutover_structure_with_note_body(state, book_id, &id, body).await;
+
+    get_note_inner(state, book_id, &id)
+        .await
+        .ok_or_else(|| "note created, but could not be read back".to_string())
 }
 
 pub async fn update(
@@ -238,13 +312,33 @@ pub async fn update(
         );
     }
 
+    match update_note_inner(&state, &book_id, &note_id, req).await {
+        Ok(receipt) => (StatusCode::OK, Json(serde_json::to_value(receipt).unwrap())),
+        Err(e) => {
+            eprintln!("Failed to update note: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "failed to save note" })),
+            )
+        }
+    }
+}
+
+/// The shared half of `PUT /api/books/{id}/notes/{nid}` and the MCP `update_note` tool
+/// (which never sends `content` — see there).
+pub(crate) async fn update_note_inner(
+    state: &AppState,
+    book_id: &str,
+    note_id: &str,
+    req: UpdateNoteRequest,
+) -> Result<SaveReceipt, String> {
     // See `chapters::update`: for a cut-over book sync is the only writer of a body,
     // and only where the server can confirm the canonical document is one it can
     // actually read — otherwise nothing carries the edit at all. Title and colour are
     // structure, which REST still carries for every book.
     let doc_id = format!("note:{note_id}");
-    let cut_over = state.cutover.is_cut_over(&book_id);
-    let sync_owns_body = cut_over && super::canonical_is_authoritative(&state, &book_id, &doc_id);
+    let cut_over = state.cutover.is_cut_over(book_id);
+    let sync_owns_body = cut_over && super::canonical_is_authoritative(state, book_id, &doc_id);
     let degraded = cut_over && !sync_owns_body && req.content.is_some();
 
     let carries_content = req.content.is_some();
@@ -265,24 +359,18 @@ pub async fn update(
     // For color, if it's present in the request we pass Some(value), otherwise None (don't update)
     let color = req.color.as_ref().map(|c| Some(c.as_str()));
 
-    if let Err(e) = state
+    state
         .books
         .update_note(
-            &book_id,
-            &note_id,
+            book_id,
+            note_id,
             req.title.as_deref(),
             content.as_deref(),
             color,
             facets.clone(),
         )
         .await
-    {
-        eprintln!("Failed to update note: {}", e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "failed to save note" })),
-        );
-    }
+        .map_err(|e| e.to_string())?;
 
     // The canonical copy could not carry it: clear the claim, so the next write does
     // not stand down for a writer that cannot deliver.
@@ -300,8 +388,8 @@ pub async fn update(
     let applied_to_canonical = match content.as_deref() {
         Some(content) => {
             super::apply_cutover_body(
-                &state,
-                &book_id,
+                state,
+                book_id,
                 &doc_id,
                 "note",
                 content,
@@ -320,11 +408,11 @@ pub async fn update(
     // not seen this text yet and would yield the *previous* index.
     match req.content.as_deref() {
         Some(content) => {
-            super::apply_cutover_structure_with_note_body(&state, &book_id, &note_id, content)
+            super::apply_cutover_structure_with_note_body(state, book_id, note_id, content)
                 .await
         }
         None if req.title.is_some() || req.color.is_some() || !facets.is_empty() => {
-            super::apply_cutover_structure(&state, &book_id, &[]).await
+            super::apply_cutover_structure(state, book_id, &[]).await
         }
         None => {}
     }
@@ -336,7 +424,7 @@ pub async fn update(
         warning: None,
     };
     receipt.warning = super::save_warning(degraded, carries_content, receipt.is_durable());
-    (StatusCode::OK, Json(serde_json::to_value(receipt).unwrap()))
+    Ok(receipt)
 }
 
 pub async fn delete(
@@ -378,20 +466,10 @@ pub async fn move_note(
         );
     }
 
-    match state
-        .books
-        .move_note(
-            &book_id,
-            &req.note_id,
-            req.new_parent_id.as_deref(),
-            req.index,
-        )
+    match move_note_inner(&state, &book_id, &req.note_id, req.new_parent_id.as_deref(), req.index)
         .await
     {
-        Ok(()) => {
-            super::apply_cutover_structure(&state, &book_id, &[]).await;
-            (StatusCode::OK, Json(json!({ "ok": true })))
-        }
+        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))),
         Err(plotweb_git::error::GitStoreError::CircularReference) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "cannot move note into its own subtree" })),
@@ -404,6 +482,22 @@ pub async fn move_note(
             )
         }
     }
+}
+
+/// The shared half of `PUT /api/books/{id}/notes/move` and the MCP `update_note` tool.
+pub(crate) async fn move_note_inner(
+    state: &AppState,
+    book_id: &str,
+    note_id: &str,
+    new_parent_id: Option<&str>,
+    index: usize,
+) -> Result<(), plotweb_git::error::GitStoreError> {
+    state
+        .books
+        .move_note(book_id, note_id, new_parent_id, index)
+        .await?;
+    super::apply_cutover_structure(state, book_id, &[]).await;
+    Ok(())
 }
 
 pub async fn update_tree(
