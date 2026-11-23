@@ -76,13 +76,21 @@ async fn backfill_writes_clean_blobs_and_leaves_git_untouched() {
         assert_eq!(r.status, axum::http::StatusCode::OK, "set chapter: {}", r.json);
     }
 
-    // One FLAGGED chapter: a legacy `> blockquote` markdown (converts, but blockquote
-    // is outside the collab projection → flagged → no blob).
-    let c_flagged = app.create_chapter(&book_id, "Quoted").await;
+    // One FLAGGED chapter: a task list (a valid DocNode, but task_list is still
+    // outside the collab projection → flagged → no blob). Blockquotes and tables
+    // used to play this role until rinch put them in scope.
+    let task_doc = r#"{"type":"doc","content":[
+        {"type":"task_list","content":[
+            {"type":"task_item","attrs":{"checked":false},"content":[
+                {"type":"paragraph","content":[{"type":"text","text":"todo"}]}
+            ]}
+        ]}
+    ]}"#;
+    let c_flagged = app.create_chapter(&book_id, "Tasks").await;
     let r = app
         .put(
             &format!("/api/books/{book_id}/chapters/{c_flagged}"),
-            &serde_json::json!({ "content": "A line before.\n> a quoted line\nA line after." }),
+            &serde_json::json!({ "content": task_doc }),
         )
         .await;
     assert_eq!(r.status, axum::http::StatusCode::OK);
@@ -120,13 +128,13 @@ async fn backfill_writes_clean_blobs_and_leaves_git_untouched() {
     assert_eq!(summary.books, 1, "one book");
     assert_eq!(summary.docs_seen, 5, "book + 3 chapters + 1 note");
     assert_eq!(summary.written, 4, "book + 2 clean chapters + 1 clean note");
-    assert_eq!(summary.skipped_flagged, 1, "the blockquote chapter");
+    assert_eq!(summary.skipped_flagged, 1, "the task-list chapter");
     assert_eq!(summary.skipped_unchanged, 0, "first run writes everything");
     assert_eq!(summary.flagged.len(), 1);
     assert!(
         summary.flagged[0].0 == format!("chapter:{c_flagged}")
-            && summary.flagged[0].1.contains("blockquote"),
-        "flagged doc must be the blockquote chapter: {:?}",
+            && summary.flagged[0].1.contains("task_"),
+        "flagged doc must be the task-list chapter: {:?}",
         summary.flagged
     );
 

@@ -503,26 +503,41 @@ mod tests {
         assert_eq!(roundtrip_body("   \n  ", BodyKind::Note), RoundTrip::Clean);
     }
 
-    /// A blockquote is outside the staged collab scope → Flagged, with the block type
-    /// named, and NOT corrupted (it stays on git).
+    /// A blockquote is inside the collab scope since rinch's quotes landed (a
+    /// container like a list), so it round-trips Clean.
     #[test]
-    fn blockquote_is_flagged_with_type() {
+    fn blockquote_round_trips_clean() {
         let json = r#"{"type":"doc","content":[
             {"type":"blockquote","content":[
                 {"type":"paragraph","content":[{"type":"text","text":"quoted"}]}
             ]}
         ]}"#;
+        assert_eq!(roundtrip_body(json, BodyKind::Chapter), RoundTrip::Clean);
+    }
+
+    /// A task list is still outside the staged collab scope → Flagged, with the
+    /// block type named, and NOT corrupted (it stays on git).
+    #[test]
+    fn task_list_is_flagged_with_type() {
+        let json = r#"{"type":"doc","content":[
+            {"type":"task_list","content":[
+                {"type":"task_item","attrs":{"checked":false},"content":[
+                    {"type":"paragraph","content":[{"type":"text","text":"todo"}]}
+                ]}
+            ]}
+        ]}"#;
         let rt = roundtrip_body(json, BodyKind::Chapter);
-        let reason = rt.reason().expect("blockquote must flag");
+        let reason = rt.reason().expect("task_list must flag");
         assert!(
-            reason.contains("blockquote"),
+            reason.contains("task_"),
             "reason should name the block type, got: {reason}"
         );
     }
 
-    /// A table is unsupported → Flagged naming the block type.
+    /// A rectangular table is inside the collab scope (its own wire shape since
+    /// rinch's tables landed), so it round-trips Clean.
     #[test]
-    fn table_is_flagged_with_type() {
+    fn table_round_trips_clean() {
         let json = r#"{"type":"doc","content":[
             {"type":"table","content":[
                 {"type":"table_row","content":[
@@ -530,12 +545,7 @@ mod tests {
                 ]}
             ]}
         ]}"#;
-        let rt = roundtrip_body(json, BodyKind::Chapter);
-        let reason = rt.reason().expect("table must flag");
-        assert!(
-            reason.contains("table"),
-            "reason should name the block type, got: {reason}"
-        );
+        assert_eq!(roundtrip_body(json, BodyKind::Chapter), RoundTrip::Clean);
     }
 
     /// An inline image atom is in the collab scope since rinch PR #838: it round-trips
@@ -758,17 +768,12 @@ mod tests {
     }
 
     /// A legacy chapter containing a `> blockquote` converts fine (markdown_to_html
-    /// emits `<blockquote>`), but blockquote is outside the collab projection, so it
-    /// is correctly Flagged — with the block type named, and left on git.
+    /// emits `<blockquote>`), and blockquote is inside the collab projection now, so
+    /// it migrates Clean rather than staying on git.
     #[test]
-    fn legacy_markdown_blockquote_is_flagged() {
+    fn legacy_markdown_blockquote_round_trips_clean() {
         let md = "A line before.\n> a quoted line\nA line after.";
-        let rt = roundtrip_body(md, BodyKind::Chapter);
-        let reason = rt.reason().expect("legacy blockquote must flag");
-        assert!(
-            reason.contains("blockquote"),
-            "reason should name the unsupported block type, got: {reason}"
-        );
+        assert_eq!(roundtrip_body(md, BodyKind::Chapter), RoundTrip::Clean);
     }
 
     // ── project_body: the backfill emit endpoint ────────────────────────────────
@@ -782,8 +787,10 @@ mod tests {
             {"type":"paragraph","content":[{"type":"text","text":"hello"}]}
         ]}"#;
         let flagged = r#"{"type":"doc","content":[
-            {"type":"blockquote","content":[
-                {"type":"paragraph","content":[{"type":"text","text":"quoted"}]}
+            {"type":"task_list","content":[
+                {"type":"task_item","attrs":{"checked":false},"content":[
+                    {"type":"paragraph","content":[{"type":"text","text":"todo"}]}
+                ]}
             ]}
         ]}"#;
 

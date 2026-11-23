@@ -188,7 +188,7 @@ fn current_text_align(handle: &EditorHandle) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct CaretAnchor {
     /// The textblock the caret sits in, as rinch's host node id.
-    pub block: usize,
+    pub block: u64,
     /// The caret's UTF-8 byte offset within that block's flat host text.
     pub byte: usize,
     /// The caret's offset within the block's box.
@@ -268,7 +268,7 @@ pub fn caret_viewport_point(anchor: &CaretAnchor, doc: &DocRef) -> (f32, f32) {
     // anywhere near this deep.
     for _ in 0..64 {
         let Some(id) = at else { break };
-        if let Some((nx, ny, _, _)) = document.query_node_layout(id.0 as u64) {
+        if let Some((nx, ny, _, _)) = document.query_node_layout(id.0) {
             x += nx;
             y += ny;
         }

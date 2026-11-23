@@ -629,6 +629,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys",
+]
+
+[[package]]
+name = "dirs-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+dependencies = [
+ "libc",
+ "option-ext",
+ "redox_users",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1881,6 +1902,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "option-ext"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2330,6 +2357,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "redox_users"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60dc65c0ff1a7ae1294b0c67b9f14baf70b644404010370171787bfac1038fc0"
+dependencies = [
+ "libredox",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ref-cast"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2506,9 +2543,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rinch-core"
+version = "0.1.0"
+source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
+dependencies = [
+ "thiserror 1.0.69",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
 name = "rinch-editor-collab"
 version = "0.1.0"
-source = "git+https://github.com/lost-conn/rinch?rev=172f1d7#172f1d7d654c3de857c2002167a09907f2a9696c"
+source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
 dependencies = [
  "rinch-editor-core",
  "thiserror 1.0.69",
@@ -2518,10 +2565,12 @@ dependencies = [
 [[package]]
 name = "rinch-editor-core"
 version = "0.1.0"
-source = "git+https://github.com/lost-conn/rinch?rev=172f1d7#172f1d7d654c3de857c2002167a09907f2a9696c"
+source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
 dependencies = [
  "pulldown-cmark 0.12.2",
  "regex",
+ "rinch-core",
+ "rinch-words",
  "serde",
  "thiserror 1.0.69",
 ]
@@ -2529,12 +2578,22 @@ dependencies = [
 [[package]]
 name = "rinch-storage"
 version = "0.1.0"
-source = "git+https://github.com/lost-conn/rinch?rev=172f1d7#172f1d7d654c3de857c2002167a09907f2a9696c"
+source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
 dependencies = [
+ "dirs",
  "js-sys",
  "thiserror 1.0.69",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "rinch-words"
+version = "0.1.0"
+source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
+dependencies = [
+ "regex",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -3957,6 +4016,16 @@ name = "web-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "854ba17bb104abfb26ba36da9729addc7ce7f06f5c0f90f3c391f8461cca21f9"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

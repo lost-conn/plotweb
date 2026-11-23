@@ -1355,11 +1355,14 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                 } else {
                     editor_utils::content_to_display_html(&ch.content)
                 };
-                // `current_chapter.set` above synchronously renders the branch that
-                // owns `#reader-content` (signal notification runs effects inline),
-                // so the handle is published by the time we read it here. The stale
-                // -chapter guard above already ran in this same callback, so no
-                // second guard is needed.
+                // `current_chapter.set` above queues the render of the branch that
+                // owns `#reader-content`: in current rinch a callback
+                // is a batch, so effects run at its end, not on `set`. Flush them
+                // here so the branch publishes its handle before we read it — the
+                // first open of a chapter otherwise finds `content_el` still `None`
+                // and leaves the reader blank. The stale-chapter guard above already
+                // ran in this same callback, so no second guard is needed.
+                rinch_core::reactive::flush_pending_effects();
                 if let Some(el) = content_el.get() {
                     el.set_inner_html(&editor_utils::sanitize_html(&content_html));
                     // Wrap this chapter's feedback quotes in clickable marks

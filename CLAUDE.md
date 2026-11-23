@@ -119,8 +119,13 @@ DOM queries, computed styles, click/type/key, caret positions:
 
 ```bash
 cd plotweb-web && cargo build --features debug-mcp   # NEVER for release: opens a control port
-./target/debug/plotweb-web                            # registers in ~/.rinch/debug/{pid}.json
+RINCH_DEBUG=1 ./target/debug/plotweb-web              # registers in ~/.rinch/debug/{pid}.json
 ```
+
+The feature only compiles the debug interface in; since rinch #2481 it starts
+only when `RINCH_DEBUG=1` is set (no registry file appears without it). Point
+`XDG_DATA_HOME` at a scratch dir when smoke-testing against a temp server, or the
+app opens this machine's real local-first document store.
 
 `.mcp.json` registers `rinch-mcp-server` from the sibling rinch checkout
 (`../rinch`, the same layout DEPLOY.md's co-dev `[patch]` assumes), so build it

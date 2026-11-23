@@ -218,7 +218,10 @@ fn main() {
         app_id: Some(APP_ID.to_string()),
         ..Default::default()
     };
-    rinch::run_with_window_props(app, props, Some(theme_props()));
+    rinch::App::new(app)
+        .window_props(props)
+        .theme(theme_props())
+        .run();
 }
 
 #[cfg(target_arch = "wasm32")]

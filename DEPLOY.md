@@ -155,18 +155,25 @@ source.
   which our `default-features = false` build requires; rhypedb `master` may not
   have it yet). Once that merges to `master`, repin all three `rhypedb-*` deps in
   the root `Cargo.toml` (and the matching note in `Cargo.toml` / `Dockerfile`).
-- **rinch** is pinned to `rev = 172f1d7…` in `plotweb-web/Cargo.toml`, kept in
+- **rinch** is pinned to `rev = 5ff256a…` in `plotweb-web/Cargo.toml`, kept in
   sync with the `Dockerfile`'s `RINCH_COMMIT` (and the `rinch-*` git deps in the
   root `Cargo.toml`, `plotweb-crdt` and `plotweb-server` — they must all name the
-  same rev). **rinch now comes from our fork, `lost-conn/rinch`, branch
-  `plotweb`** (upstream `main` plus the unmerged upstream PRs we depend on: #836
-  `feat/editor-inline-decorations` for inline decorations / wavy underline /
-  `add_plugin`, #837 for caret scroll-into-view, and #838 which lets
-  `rinch-editor-collab` project inline atoms — `hard_break` (Shift+Enter) and
-  `image` — instead of failing `CollabError::Unsupported`), rather than from
-  `joeleaver/rinch` directly. `172f1d7` is the current tip of that branch. Repin
-  every site above as the `plotweb` branch advances; all sites must name the
-  same rev.
+  same rev). **rinch comes from our fork, `lost-conn/rinch`, branch `plotweb`**
+  (upstream `main` plus any unmerged upstream PRs we depend on), rather than from
+  `joeleaver/rinch` directly, so every commit we ship against stays reachable.
+  `5ff256a` is the current tip of that branch and its tree is exactly upstream
+  `main` (7b9e92a): our earlier PRs #836/#837/#838 landed upstream as
+  #847/#846/#859. Repin every site above as the `plotweb` branch advances; all
+  sites must name the same rev.
+- **Collab coordinated upgrades:** rinch-editor-collab changes what it writes
+  without moving its format tag, and an older peer is poisoned by what a newer one
+  writes (`SessionPoisoned`). The 172f1d7 → 5ff256a bump crosses several: since
+  rinch #1503/#1851 every newly inserted inline atom (`image`, `hard_break` /
+  Shift+Enter) carries `@for`, and `blockquote`, `embed` and tables entered the
+  scope (see rinch `docs/internals/editor.md`, "coordinated upgrade"). Server and
+  SPA ship together, but a browser tab still running a pre-deploy bundle, or a
+  native desktop build from before the bump, is such a peer — reload open tabs
+  and rebuild the desktop app after a rinch bump.
 
 ## Verification status
 
