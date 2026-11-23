@@ -230,12 +230,15 @@ fn render_history_chapter_preview(
                                 move |result| {
                                 if let Ok(full_ch) = result {
                                     let html = crate::pages::editor_utils::sanitize_html(&crate::pages::editor_utils::content_to_display_html(&full_ch.content));
-                                    // Setting `preview_content` synchronously renders
+                                    // Setting `preview_content` queues the render of
                                     // the `if is_selected()` branch below, which
-                                    // publishes the pane's handle — so it's ready to
-                                    // inject into on the next line. Replaces the old
+                                    // publishes the pane's handle. A callback is a
+                                    // batch in rinch, so flush its effects before
+                                    // reading the handle — otherwise the first
+                                    // preview finds it `None`. Replaces the old
                                     // `setTimeout(50ms)` + `query_selector` wait.
                                     preview_content.set(Some(full_ch));
+                                    rinch_core::reactive::flush_pending_effects();
                                     if let Some(el) = preview_el.get() {
                                         el.set_inner_html(&html);
                                     }

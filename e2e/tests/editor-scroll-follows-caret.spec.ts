@@ -19,17 +19,19 @@ import { createBook, openChapter, registerNewUser, seedLongChapter } from "./hel
  *  2. typing past the bottom edge (Enter after Enter) keeps the caret visible;
  *  3. the follow is gated on caret *movement*, so wheel-scrolling away from a
  *     resting caret is not undone by the caret's blink (which rewrites the same
- *     overlay element's `display` several times a second).
+ *     overlay element's `visibility` several times a second).
  */
 
 const SCROLLER = ".editor-scroll";
 const CARET = "#editor-main [data-pm-caret]";
 
 /**
- * Where the caret is painted, relative to the scroller's viewport, read from
- * the overlay's own `left/top/height` styles rather than its bounding box: the
- * blink hides the element (`display: none`) half the time, which would zero a
- * `getBoundingClientRect` reading but leaves the positioning styles intact.
+ * Where the caret is painted, in viewport coordinates, next to the scroller's
+ * viewport. rinch positions the overlay with `transform: translate(x, y)` (its
+ * `left/top` stay 0) and blinks it with `visibility`, which keeps its box, so
+ * the bounding rect is the caret's real position in every blink phase. If a
+ * blink ever goes back to `display: none` (a zero rect), fall back to the
+ * transform's offset from the overlay's containing block.
  * Returns `null` until the caret has been placed at all.
  */
 async function caretBand(page: Page): Promise<{ top: number; bottom: number; viewTop: number; viewBottom: number } | null> {
@@ -37,14 +39,17 @@ async function caretBand(page: Page): Promise<{ top: number; bottom: number; vie
     ([caretSel, scrollerSel]) => {
       const caret = document.querySelector(caretSel) as HTMLElement | null;
       const scroller = document.querySelector(scrollerSel) as HTMLElement | null;
-      if (!caret || !scroller || !caret.style.top) return null;
-      // The caret is positioned against the editor container (`position:
-      // relative` in rinch's own stylesheet), which is its parent.
-      const host = caret.parentElement as HTMLElement;
-      const hostTop = host.getBoundingClientRect().top;
-      const top = hostTop + parseFloat(caret.style.top);
-      const bottom = top + parseFloat(caret.style.height);
+      if (!caret || !scroller || !caret.style.transform) return null;
       const view = scroller.getBoundingClientRect();
+      const rect = caret.getBoundingClientRect();
+      if (rect.height > 0) {
+        return { top: rect.top, bottom: rect.bottom, viewTop: view.top, viewBottom: view.bottom };
+      }
+      const m = /translate\(\s*[-\d.]+px,\s*([-\d.]+)px\)/.exec(caret.style.transform);
+      if (!m) return null;
+      const host = (caret.offsetParent ?? caret.parentElement) as HTMLElement;
+      const top = host.getBoundingClientRect().top + parseFloat(m[1]);
+      const bottom = top + parseFloat(caret.style.height);
       return { top, bottom, viewTop: view.top, viewBottom: view.bottom };
     },
     [CARET, SCROLLER],
