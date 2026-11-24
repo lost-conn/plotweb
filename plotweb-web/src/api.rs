@@ -43,8 +43,24 @@ fn base_url() -> String {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn base_url() -> String {
-    std::env::var("PLOTWEB_SERVER").unwrap_or_else(|_| "http://127.0.0.1:3000".to_string())
+    std::env::var("PLOTWEB_SERVER")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_SERVER.to_string())
 }
+
+/// The server a desktop build talks to when `PLOTWEB_SERVER` is unset.
+///
+/// A downloaded build has no wrapper script to set the variable, so a release
+/// build defaults to the hosted server; a debug build keeps defaulting to a local
+/// dev server. `PLOTWEB_DEFAULT_SERVER` at *compile* time overrides both (for a
+/// build aimed at another deployment).
+#[cfg(not(target_arch = "wasm32"))]
+const DEFAULT_SERVER: &str = match option_env!("PLOTWEB_DEFAULT_SERVER") {
+    Some(s) => s,
+    None if cfg!(debug_assertions) => "http://127.0.0.1:3000",
+    None => "https://pw.lostconnection.dev",
+};
 
 /// Resolve an API path to the full URL for the current platform.
 fn full_url(path: &str) -> String {

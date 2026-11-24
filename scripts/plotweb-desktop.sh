@@ -38,28 +38,12 @@ fi
 echo "PlotWeb → $SERVER   (cut-over books sync, documents in ${PLOTWEB_LOCAL_DATA:-the OS data dir})"
 
 # ── Logging ──────────────────────────────────────────────────────────────────
-# Diagnostics only ever went to stderr, which is nowhere when the app is started
-# from the desktop launcher rather than a terminal — a crash or a sync warning left
-# no trace at all. Tee both streams to a log file so a problem noticed while writing
-# can still be read about afterwards; running from a terminal still prints normally.
-#
-# Default filter keeps rinch's own chatter at `warn` while letting PlotWeb's
-# `log::info!` through; override with RUST_LOG for a noisier session.
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/plotweb"
-LOG="$LOG_DIR/plotweb.log"
-mkdir -p "$LOG_DIR"
-
-# Rotate at ~5 MB, keeping one previous run's worth. A writing session can be long
-# and rinch warns per dropped frame, so this file does grow.
-if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -gt 5242880 ]; then
-  mv -f "$LOG" "$LOG.1"
-fi
-
-exec > >(tee -a "$LOG") 2>&1
-echo "─── $(date -Is) · starting PlotWeb → $SERVER ───"
+# The app writes its own log file now (`src/desktop_log.rs`) — stderr and
+# ${XDG_STATE_HOME:-$HOME/.local/state}/plotweb/plotweb.log, rotated at ~5 MB — so a
+# downloaded build without this script logs too. No tee here, or every line would
+# land in the file twice. RUST_LOG still overrides the default filter.
 
 exec env \
   PLOTWEB_SERVER="$SERVER" \
-  RUST_LOG="${RUST_LOG:-warn,plotweb_web=info}" \
   RUST_BACKTRACE="${RUST_BACKTRACE:-1}" \
   "$BIN" "$@"

@@ -128,9 +128,11 @@ pub fn now_epoch_secs() -> i64 {
 /// logged that warning and rendered the login/dashboard logo as a broken image.
 ///
 /// Native resolution order:
-/// 1. `$XDG_DATA_HOME/plotweb/assets/<name>` (what `scripts/install-desktop.sh`
-///    populates) — an installed copy, so the app does not depend on the checkout.
-/// 2. The source tree the binary was built from, for `cargo run` during development.
+/// 1. `<data dir>/assets/<name>`. The images are compiled into the binary
+///    ([`EMBEDDED_ASSETS`]) and written there on first use, so a downloaded build
+///    shows its logo with no installer, no checkout and no network.
+/// 2. The source tree the binary was built from — only reached for an asset that
+///    is not embedded, or when the data dir cannot be written.
 ///
 /// Deliberately a **local file** rather than `{server}/assets/...`: the logo has to
 /// render on a device that started with no network, which an HTTP fetch would not.
@@ -145,6 +147,15 @@ pub fn asset_src(path: &str) -> String {
 
         if let Some(dir) = native_asset_dir() {
             let installed = dir.join(name);
+            if let Some((_, bytes)) = EMBEDDED_ASSETS.iter().find(|(n, _)| *n == name) {
+                // Rewrite when the size differs, so a newer build's image replaces
+                // an older one's. A failed write falls through to the checkout path.
+                let current = std::fs::metadata(&installed).map(|m| m.len()).ok();
+                if current != Some(bytes.len() as u64) {
+                    let _ = std::fs::create_dir_all(&dir);
+                    let _ = std::fs::write(&installed, bytes);
+                }
+            }
             if installed.is_file() {
                 return installed.to_string_lossy().into_owned();
             }
@@ -159,6 +170,32 @@ pub fn asset_src(path: &str) -> String {
     }
 }
 
+/// Whether this build runs in a browser (as opposed to the desktop shell).
+pub const fn is_web() -> bool {
+    cfg!(target_arch = "wasm32")
+}
+
+/// The browser's `navigator.userAgent`; `None` natively or if unreadable.
+pub fn user_agent() -> Option<String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        window()?.navigator().user_agent().ok()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        None
+    }
+}
+
+/// Images `asset_src` can hand out natively, compiled in. rinch's image loader
+/// reads `src` off the filesystem, so these are materialised under the data dir
+/// rather than served from memory.
+#[cfg(not(target_arch = "wasm32"))]
+const EMBEDDED_ASSETS: &[(&str, &[u8])] = &[
+    ("logo.png", include_bytes!("../assets/logo.png")),
+    ("icon.png", include_bytes!("../assets/icon.png")),
+];
+
 /// The per-user directory holding installed assets, mirroring `local_store`'s
 /// document dir (`$XDG_DATA_HOME/plotweb/...`, else `$HOME/.local/share/plotweb/...`).
 #[cfg(not(target_arch = "wasm32"))]
@@ -166,22 +203,46 @@ fn native_asset_dir() -> Option<std::path::PathBuf> {
     native_data_dir().map(|d| d.join("assets"))
 }
 
-/// PlotWeb's per-user data directory on desktop: `$XDG_DATA_HOME/plotweb`, else
-/// `$HOME/.local/share/plotweb`. `None` with neither set.
+/// PlotWeb's per-user data directory on desktop: `$XDG_DATA_HOME/plotweb`, then
+/// (Windows) `%LOCALAPPDATA%\PlotWeb`, then `$HOME/.local/share/plotweb`. `None`
+/// with none of them set.
+///
+/// Windows has no `HOME`, so before `LOCALAPPDATA` was consulted every path built
+/// from this came back `None` — and `local_store` fell through to the *temp* dir,
+/// where Windows' storage cleanup would eventually delete the offline copy.
+/// `LOCAL` rather than roaming `APPDATA`: the document store is this device's
+/// copy, and roaming profiles copying it between machines would be wrong.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn native_data_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("plotweb"));
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if let Some(xdg) = var("XDG_DATA_HOME") {
+        return Some(PathBuf::from(xdg).join("plotweb"));
+    }
+    if cfg!(windows) {
+        if let Some(local) = var("LOCALAPPDATA") {
+            return Some(PathBuf::from(local).join("PlotWeb"));
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return Some(PathBuf::from(home).join(".local/share/plotweb"));
+    var("HOME").map(|home| PathBuf::from(home).join(".local/share/plotweb"))
+}
+
+/// Where the desktop app writes its log file: `$XDG_STATE_HOME/plotweb`, then
+/// (Windows) `%LOCALAPPDATA%\PlotWeb\logs`, then `$HOME/.local/state/plotweb`.
+/// The Linux paths are the ones `scripts/plotweb-desktop.sh` used to tee into.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn native_log_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+    if let Some(xdg) = var("XDG_STATE_HOME") {
+        return Some(PathBuf::from(xdg).join("plotweb"));
+    }
+    if cfg!(windows) {
+        if let Some(local) = var("LOCALAPPDATA") {
+            return Some(PathBuf::from(local).join("PlotWeb").join("logs"));
         }
     }
-    None
+    var("HOME").map(|home| PathBuf::from(home).join(".local/state/plotweb"))
 }
 
 // ── Clipboard ────────────────────────────────────────────────────────────────

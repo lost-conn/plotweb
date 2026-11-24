@@ -98,8 +98,8 @@ async fn open_backend() -> StorageResult<Rc<dyn Store>> {
 /// The native per-user directory holding local documents.
 ///
 /// Overridable by `PLOTWEB_LOCAL_DATA` (used by the durability repro). Otherwise
-/// an OS-appropriate per-user data dir: `$XDG_DATA_HOME/plotweb/docs`, then
-/// `$HOME/.local/share/plotweb/docs`, then a temp-dir fallback.
+/// `docs/` under [`crate::platform::native_data_dir`] (`$XDG_DATA_HOME/plotweb`,
+/// `%LOCALAPPDATA%\PlotWeb`, `$HOME/.local/share/plotweb`), then a temp-dir fallback.
 #[cfg(not(target_arch = "wasm32"))]
 fn native_data_dir() -> std::path::PathBuf {
     use std::path::PathBuf;
@@ -108,17 +108,11 @@ fn native_data_dir() -> std::path::PathBuf {
             return PathBuf::from(p);
         }
     }
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        if !xdg.is_empty() {
-            return PathBuf::from(xdg).join("plotweb").join("docs");
-        }
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home).join(".local/share/plotweb/docs");
-        }
-    }
-    std::env::temp_dir().join("plotweb").join("docs")
+    // Same root as fonts and assets (`platform::native_data_dir`, which also knows
+    // Windows' `%LOCALAPPDATA%`); the temp dir is a last resort only.
+    crate::platform::native_data_dir()
+        .map(|d| d.join("docs"))
+        .unwrap_or_else(|| std::env::temp_dir().join("plotweb").join("docs"))
 }
 
 // ── Cross-platform main-thread task scheduling ───────────────────────────────

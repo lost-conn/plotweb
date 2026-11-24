@@ -99,12 +99,20 @@ uuid = { version = "1", features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rinch = { git = "https://github.com/lost-conn/rinch", rev = "8439034", features = ["desktop", "collaboration"] }
+# Desktop log file (`src/desktop_log.rs`). Already in the tree via rinch's desktop
+# shell; named directly so the app can install its own stderr + file subscriber.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Native durability proof (local_store::tests): drive the chapter-body Automerge
 # round-trip against a tempdir FsStore, no GUI needed. `rinch-editor-collab` is a
 # regular dependency now (see above), so only the tempdir helper is test-only.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3"
+
+# Icon + version info for the Windows .exe (build.rs). Keyed on the *host*: only
+# a Windows host compiles it, which is where Windows builds are made.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [profile.dev]
 opt-level = 1
