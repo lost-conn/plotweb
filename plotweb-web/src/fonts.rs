@@ -43,6 +43,30 @@ pub fn fetch_font_catalog() {
     });
 }
 
+/// The app's own typefaces, carried inside the desktop binary.
+///
+/// On the web `index.html` loads these from Google Fonts; the native shell has
+/// no web-font loader (no `<link>`, no `@font-face`), so without them every
+/// `font-family` in the theme and `--pw-font-*` stacks fell through to whatever
+/// fontconfig had. rinch registers them before the first layout
+/// ([`rinch::App::fonts`]), so the first frame is already in the right face.
+///
+/// Each is reachable by the family name in its file — which matches the CSS
+/// names exactly — and claims no generic slot: every stack names its face first,
+/// and a script face answering `cursive` or a text face answering `serif` would
+/// change elements that never asked for it. Variable files cover the weights the
+/// web build requests (Playwrite 100–400, Source Sans 3 400–600).
+///
+/// Kept in `plotweb-web/fonts/`, not `assets/`, so Trunk's `copy-dir assets`
+/// doesn't ship ~1 MB of files the web build never uses. Licences (OFL) sit next
+/// to them.
+#[cfg(not(target_arch = "wasm32"))]
+pub const APP_FONTS: &[rinch::font::AppFont] = &[
+    rinch::font::AppFont::new(include_bytes!("../fonts/PlaywriteDEGrund.ttf")),
+    rinch::font::AppFont::new(include_bytes!("../fonts/MacondoSwashCaps-Regular.ttf")),
+    rinch::font::AppFont::new(include_bytes!("../fonts/SourceSans3.ttf")),
+];
+
 /// Fonts already loaded globally — skip these when building the dynamic link.
 #[cfg(target_arch = "wasm32")]
 const GLOBAL_FONTS: &[&str] = &["Macondo Swash Caps", "Playwrite DE Grund"];
