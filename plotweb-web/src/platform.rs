@@ -163,15 +163,22 @@ pub fn asset_src(path: &str) -> String {
 /// document dir (`$XDG_DATA_HOME/plotweb/...`, else `$HOME/.local/share/plotweb/...`).
 #[cfg(not(target_arch = "wasm32"))]
 fn native_asset_dir() -> Option<std::path::PathBuf> {
+    native_data_dir().map(|d| d.join("assets"))
+}
+
+/// PlotWeb's per-user data directory on desktop: `$XDG_DATA_HOME/plotweb`, else
+/// `$HOME/.local/share/plotweb`. `None` with neither set.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn native_data_dir() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
         if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("plotweb").join("assets"));
+            return Some(PathBuf::from(xdg).join("plotweb"));
         }
     }
     if let Ok(home) = std::env::var("HOME") {
         if !home.is_empty() {
-            return Some(PathBuf::from(home).join(".local/share/plotweb/assets"));
+            return Some(PathBuf::from(home).join(".local/share/plotweb"));
         }
     }
     None
