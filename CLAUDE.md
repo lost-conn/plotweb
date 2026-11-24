@@ -111,6 +111,24 @@ Only `x86_64-unknown-linux-gnu` is configured; `wasm32` links with rust-lld and
 is deliberately untouched. `./scripts/setup-mold.sh --disable` reverts it, and
 the script refuses to overwrite a `.cargo/config.toml` it did not write.
 
+## Desktop releases (downloads)
+
+`.github/workflows/desktop-release.yml` builds the desktop app for Linux
+(AppImage + tarball, on ubuntu-22.04 for an older glibc) and Windows (a portable
+`.exe`, static CRT, icon from `plotweb-web/build.rs`) and publishes a GitHub
+Release when a `desktop-v<version>` tag is pushed; the tag must equal
+`plotweb-web/Cargo.toml`'s `version`. PRs touching the desktop build's deps or
+packaging get a build-only run. Settings → **Desktop app** (web only) links to
+`releases/latest/download/<asset>`, so the asset names in the workflow are a
+contract with `pages/settings.rs` (a test pins them).
+
+A release build is self-contained: it defaults to `https://pw.lostconnection.dev`
+(debug builds: `127.0.0.1:3000`; `PLOTWEB_SERVER` at runtime or
+`PLOTWEB_DEFAULT_SERVER` at compile time override), embeds its images, and writes
+its own log (`src/desktop_log.rs`) to `$XDG_STATE_HOME/plotweb/` or
+`%LOCALAPPDATA%\PlotWeb\logs`. Data lives under `platform::native_data_dir()`
+(`%LOCALAPPDATA%\PlotWeb` on Windows). Builds are unsigned: SmartScreen warns.
+
 ## Driving the native app (rinch MCP)
 
 The desktop window can't be driven by Playwright. Build it with the opt-in

@@ -1,6 +1,7 @@
-//! Account settings (`/settings`). For now one section: **Agent access** —
-//! personal access tokens an AI assistant uses to read the author's books,
-//! organise notes and leave review comments.
+//! Account settings (`/settings`). Two sections: **Desktop app** (web only —
+//! download links for the native builds), and **Agent access** — personal access
+//! tokens an AI assistant uses to read the author's books, organise notes and
+//! leave review comments.
 //!
 //! The raw token is shown exactly once, straight out of the create response, and
 //! is held only in a component-local signal until the author presses Done. It is
@@ -204,6 +205,65 @@ const SETTINGS_CSS: &str = r#"
     color: var(--rinch-color-red-6);
 }
 
+.desktop-dl {
+    margin-top: var(--pw-space-md);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--pw-space-xs);
+}
+
+.desktop-dl a {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--pw-space-2xs);
+    padding: var(--pw-space-2xs) var(--pw-space-sm);
+    border-radius: var(--pw-radius-sm);
+    font-size: var(--pw-text-sm);
+    font-weight: 600;
+    text-decoration: none;
+    border: 1px solid var(--rinch-color-border);
+    color: var(--rinch-color-text);
+    background: var(--rinch-color-surface);
+}
+
+.desktop-dl a:hover {
+    border-color: var(--rinch-color-teal-6);
+}
+
+.desktop-dl a.primary {
+    background: var(--rinch-color-teal-7);
+    border-color: var(--rinch-color-teal-7);
+    color: #fff;
+}
+
+.desktop-dl a.primary:hover {
+    background: var(--rinch-color-teal-6);
+}
+
+.desktop-dl a.quiet {
+    border-color: transparent;
+    background: none;
+    font-weight: 400;
+    color: var(--rinch-color-dimmed);
+}
+
+.desktop-dl a svg {
+    width: 16px;
+    height: 16px;
+}
+
+.desktop-hint {
+    margin-top: var(--pw-space-xs);
+    font-size: var(--pw-text-xs);
+    line-height: var(--pw-lh-ui);
+    color: var(--rinch-color-dimmed);
+}
+
+.settings-section + .settings-section {
+    margin-top: var(--pw-space-2xl);
+}
+
 @media (max-width: 640px) {
     .settings-body {
         padding: var(--pw-space-lg) var(--pw-space-md);
@@ -286,6 +346,106 @@ fn token_rows(tokens: &[ApiTokenInfo], books: &[Book]) -> Vec<TokenRow> {
             }
         })
         .collect()
+}
+
+// ── Desktop app downloads ───────────────────────────────────────────────────
+
+/// Where the desktop builds are published (`.github/workflows/desktop-release.yml`).
+const RELEASES_URL: &str = "https://github.com/lost-conn/plotweb/releases";
+
+/// A platform there is a desktop build for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DesktopOs {
+    Windows,
+    Linux,
+}
+
+impl DesktopOs {
+    const ALL: [DesktopOs; 2] = [DesktopOs::Windows, DesktopOs::Linux];
+
+    fn name(self) -> &'static str {
+        match self {
+            DesktopOs::Windows => "Windows",
+            DesktopOs::Linux => "Linux",
+        }
+    }
+
+    /// The release asset. These file names are fixed by the release workflow, and
+    /// `latest/download/<name>` always resolves to the newest release's copy.
+    fn download_url(self) -> String {
+        let asset = match self {
+            DesktopOs::Windows => "PlotWeb-windows-x86_64.exe",
+            DesktopOs::Linux => "PlotWeb-linux-x86_64.AppImage",
+        };
+        format!("{RELEASES_URL}/latest/download/{asset}")
+    }
+
+    fn icon(self) -> TablerIcon {
+        match self {
+            DesktopOs::Windows => TablerIcon::BrandWindows,
+            DesktopOs::Linux => TablerIcon::BrandUbuntu,
+        }
+    }
+
+    fn hint(self) -> &'static str {
+        match self {
+            DesktopOs::Windows => "The app isn't signed yet, so Windows may say it doesn't recognise it. Choose More info, then Run anyway.",
+            DesktopOs::Linux => "Make the AppImage executable (right-click → Properties, or chmod +x) and open it. It needs GTK 3, which most desktops already have.",
+        }
+    }
+}
+
+/// Which desktop build suits the browser's machine, from its user agent.
+/// `None` for phones, tablets, Chromebooks and Macs: there is no build for them.
+fn detect_desktop_os(user_agent: &str) -> Option<DesktopOs> {
+    let ua = user_agent.to_ascii_lowercase();
+    if ua.contains("windows") && !ua.contains("windows phone") {
+        Some(DesktopOs::Windows)
+    } else if ua.contains("linux") && !ua.contains("android") && !ua.contains("cros") {
+        Some(DesktopOs::Linux)
+    } else {
+        None
+    }
+}
+
+fn desktop_app_section(__scope: &mut RenderScope) -> NodeHandle {
+    let detected = crate::platform::user_agent().and_then(|ua| detect_desktop_os(&ua));
+    // The detected platform leads as the primary button; the other follows.
+    let mut order: Vec<DesktopOs> = detected.into_iter().collect();
+    order.extend(DesktopOs::ALL.into_iter().filter(|os| Some(*os) != detected));
+
+    rsx! {
+        div { class: "settings-section",
+            h2 { class: "settings-h", "Desktop app" }
+            p { class: "settings-lede",
+                "PlotWeb also runs as an app on Windows and Linux. Sign in with this same account; your books stay in sync, and the app keeps a copy on your computer."
+            }
+            div { class: "desktop-dl",
+                for os in order.clone() {
+                    a {
+                        key: os.name(),
+                        class: if Some(os) == detected { "primary" } else { "" },
+                        href: os.download_url(),
+                        {render_tabler_icon(__scope, os.icon(), TablerIconStyle::Outline)}
+                        {format!("Download for {}", os.name())}
+                    }
+                }
+                a {
+                    class: "quiet",
+                    href: RELEASES_URL,
+                    target: "_blank",
+                    rel: "noopener",
+                    "All releases"
+                }
+            }
+            if let Some(os) = detected {
+                div { class: "desktop-hint", {os.hint()} }
+            }
+            if detected.is_none() {
+                div { class: "desktop-hint", "There's no build for this device yet. You can download one for a Windows or Linux computer here." }
+            }
+        }
+    }
 }
 
 #[component]
@@ -417,6 +577,11 @@ pub fn settings_page() -> NodeHandle {
 
             div { class: "settings-body",
                 div { class: "settings-col",
+                    if crate::platform::is_web() {
+                        {desktop_app_section(__scope)}
+                    }
+
+                    div { class: "settings-section",
                     h2 { class: "settings-h", "Agent access" }
                     p { class: "settings-lede",
                         "Access tokens let an AI assistant read your books, organise your notes and leave review comments. They can never edit your manuscript. Give each assistant its own token, and revoke it when you stop using it."
@@ -556,6 +721,7 @@ pub fn settings_page() -> NodeHandle {
                             }
                         }
                     }
+                    }
                 }
             }
 
@@ -608,6 +774,33 @@ mod tests {
         assert_eq!(
             scope_label(&Some(vec!["gone".into()]), &books),
             "No books (they have been deleted)"
+        );
+    }
+    #[test]
+    fn desktop_os_from_user_agent() {
+        let win = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
+        let linux = "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0";
+        let android = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36";
+        let cros = "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 Chrome/131.0 Safari/537.36";
+        let mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.1 Safari/605.1.15";
+        let iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148";
+        assert_eq!(detect_desktop_os(win), Some(DesktopOs::Windows));
+        assert_eq!(detect_desktop_os(linux), Some(DesktopOs::Linux));
+        assert_eq!(detect_desktop_os(android), None);
+        assert_eq!(detect_desktop_os(cros), None);
+        assert_eq!(detect_desktop_os(mac), None);
+        assert_eq!(detect_desktop_os(iphone), None);
+    }
+
+    #[test]
+    fn download_urls_name_the_release_assets() {
+        assert_eq!(
+            DesktopOs::Windows.download_url(),
+            "https://github.com/lost-conn/plotweb/releases/latest/download/PlotWeb-windows-x86_64.exe"
+        );
+        assert_eq!(
+            DesktopOs::Linux.download_url(),
+            "https://github.com/lost-conn/plotweb/releases/latest/download/PlotWeb-linux-x86_64.AppImage"
         );
     }
 }
