@@ -70,7 +70,8 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgtk-3-dev libfontconfig-dev
+          # libxdo: rinch's native menu bar (muda) links it.
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libfontconfig-dev libxdo-dev
 
       # Never `--features debug-mcp`: that opens an unauthenticated control port.
       # Windows: static CRT so the .exe runs without the VC++ redistributable.
@@ -99,7 +100,17 @@ jobs:
           install -Dm644 packaging/linux/plotweb.desktop "$app/plotweb.desktop"
           install -Dm644 icons/icon-512.png "$app/plotweb.png"
           install -Dm644 icons/icon-512.png "$app/usr/share/icons/hicolor/512x512/apps/plotweb.png"
-          ln -s usr/bin/plotweb "$app/AppRun"
+          # Bundle libxdo: unlike GTK 3 it is missing from many desktop installs,
+          # and without it the binary will not even start. AppRun puts it on the
+          # library path.
+          install -Dm644 "$(ldconfig -p | awk '/libxdo\.so\.3 /{print $NF; exit}')" "$app/usr/lib/libxdo.so.3"
+          cat > "$app/AppRun" <<'APPRUN'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$HERE/usr/bin/plotweb" "$@"
+          APPRUN
+          chmod +x "$app/AppRun"
           curl -fsSL -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
@@ -135,4 +146,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "PlotWeb desktop ${GITHUB_REF_NAME#desktop-v}" \
-            --notes "Linux: download the AppImage, \`chmod +x\` it, run it (needs GTK 3). Windows: run the .exe — it is unsigned, so SmartScreen asks first (More info → Run anyway)."
+            --notes "Linux: download the AppImage, \`chmod +x\` it, run it (needs GTK 3). The tarball is the bare binary: it also needs libxdo (\`libxdo3\`). Windows: run the .exe — it is unsigned, so SmartScreen asks first (More info → Run anyway)."
