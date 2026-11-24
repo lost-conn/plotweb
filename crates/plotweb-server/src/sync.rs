@@ -554,6 +554,7 @@ pub fn sync_round(
     };
 
     let before = doc.get_heads();
+    let roots_before = root_changes(&mut doc);
 
     let message =
         SyncMessage::decode(incoming).map_err(|e| SyncError::BadMessage(e.to_string()))?;
@@ -563,8 +564,9 @@ pub fn sync_round(
         .map_err(|e| SyncError::Automerge(e.to_string()))?;
 
     // §D8, for structure documents. The merge above has happened in memory only; if it
-    // joined two histories that share no origin, nothing of it is saved.
-    if histories_are_disjoint(&mut doc) {
+    // brought in a history that shares no origin with the canonical one, nothing of it
+    // is saved.
+    if merge_adds_an_origin(&roots_before, &root_changes(&mut doc)) {
         return Err(SyncError::UnrelatedHistory);
     }
 
@@ -606,7 +608,20 @@ pub fn sync_round(
     Ok(SyncRoundResult { reply, changed })
 }
 
-/// Whether a document is the join of two histories that share no origin.
+/// The document's origins: every change with no dependencies.
+///
+/// A document grown from one seed has exactly one. Two or more means two seeds were
+/// joined at some point, which no amount of further syncing will ever reconcile.
+fn root_changes(doc: &mut AutoCommit) -> std::collections::BTreeSet<automerge::ChangeHash> {
+    doc.get_changes(&[])
+        .iter()
+        .filter(|change| change.deps().is_empty())
+        .map(|change| change.hash())
+        .collect()
+}
+
+/// Whether a merge joined the canonical document to a history that shares no origin
+/// with it.
 ///
 /// The Automerge counterpart of the yrs [`histories_are_unrelated`] check, and it exists
 /// for the same reason (§D8): a client whose `book:` document was seeded from REST
@@ -615,15 +630,27 @@ pub fn sync_round(
 /// twice, in an order neither device asked for.
 ///
 /// Concurrent heads do not indicate this; two devices editing at once produce those
-/// routinely. What does is the origin: a document grown from one seed has exactly one
-/// change with no dependencies. Two of them means two seeds, and no amount of further
-/// syncing will ever reconcile them.
-fn histories_are_disjoint(doc: &mut AutoCommit) -> bool {
-    doc.get_changes(&[])
-        .iter()
-        .filter(|change| change.deps().is_empty())
-        .count()
-        > 1
+/// routinely. What does is an origin the canonical document did not already have.
+///
+/// It asks what the merge **added**, not how many origins the result has. A canonical
+/// document already holding two (joined before this check existed — production had a
+/// `user:` index like that) is something no device can fix by syncing. Counting
+/// origins refused every device's every round on it, and each device then replaced its
+/// copy with the canonical one, added the same change again, and was refused again:
+/// a loop that also left a rescued copy on disk each time. A device that installed the
+/// canonical copy builds on the origins it already has, and that is now accepted.
+///
+/// With no canonical document yet, the first push establishes it, and still must not
+/// bring two origins with it.
+fn merge_adds_an_origin(
+    before: &std::collections::BTreeSet<automerge::ChangeHash>,
+    after: &std::collections::BTreeSet<automerge::ChangeHash>,
+) -> bool {
+    if before.is_empty() {
+        after.len() > 1
+    } else {
+        !after.is_subset(before)
+    }
 }
 
 /// Single-poll drive of a `!Send` [`FsStore`] future — the native backend does its
@@ -1148,6 +1175,123 @@ mod tests {
             block_on(store.get("book:m/src-sha")).unwrap().is_some(),
             "the backfill's src-sha key must survive the sweep"
         );
+    }
+
+    /// A canonical document built from two origins, as production's `user:` index was
+    /// (each origin created its own `books` map).
+    fn seed_two_origin_canonical(dir: &Path, doc_id: &str) -> Vec<u8> {
+        let mut a = AutoCommit::new();
+        let books = a.put_object(ROOT, "books", automerge::ObjType::Map).unwrap();
+        a.put(&books, "b1", "One").unwrap();
+        let mut b = AutoCommit::new();
+        let books = b.put_object(ROOT, "books", automerge::ObjType::Map).unwrap();
+        b.put(&books, "b2", "Two").unwrap();
+        a.merge(&mut b).unwrap();
+        assert_eq!(root_changes(&mut a).len(), 2, "precondition: two origins");
+
+        let store = FsStore::open(dir.to_path_buf()).unwrap();
+        let snapshot = a.save();
+        let heads = a.get_heads().iter().map(|h| h.to_string()).collect();
+        save_snapshot(&store, doc_id, "user", None, &snapshot, heads, None).unwrap();
+        snapshot
+    }
+
+    /// The production loop: a device that installed a two-origin canonical copy and
+    /// adds a book on top of it must be accepted, not refused forever.
+    #[test]
+    fn a_device_building_on_a_canonical_copy_with_two_origins_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot = seed_two_origin_canonical(dir.path(), "user:u");
+
+        // The device installs the canonical copy, then folds in a book it lacks.
+        let mut device = AutoCommit::load(&snapshot).unwrap();
+        let books = device.get(ROOT, "books").unwrap().unwrap().1;
+        device.put(&books, "b3", "Three").unwrap();
+        converge(dir.path(), "user:u", &mut device);
+
+        // A second device pulls the canonical copy and sees the new book.
+        let mut other = AutoCommit::new();
+        converge(dir.path(), "user:u", &mut other);
+        let books = other.get(ROOT, "books").unwrap().unwrap().1;
+        assert_eq!(
+            other.get(&books, "b3").unwrap().unwrap().0.to_str(),
+            Some("Three"),
+            "the device's change must reach the canonical document"
+        );
+    }
+
+    /// A third, unrelated seed is still refused even when the canonical copy already
+    /// has two: what matters is what the merge would add.
+    #[test]
+    fn an_unrelated_seed_is_refused_even_against_a_canonical_copy_with_two_origins() {
+        let dir = tempfile::tempdir().unwrap();
+        seed_two_origin_canonical(dir.path(), "user:u");
+
+        let mut stranger = AutoCommit::new();
+        let books = stranger.put_object(ROOT, "books", automerge::ObjType::Map).unwrap();
+        stranger.put(&books, "b9", "Nine").unwrap();
+        let msg = stranger
+            .sync()
+            .generate_sync_message(&mut SyncState::new())
+            .expect("a message");
+        // The first round only exchanges heads; the stranger's changes arrive once the
+        // server has said what it has, so drive the exchange until it is refused.
+        let mut state = SyncState::new();
+        let mut outgoing = Some(msg);
+        let mut refused = false;
+        for _ in 0..10 {
+            let Some(m) = outgoing.take() else { break };
+            match sync_round(dir.path(), "user:u", "user", &m.encode()) {
+                Err(SyncError::UnrelatedHistory) => {
+                    refused = true;
+                    break;
+                }
+                Err(e) => panic!("unexpected error: {e:?}"),
+                Ok(r) => {
+                    if !r.reply.is_empty() {
+                        let reply = SyncMessage::decode(&r.reply).unwrap();
+                        stranger.sync().receive_sync_message(&mut state, reply).unwrap();
+                    }
+                    outgoing = stranger.sync().generate_sync_message(&mut state);
+                }
+            }
+        }
+        assert!(refused, "an unrelated seed must be refused");
+    }
+
+    /// The first push establishes the canonical document, but may not bring two
+    /// origins with it.
+    #[test]
+    fn a_first_push_carrying_two_origins_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = AutoCommit::new();
+        a.put(ROOT, "x", 1).unwrap();
+        let mut b = AutoCommit::new();
+        b.put(ROOT, "y", 2).unwrap();
+        a.merge(&mut b).unwrap();
+
+        let msg = a.sync().generate_sync_message(&mut SyncState::new()).unwrap();
+        let mut state = SyncState::new();
+        let mut outgoing = Some(msg);
+        let mut refused = false;
+        for _ in 0..10 {
+            let Some(m) = outgoing.take() else { break };
+            match sync_round(dir.path(), "user:v", "user", &m.encode()) {
+                Err(SyncError::UnrelatedHistory) => {
+                    refused = true;
+                    break;
+                }
+                Err(e) => panic!("unexpected error: {e:?}"),
+                Ok(r) => {
+                    if !r.reply.is_empty() {
+                        let reply = SyncMessage::decode(&r.reply).unwrap();
+                        a.sync().receive_sync_message(&mut state, reply).unwrap();
+                    }
+                    outgoing = a.sync().generate_sync_message(&mut state);
+                }
+            }
+        }
+        assert!(refused, "a two-origin first push must be refused");
     }
 
     #[test]
