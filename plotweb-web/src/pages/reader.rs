@@ -620,6 +620,78 @@ fn apply_page_transform(page: i32) {
     }
 }
 
+/// The reader state the desktop pager reads and writes (all `Copy` handles).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct NativePager {
+    content_el: Signal<Option<NodeHandle>>,
+    page_ranges: Signal<Vec<(f64, f64)>>,
+    total_pages: Signal<i32>,
+    current_page: Signal<i32>,
+    pager_generation: Signal<u32>,
+}
+
+/// Desktop pagination: once rinch has laid out `#reader-content`, cut its single
+/// column into pages (`reader_pager::page_ranges`), show `target_page` (clamped)
+/// and report it to `on_placed`.
+///
+/// Layout is not synchronous natively — a style or content change shows in
+/// geometry only after the next layout pass (`NodeHandle::layout_pending`) — so
+/// this polls on a short timer until the document is laid out and the frame has
+/// a size. The frame's width picks the side margins (`side_pad`, the web
+/// build's), which themselves need one more layout before the text is measured.
+/// A newer call (another chapter, a resize) retires this one through
+/// `pager_generation`; a reader that has gone away stops it through `try_get`.
+#[cfg(not(target_arch = "wasm32"))]
+fn native_repaginate(
+    pager: NativePager,
+    generation: u32,
+    target_page: i32,
+    on_placed: impl Fn(i32) + Copy + 'static,
+    attempt: u32,
+) {
+    use crate::pages::reader_pager;
+    // ~2s of frames before measuring regardless: a document that never stops
+    // changing (an animation elsewhere) must not leave the reader unpaginated.
+    const MAX_WAITS: u32 = 120;
+    rinch_core::set_timeout(if attempt == 0 { 0 } else { 16 }, move || {
+        if pager.pager_generation.try_get() != Some(generation) {
+            return; // superseded, or the reader is gone
+        }
+        let Some(Some(el)) = pager.content_el.try_get() else { return };
+        let retry = || {
+            if attempt < MAX_WAITS {
+                native_repaginate(pager, generation, target_page, on_placed, attempt + 1);
+            }
+        };
+        let Some(frame) = el.parent_node() else { return };
+        let (vw, page_h) = (frame.client_width(), frame.client_height());
+        if vw <= 1.0 || page_h <= 1.0 {
+            retry();
+            return;
+        }
+        let pad = format!("{}px", side_pad(vw));
+        if el.get_attribute("data-pager-pad").as_deref() != Some(pad.as_str()) {
+            el.set_attribute("data-pager-pad", &pad);
+            el.set_styles(&[("padding-left", &pad), ("padding-right", &pad)]);
+            retry();
+            return;
+        }
+        if el.layout_pending() && attempt < MAX_WAITS {
+            retry();
+            return;
+        }
+        let ranges = reader_pager::page_ranges(&reader_pager::flow_blocks(&el), page_h);
+        let total = ranges.len() as i32;
+        let page = target_page.clamp(0, total - 1);
+        reader_pager::show_page(&el, ranges[page as usize]);
+        pager.page_ranges.set(ranges);
+        pager.total_pages.set(total);
+        pager.current_page.set(page);
+        on_placed(page);
+    });
+}
+
 /// Compute where to anchor the feedback popover/tooltip given the clicked/
 /// selected rect (`anchor`, viewport coordinates) and the reading viewport's
 /// own rect (`frame`, the scroll/clip boundary the popover must stay inside).
@@ -1202,6 +1274,13 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     // Pagination state
     let current_page: Signal<i32> = Signal::new(0);
     let total_pages: Signal<i32> = Signal::new(1);
+    // Desktop only: each page's `[start, end)` slice of the single laid-out
+    // column (see `reader_pager`), and a counter that retires a measurement
+    // still waiting on layout when a newer one starts.
+    #[cfg(not(target_arch = "wasm32"))]
+    let page_ranges: Signal<Vec<(f64, f64)>> = Signal::new(Vec::new());
+    #[cfg(not(target_arch = "wasm32"))]
+    let pager_generation: Signal<u32> = Signal::new(0);
     // Handle to the `#reader-content` element, published by `reader_content_node`
     // when the chapter branch renders. Chapter HTML is injected through this.
     let content_el: Signal<Option<NodeHandle>> = Signal::new(None);
@@ -1265,16 +1344,33 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     };
 
     // ── Pagination: (re)measure the column layout and place a page ───────────
-    // Deferred to a rAF because inner_html fills / reflows asynchronously.
+    // Web: deferred to a rAF because inner_html fills / reflows asynchronously,
+    // then measured out of the DOM's multi-column layout (`measure_and_style` /
+    // `apply_page_transform`).
     //
-    // Native: inert. Pagination is measured out of the DOM's column layout
-    // (`measure_and_style` / `apply_page_transform`), which has no native
-    // equivalent yet, so desktop shows the chapter as one continuously-rendered
-    // column. `total_pages` stays at its initialised 1 and `current_page` at 0 —
-    // consistent with a single unpaginated page — so callers below still read
-    // sane values.
+    // Native: rinch-dom has no multi-column layout, so the desktop build pages
+    // the single column vertically instead — `native_repaginate` waits for
+    // rinch to lay the chapter out, then cuts it into page-tall slices between
+    // lines (`reader_pager`).
     let repaginate = move |target_page: i32| {
         let _ = target_page;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let generation = pager_generation.get().wrapping_add(1);
+            pager_generation.set(generation);
+            let on_placed = move |page: i32| {
+                if let Some(cid) = active_chapter_id.get() {
+                    save_progress(cid, page);
+                }
+            };
+            native_repaginate(
+                NativePager { content_el, page_ranges, total_pages, current_page, pager_generation },
+                generation,
+                target_page,
+                on_placed,
+                0,
+            );
+        }
         crate::web_only! {
             let closure = wasm_bindgen::closure::Closure::once(move || {
                 let total = measure_and_style();
@@ -1382,8 +1478,8 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
                     }
                     repaginate(target_page);
                     // A second pass catches late reflow (e.g. images loading).
-                    // Web-only: there is no reflow to catch without a DOM, and
-                    // `repaginate` is already inert on native.
+                    // Web-only: native `repaginate` already waits for layout
+                    // itself (`native_repaginate`).
                     crate::web_only! {
                         let closure = wasm_bindgen::closure::Closure::once(move || {
                             repaginate(current_page.get());
@@ -1453,6 +1549,12 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
         popover_feedback_id.set(None);
         current_page.set(clamped);
         apply_page_transform(clamped);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(el), Some(range)) =
+            (content_el.get(), page_ranges.get().get(clamped as usize).copied())
+        {
+            crate::pages::reader_pager::show_page(&el, range);
+        }
         if let Some(cid) = active_chapter_id.get() {
             save_progress(cid, clamped);
         }
@@ -1776,9 +1878,8 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     } // end if !is_preview (feedback selection)
 
     // ── Keyboard paging (Arrow left/right), ignoring text inputs ─────────────
-    // Native: inert — this hangs off a document-level `keydown` listener. Porting
-    // it needs rinch's key handling, and with pagination itself inert on desktop
-    // there are no pages to flip between yet.
+    // Native: inert — this hangs off a document-level `keydown` listener, which
+    // has no desktop equivalent yet. Desktop pages turn with the margin targets.
     crate::web_only! {
         let keydown_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |event: web_sys::KeyboardEvent| {
             if let Some(t) = event.target() {
@@ -1853,7 +1954,28 @@ fn reader_body(__scope: &mut RenderScope, source: ReaderSource) -> NodeHandle {
     }
 
     // ── Re-flow pages on window resize ───────────────────────────────────────
-    // Native: inert — there is nothing to re-flow while pagination is web-only.
+    // Native: there is no window `resize` event, so watch the page frame's
+    // laid-out size instead (`bounds_signal` refreshes after every layout,
+    // resizes included) and re-cut the pages when it changes. The first size
+    // it reports is the initial layout, which `open_chapter` already paginates.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let last_size = std::cell::Cell::new((0.0f32, 0.0f32));
+        let _ = rinch_core::Effect::new(move || {
+            let Some(el) = content_el.get() else { return };
+            let Some(frame) = el.parent_node() else { return };
+            let b = frame.bounds_signal().get();
+            let size = (b.width.round(), b.height.round());
+            if size.0 < 1.0 || size.1 < 1.0 || size == last_size.get() {
+                return;
+            }
+            let first = last_size.get() == (0.0, 0.0);
+            last_size.set(size);
+            if !first {
+                rinch_core::untracked(|| repaginate(current_page.get()));
+            }
+        });
+    }
     crate::web_only! {
         let resize_closure = wasm_bindgen::closure::Closure::wrap(Box::new(move |_event: web_sys::Event| {
             repaginate(current_page.get());
