@@ -220,6 +220,7 @@ fn main() {
     };
     rinch::App::new(app)
         .window_props(props)
+        .fonts(fonts::APP_FONTS)
         .theme(theme_props())
         .run();
 }

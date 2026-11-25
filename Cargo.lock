@@ -2545,7 +2545,7 @@ dependencies = [
 [[package]]
 name = "rinch-core"
 version = "0.1.0"
-source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
+source = "git+https://github.com/lost-conn/rinch?rev=8439034#8439034b7af472b3c79a434b90aee7e7a7d681df"
 dependencies = [
  "thiserror 1.0.69",
  "tracing",
@@ -2555,7 +2555,7 @@ dependencies = [
 [[package]]
 name = "rinch-editor-collab"
 version = "0.1.0"
-source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
+source = "git+https://github.com/lost-conn/rinch?rev=8439034#8439034b7af472b3c79a434b90aee7e7a7d681df"
 dependencies = [
  "rinch-editor-core",
  "thiserror 1.0.69",
@@ -2565,7 +2565,7 @@ dependencies = [
 [[package]]
 name = "rinch-editor-core"
 version = "0.1.0"
-source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
+source = "git+https://github.com/lost-conn/rinch?rev=8439034#8439034b7af472b3c79a434b90aee7e7a7d681df"
 dependencies = [
  "pulldown-cmark 0.12.2",
  "regex",
@@ -2578,7 +2578,7 @@ dependencies = [
 [[package]]
 name = "rinch-storage"
 version = "0.1.0"
-source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
+source = "git+https://github.com/lost-conn/rinch?rev=8439034#8439034b7af472b3c79a434b90aee7e7a7d681df"
 dependencies = [
  "dirs",
  "js-sys",
@@ -2590,7 +2590,7 @@ dependencies = [
 [[package]]
 name = "rinch-words"
 version = "0.1.0"
-source = "git+https://github.com/lost-conn/rinch?rev=5ff256a#5ff256a59f4f54805c8a51283f92e6451c0622e1"
+source = "git+https://github.com/lost-conn/rinch?rev=8439034#8439034b7af472b3c79a434b90aee7e7a7d681df"
 dependencies = [
  "regex",
  "unicode-segmentation",
