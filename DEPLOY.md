@@ -105,6 +105,25 @@ A single persistent volume named `data` is mounted at `/data`:
 └── plotweb.db    # DATABASE_URL — legacy SQLite (still opened + migrated at boot)
 ```
 
+## Keep the two lockfiles' wasm-bindgen in step
+
+The trunk buildpack downloads the exact `wasm-bindgen` CLI in its fetch phase so
+the offline compile can run it, but it reads the version from the **root**
+`Cargo.lock` (the build `context`), not `plotweb-web/Cargo.lock`. When they differ,
+trunk refuses the provisioned CLI offline and the frontend build fails. jkbase's
+build log cuts trunk's error off, so all you see is cargo's `Finished` line and
+`exit status: 1`. A rinch repin that bumps wasm-bindgen in `plotweb-web` must bump
+the root lock too:
+
+```bash
+cargo update -p wasm-bindgen-futures --precise <plotweb-web's version>   # from the repo root
+```
+
+`crates/plotweb-server/tests/deploy_lockfiles.rs` fails `cargo test` when they
+drift. To see a build's real state, `GET https://api.jkbase.app/projects/plotweb/builds`
+(bearer token from `~/.jkbase/credentials`). A successful GitHub "Deploy to jkbase"
+run only means the push landed, not that the build succeeded.
+
 ## Health check
 
 `jkbase.toml` declares `[servers.api.health_check] path = "/health"`. The backend
