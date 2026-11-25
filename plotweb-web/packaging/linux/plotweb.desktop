@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=PlotWeb
+GenericName=Fiction Writing
+Comment=Write and organise fiction, offline-first
+Exec=plotweb
+Icon=plotweb
+Terminal=false
+Categories=Office;WordProcessor;
+Keywords=writing;fiction;novel;manuscript;
+StartupNotify=true
+StartupWMClass=dev.lostconnection.plotweb

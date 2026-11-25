@@ -2,6 +2,10 @@
 // closures through nested rsx! expansions; the default recursion limit trips
 // on the resulting trait-resolution depth (see plotweb-web/src/pages/book/).
 #![recursion_limit = "512"]
+// A release desktop build on Windows is a GUI app: without this, launching it
+// from Explorer also opens a console window. Debug builds keep the console for
+// stderr. Logs go to a file either way (`desktop_log`).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 pub mod api;
 pub mod chrome_settings;
@@ -19,6 +23,8 @@ pub mod components;
 pub mod fonts;
 pub mod ws;
 pub mod platform;
+#[cfg(not(target_arch = "wasm32"))]
+mod desktop_log;
 pub mod rinch_backend;
 
 use std::rc::Rc;
@@ -205,6 +211,8 @@ const APP_ID: &str = "dev.lostconnection.plotweb";
 /// Desktop entry: run a native window via rinch's shell (winit/wgpu).
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
+    desktop_log::init();
+
     // `icon` covers X11/Windows, which take the bytes directly; `app_id` covers
     // Wayland, which resolves the icon through the desktop entry (see `APP_ID`).
     // Window *position* is deliberately not restored: Wayland gives clients no way

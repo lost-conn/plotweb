@@ -1,0 +1,149 @@
+name: Desktop release
+# Builds the native desktop app (plotweb-web on rinch's winit/wgpu shell) for Linux
+# and Windows and attaches it to a GitHub Release. The web app's "Desktop app" card
+# links to `releases/latest/download/<asset>`, so asset names below are a contract:
+# rename one and the download link on the site breaks.
+#
+#   git tag desktop-v0.1.0 && git push origin desktop-v0.1.0   # publish a release
+#   Actions → Desktop release → Run workflow                   # build only (artifacts)
+#
+# The tag's version must equal plotweb-web/Cargo.toml's `version` — that is what the
+# binary reports in its log, and what a future update check will compare against.
+on:
+  push:
+    tags: ["desktop-v*"]
+  # Build-only (no release) on PRs that touch what the desktop build depends on,
+  # so a dependency bump or packaging change is proven on Windows before merge.
+  pull_request:
+    paths:
+      - .github/workflows/desktop-release.yml
+      - plotweb-web/Cargo.toml
+      - plotweb-web/Cargo.lock
+      - plotweb-web/build.rs
+      - plotweb-web/packaging/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04, not latest: the binary links the runner's glibc, and an older
+          # one runs on more distros.
+          - os: ubuntu-22.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: plotweb-web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          want="${GITHUB_REF_NAME#desktop-v}"
+          have="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [ "$want" != "$have" ]; then
+            echo "::error::tag $GITHUB_REF_NAME but plotweb-web/Cargo.toml says $have"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plotweb-web
+          key: ${{ matrix.platform }}
+
+      - name: Linux build deps
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          # libxdo: rinch's native menu bar (muda) links it.
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libfontconfig-dev libxdo-dev
+
+      # Never `--features debug-mcp`: that opens an unauthenticated control port.
+      # Windows: static CRT so the .exe runs without the VC++ redistributable.
+      - name: Build
+        run: |
+          if [ "${{ matrix.platform }}" = windows ]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+          cargo build --release --locked
+
+      - name: Refuse a debug-mcp binary
+        run: |
+          bin=target/release/plotweb-web
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          if grep -aq 'rinch/debug' "$bin"; then
+            echo "::error::release binary carries the rinch debug control port"
+            exit 1
+          fi
+
+      - name: Package (Linux AppImage + tarball)
+        if: matrix.platform == 'linux'
+        run: |
+          mkdir -p ../dist-desktop
+          app=AppDir
+          install -Dm755 target/release/plotweb-web "$app/usr/bin/plotweb"
+          install -Dm644 packaging/linux/plotweb.desktop "$app/plotweb.desktop"
+          install -Dm644 icons/icon-512.png "$app/plotweb.png"
+          install -Dm644 icons/icon-512.png "$app/usr/share/icons/hicolor/512x512/apps/plotweb.png"
+          # Bundle libxdo: unlike GTK 3 it is missing from many desktop installs,
+          # and without it the binary will not even start. AppRun puts it on the
+          # library path.
+          install -Dm644 "$(ldconfig -p | awk '/libxdo\.so\.3 /{print $NF; exit}')" "$app/usr/lib/libxdo.so.3"
+          cat > "$app/AppRun" <<'APPRUN'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          exec "$HERE/usr/bin/plotweb" "$@"
+          APPRUN
+          chmod +x "$app/AppRun"
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$app" ../dist-desktop/PlotWeb-linux-x86_64.AppImage
+          tar -C target/release -czf ../dist-desktop/PlotWeb-linux-x86_64.tar.gz plotweb-web
+
+      - name: Package (Windows exe)
+        if: matrix.platform == 'windows'
+        run: |
+          mkdir -p ../dist-desktop
+          cp target/release/plotweb-web.exe ../dist-desktop/PlotWeb-windows-x86_64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: plotweb-${{ matrix.platform }}
+          path: dist-desktop/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "PlotWeb desktop ${GITHUB_REF_NAME#desktop-v}" \
+            --notes "Linux: download the AppImage, \`chmod +x\` it, run it (needs GTK 3). The tarball is the bare binary: it also needs libxdo (\`libxdo3\`). Windows: run the .exe — it is unsigned, so SmartScreen asks first (More info → Run anyway)."
